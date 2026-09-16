@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,8 +24,21 @@ const fromLocalInput = (v: string): string | null => (v ? new Date(v).toISOStrin
 export function ScheduleForm({ schedule, onSaved }: { schedule: S; onSaved: () => void }) {
   const [s, setS] = useState<S>(schedule);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setS(schedule), [schedule]);
-  const num = (k: keyof S) => (e: React.ChangeEvent<HTMLInputElement>) => setS({ ...s, [k]: Number(e.target.value) });
+  // ScannerView polls every 5-15s and hands down a brand-new `schedule` object each
+  // time (even when nothing changed server-side), so this sync effect would otherwise
+  // clobber whatever the user is mid-typing. `dirty` scopes the resync to "no local
+  // edits pending" — every field handler below sets it, and a successful save clears it
+  // so the next poll re-syncs the form to the server's copy (same pattern as
+  // src/components/leads/LeadFilters.tsx).
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (!dirty.current) setS(schedule);
+  }, [schedule]);
+  const mutate = (next: S) => {
+    dirty.current = true;
+    setS(next);
+  };
+  const num = (k: keyof S) => (e: React.ChangeEvent<HTMLInputElement>) => mutate({ ...s, [k]: Number(e.target.value) });
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -38,6 +51,7 @@ export function ScheduleForm({ schedule, onSaved }: { schedule: S; onSaved: () =
       });
       if (!r.ok) throw new Error((await r.json()).error ?? "Save failed");
       toast.success("Schedule saved");
+      dirty.current = false;
       onSaved();
     } catch (err) {
       toast.error((err as Error).message);
@@ -52,31 +66,31 @@ export function ScheduleForm({ schedule, onSaved }: { schedule: S; onSaved: () =
       <CardContent>
         <form onSubmit={save} className="grid gap-4 md:grid-cols-2" data-testid="schedule-form">
           <label className="flex items-center gap-2 md:col-span-2">
-            <Checkbox checked={s.enabled} onCheckedChange={(c) => setS({ ...s, enabled: !!c })} data-testid="schedule-enabled" />
+            <Checkbox checked={s.enabled} onCheckedChange={(c) => mutate({ ...s, enabled: !!c })} data-testid="schedule-enabled" />
             <span className="font-medium">Scanner enabled</span>
           </label>
           <div className="space-y-1">
             <Label htmlFor="ws">Window start</Label>
-            <Input id="ws" type="datetime-local" value={toLocalInput(s.windowStart)} onChange={(e) => setS({ ...s, windowStart: fromLocalInput(e.target.value) })} />
+            <Input id="ws" type="datetime-local" value={toLocalInput(s.windowStart)} onChange={(e) => mutate({ ...s, windowStart: fromLocalInput(e.target.value) })} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="we">Window end</Label>
-            <Input id="we" type="datetime-local" value={toLocalInput(s.windowEnd)} onChange={(e) => setS({ ...s, windowEnd: fromLocalInput(e.target.value) })} />
+            <Input id="we" type="datetime-local" value={toLocalInput(s.windowEnd)} onChange={(e) => mutate({ ...s, windowEnd: fromLocalInput(e.target.value) })} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="ds">Daily start (HH:mm)</Label>
-            <Input id="ds" type="time" value={s.dailyStartTime ?? ""} onChange={(e) => setS({ ...s, dailyStartTime: e.target.value || null })} />
+            <Input id="ds" type="time" value={s.dailyStartTime ?? ""} onChange={(e) => mutate({ ...s, dailyStartTime: e.target.value || null })} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="de">Daily end (HH:mm)</Label>
-            <Input id="de" type="time" value={s.dailyEndTime ?? ""} onChange={(e) => setS({ ...s, dailyEndTime: e.target.value || null })} />
+            <Input id="de" type="time" value={s.dailyEndTime ?? ""} onChange={(e) => mutate({ ...s, dailyEndTime: e.target.value || null })} />
           </div>
           <div className="md:col-span-2">
             <Label>Days of week (none = every day)</Label>
             <div className="mt-1 flex flex-wrap gap-3">
               {DAYS.map((d, i) => (
                 <label key={d} className="flex items-center gap-1 text-sm">
-                  <Checkbox checked={s.daysOfWeek.includes(i)} onCheckedChange={(c) => setS({ ...s, daysOfWeek: c ? [...s.daysOfWeek, i].sort() : s.daysOfWeek.filter((x) => x !== i) })} />
+                  <Checkbox checked={s.daysOfWeek.includes(i)} onCheckedChange={(c) => mutate({ ...s, daysOfWeek: c ? [...s.daysOfWeek, i].sort() : s.daysOfWeek.filter((x) => x !== i) })} />
                   {d}
                 </label>
               ))}
@@ -84,7 +98,7 @@ export function ScheduleForm({ schedule, onSaved }: { schedule: S; onSaved: () =
           </div>
           <div className="space-y-1">
             <Label htmlFor="tz">Timezone</Label>
-            <Input id="tz" value={s.timezone} onChange={(e) => setS({ ...s, timezone: e.target.value })} />
+            <Input id="tz" value={s.timezone} onChange={(e) => mutate({ ...s, timezone: e.target.value })} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="mc">Max concurrent scanner jobs</Label>
@@ -103,7 +117,7 @@ export function ScheduleForm({ schedule, onSaved }: { schedule: S; onSaved: () =
             <Input id="wr" type="number" min={1} max={365} value={s.websiteRecheckDays} onChange={num("websiteRecheckDays")} />
           </div>
           <label className="flex items-center gap-2">
-            <Checkbox checked={s.autoAddHotZips} onCheckedChange={(c) => setS({ ...s, autoAddHotZips: !!c })} />
+            <Checkbox checked={s.autoAddHotZips} onCheckedChange={(c) => mutate({ ...s, autoAddHotZips: !!c })} />
             <span className="text-sm">Auto-add zips of hot TDLR projects</span>
           </label>
           <div className="md:col-span-2">

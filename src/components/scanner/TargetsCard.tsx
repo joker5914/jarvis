@@ -14,16 +14,20 @@ type T = ScannerPayload["targets"][number];
 export function TargetsCard({ targets, onChanged }: { targets: T[]; onChanged: () => void }) {
   const [zip, setZip] = useState("");
 
-  async function call(url: string, init: RequestInit, okMsg: string) {
+  async function call(url: string, init: RequestInit, okMsg: string): Promise<boolean> {
     const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
-    if (!r.ok) return toast.error((await r.json().catch(() => ({}))).error ?? "Request failed");
+    if (!r.ok) {
+      toast.error((await r.json().catch(() => ({}))).error ?? "Request failed");
+      return false;
+    }
     toast.success(okMsg);
     onChanged();
+    return true;
   }
-  const add = (e: React.FormEvent) => {
+  const add = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!/^\d{5}$/.test(zip)) return toast.error("Enter a 5-digit zip");
-    call("/api/scanner/targets", { method: "POST", body: JSON.stringify({ zip }) }, `Added ${zip}`).then(() => setZip(""));
+    if (await call("/api/scanner/targets", { method: "POST", body: JSON.stringify({ zip }) }, `Added ${zip}`)) setZip("");
   };
   const patch = (t: T, body: Partial<Pick<T, "priority" | "paused">>, msg: string) =>
     call(`/api/scanner/targets/${t.id}`, { method: "PATCH", body: JSON.stringify(body) }, msg);
