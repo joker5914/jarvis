@@ -12,7 +12,15 @@ export function ScannerPill() {
     const r = await fetch("/api/scanner", { cache: "no-store" }).catch(() => null);
     if (r?.ok) setS((await r.json()).state);
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 15000);
+    window.addEventListener("scanner:changed", load);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("scanner:changed", load);
+    };
+  }, [load]);
   if (!s) return null;
   const paused = s.pauseRequested || s.status === "paused";
   return (

@@ -22,6 +22,7 @@ export async function scannerAction(action: "pause" | "resume" | "stop" | "run-n
     return false;
   }
   toast.success({ pause: "Scanner paused", resume: "Scanner resumed", stop: "Scanner stopped", "run-now": "Tick requested" }[action]);
+  window.dispatchEvent(new Event("scanner:changed"));
   return true;
 }
 

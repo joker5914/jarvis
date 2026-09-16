@@ -1,5 +1,5 @@
 import pLimit from "p-limit";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { CATEGORIES } from "@/lib/config/categories";
 import { scoreSmbFit } from "@/lib/scoring/smbFit";
@@ -74,6 +74,19 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
   return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
 }
 
+/**
+ * `upsert()` with `update: {}` is a no-op once the row exists, so a P2002 from a concurrent
+ * writer racing the same upsert means the desired row is already there — safe to ignore rather
+ * than fail the whole search.
+ */
+async function upsertIgnoringConflict<T>(fn: () => Promise<T>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+  }
+}
+
 async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[]) {
   const nameCounts = new Map<string, number>();
   for (const { biz } of found.values()) {
@@ -92,12 +105,17 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
       smbFitScore: fit.score,
     };
     const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
-    const b = existing
-      ? await prisma.business.update({
-          where: { id: existing.id },
-          data: { ...googleFields, primaryCategory: existing.primaryCategory ?? category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category) },
-        })
-      : await prisma.business.create({
+    const updateExisting = (row: { id: string; primaryCategory: string | null; suggestedPackage: string | null }) =>
+      prisma.business.update({
+        where: { id: row.id },
+        data: { ...googleFields, primaryCategory: row.primaryCategory ?? category, suggestedPackage: row.suggestedPackage ?? suggestPackage(category) },
+      });
+    let b;
+    if (existing) {
+      b = await updateExisting(existing);
+    } else {
+      try {
+        b = await prisma.business.create({
           data: {
             ...googleFields,
             ownerId,
@@ -108,6 +126,19 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
             activity: { create: { ownerId, kind: "discovered", message: `Found via zip search as "${category}"` } },
           },
         });
+      } catch (e) {
+        // Two scanner/search jobs for the same owner can discover the same place concurrently
+        // (e.g. overlapping zips surface the same fake-provider IDs); the loser of the create
+        // race retries as an update against the row the winner just inserted.
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+          const winner = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
+          if (!winner) throw e;
+          b = await updateExisting(winner);
+        } else {
+          throw e;
+        }
+      }
+    }
     ids.push(b.id);
 
     await prisma.searchBusiness.upsert({
@@ -117,19 +148,23 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
     });
     const phone = biz.phone ? normalizePhone(biz.phone) : null;
     if (phone) {
-      await prisma.contact.upsert({
-        where: { businessId_type_value: { businessId: b.id, type: "phone", value: phone } },
-        update: {},
-        create: { ownerId, businessId: b.id, type: "phone", value: phone, source: "google", validationStatus: "valid", validatedAt: new Date() },
-      });
+      await upsertIgnoringConflict(() =>
+        prisma.contact.upsert({
+          where: { businessId_type_value: { businessId: b.id, type: "phone", value: phone } },
+          update: {},
+          create: { ownerId, businessId: b.id, type: "phone", value: phone, source: "google", validationStatus: "valid", validatedAt: new Date() },
+        }),
+      );
     }
     const systemTag = await prisma.tag.findUnique({ where: { ownerId_name: { ownerId, name: category } } });
     if (systemTag) {
-      await prisma.businessTag.upsert({
-        where: { businessId_tagId: { businessId: b.id, tagId: systemTag.id } },
-        update: {},
-        create: { businessId: b.id, tagId: systemTag.id },
-      });
+      await upsertIgnoringConflict(() =>
+        prisma.businessTag.upsert({
+          where: { businessId_tagId: { businessId: b.id, tagId: systemTag.id } },
+          update: {},
+          create: { businessId: b.id, tagId: systemTag.id },
+        }),
+      );
     }
   }
 

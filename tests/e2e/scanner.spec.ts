@@ -30,11 +30,7 @@ test("pause takes effect and resume continues; stop disables", async ({ page }) 
   await page.goto("/scanner");
   await page.getByTestId("scanner-pause").click();
   await expect(page.getByTestId("scanner-state")).toHaveText("Paused");
-  // ScannerPill (navbar) polls independently every 15s and isn't refreshed by
-  // StatusCard's onChanged(), so this needs headroom past one poll cycle,
-  // beyond the default 15s assertion timeout — otherwise it races the pill's
-  // own interval and fails intermittently.
-  await expect(page.getByTestId("scanner-pill")).toContainText("Resume", { timeout: 20_000 });
+  await expect(page.getByTestId("scanner-pill")).toContainText("Resume");
 
   await page.getByTestId("scanner-resume").click();
   await expect(page.getByTestId("scanner-state")).not.toHaveText("Paused", { timeout: 20_000 });
