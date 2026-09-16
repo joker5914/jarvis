@@ -1,5 +1,14 @@
 import type { PageFetcher } from "@/lib/extract/website";
-import type { DiscoveredBusiness, DiscoveryProvider, GeocodeProvider, GeocodeResult, ValidationProvider } from "./types";
+import type {
+  DiscoveredBusiness,
+  DiscoveryProvider,
+  GeocodeProvider,
+  GeocodeResult,
+  ProjectDetail,
+  ProjectRegistryProvider,
+  ProjectSummary,
+  ValidationProvider,
+} from "./types";
 
 function slugify(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -16,6 +25,22 @@ export class FakeGeocodeProvider implements GeocodeProvider {
 /** Two SMBs per query plus one chain for coffee-shop queries so exclusion is exercised. */
 export class FakeDiscoveryProvider implements DiscoveryProvider {
   async searchCategory(rawQuery: string): Promise<DiscoveredBusiness[]> {
+    // Promote flow: a query beginning with a fake project's facility name returns one exact match.
+    if (/^bella nails & spa\b/i.test(rawQuery)) {
+      return [{
+        placeId: "fake-bella-nails",
+        name: "Bella Nails & Spa",
+        formattedAddress: "123 Fake St, Houston, TX 77084, USA",
+        zip: "77084",
+        lat: 29.84,
+        lng: -95.66,
+        phone: "(713) 555-0142",
+        websiteUrl: "https://bella-nails.fake.test/",
+        rating: 4.8,
+        reviewCount: 41,
+        types: ["nail_salon"],
+      }];
+    }
     // The job sends "<category query> in <zip>"; names and ids use the bare category query.
     const query = rawQuery.replace(/\s+in\s+\d{5}$/, "");
     const slug = slugify(query);
@@ -66,3 +91,117 @@ export const fakeFetcher: PageFetcher = async (url) => {
   </body></html>`;
   return { ok: true, status: 200, html, finalUrl: url };
 };
+
+const DAY = 24 * 60 * 60 * 1000;
+const daysFromNow = (n: number) => new Date(Date.now() + n * DAY);
+
+type FakeProject = ProjectSummary & { detail: ProjectDetail };
+
+function fakeProject(
+  n: number,
+  p: Partial<ProjectSummary> & Partial<ProjectDetail> & { projectName: string },
+): FakeProject {
+  const projectNumber = `TABS2027${String(n).padStart(6, "0")}`;
+  const summary: ProjectSummary = {
+    tdlrProjectId: `fake-project-${n}`,
+    projectNumber,
+    projectName: p.projectName,
+    facilityName: p.facilityName ?? null,
+    registeredAt: p.registeredAt ?? daysFromNow(-5),
+    statusCode: p.statusCode ?? 3008,
+    cityCode: 785,
+    countyCode: 2101,
+    workTypeCode: p.workTypeCode ?? 9002,
+    estimatedCost: p.estimatedCost ?? null,
+    startDate: p.startDate ?? null,
+    completionDate: p.completionDate ?? null,
+  };
+  const detail: ProjectDetail = {
+    projectNumber,
+    projectName: p.projectName,
+    facilityName: p.facilityName ?? null,
+    locationAddress: p.locationAddress ?? "123 Fake St",
+    city: "Houston",
+    state: "TX",
+    zip: p.zip ?? "77084",
+    county: "Harris",
+    startDate: summary.startDate,
+    completionDate: summary.completionDate,
+    estimatedCost: summary.estimatedCost,
+    workTypeLabel: summary.workTypeCode === 9001 ? "New Construction" : "Renovation/Alteration",
+    fundsType: "This project is privately funded, on private land for private use.",
+    scopeOfWork: p.scopeOfWork ?? "Interior finish-out",
+    squareFootage: p.squareFootage ?? null,
+    tenantFunded: p.tenantFunded ?? null,
+    statusLabel: "Project Registered",
+    registrationDate: summary.registeredAt,
+    contactName: p.contactName ?? null,
+    rasName: "FAKE RAS",
+    rasPhone: "(281) 555-0100",
+    ownerName: p.ownerName ?? null,
+    ownerAddress: null,
+    ownerPhone: p.ownerPhone ?? null,
+    tenantName: null,
+    designFirmName: null,
+  };
+  return { ...summary, detail };
+}
+
+export const FAKE_PROJECTS: FakeProject[] = [
+  fakeProject(1, {
+    projectName: "Bella Nails Buildout",
+    facilityName: "Bella Nails & Spa",
+    estimatedCost: 120_000,
+    squareFootage: 1_800,
+    tenantFunded: true,
+    startDate: daysFromNow(-30),
+    completionDate: daysFromNow(30),
+    ownerName: "Ana Ruiz",
+    contactName: "Ana Ruiz",
+    ownerPhone: "(713) 555-0142",
+  }),
+  fakeProject(2, {
+    projectName: "Corner Cafe Renovation",
+    facilityName: "Corner Cafe",
+    estimatedCost: 90_000,
+    squareFootage: 1_200,
+    tenantFunded: true,
+    startDate: daysFromNow(10),
+    completionDate: daysFromNow(120),
+    ownerName: "Sam Lee",
+    ownerPhone: "(713) 555-0177",
+  }),
+  fakeProject(3, {
+    projectName: "Memorial Hermann Tower Dialysis",
+    facilityName: "Memorial Hermann",
+    estimatedCost: 5_000_000,
+    workTypeCode: 9001,
+    startDate: daysFromNow(-10),
+    completionDate: daysFromNow(200),
+  }),
+  fakeProject(4, {
+    projectName: "Old Coffee Shop Remodel",
+    facilityName: "Old Coffee",
+    estimatedCost: 50_000,
+    startDate: daysFromNow(-300),
+    completionDate: daysFromNow(-120),
+  }),
+];
+
+/** Deterministic registry: four projects registered 5 days ago (one long completed). */
+export class FakeRegistryProvider implements ProjectRegistryProvider {
+  constructor(private projects: FakeProject[] = FAKE_PROJECTS) {}
+
+  async listProjects(opts: { registeredFrom: Date; registeredTo: Date; start: number; length: number }) {
+    const inWindow = this.projects.filter((p) => p.registeredAt >= opts.registeredFrom && p.registeredAt <= opts.registeredTo);
+    return {
+      total: inWindow.length,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- strip `detail`, keep the ProjectSummary fields
+      items: inWindow.slice(opts.start, opts.start + opts.length).map(({ detail: _d, ...s }) => s),
+    };
+  }
+
+  async getProjectDetail(projectNumber: string): Promise<ProjectDetail | null> {
+    return this.projects.find((p) => p.projectNumber === projectNumber)?.detail ?? null;
+  }
+}

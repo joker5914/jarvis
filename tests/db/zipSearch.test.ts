@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runZipSearch } from "@/lib/jobs/zipSearch";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 import { CATEGORIES } from "@/lib/config/categories";
 
 const providers = {
   geocode: new FakeGeocodeProvider(),
   discovery: new FakeDiscoveryProvider(),
   validation: new FakeValidationProvider(),
+  registry: new FakeRegistryProvider(),
   fetcher: fakeFetcher,
 };
 
