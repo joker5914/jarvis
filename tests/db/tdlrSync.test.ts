@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher, FAKE_PROJECTS } from "@/lib/providers/fake";
+import type { ProjectRegistryProvider } from "@/lib/providers/types";
 
 const providers = {
   geocode: new FakeGeocodeProvider(),
@@ -72,6 +73,17 @@ describe("runTdlrSync", () => {
     await runTdlrSync({ providers, signal: ctrl.signal });
     const s = await readSync(SYNC_KEYS.tdlr);
     expect(s.cursor.status).toBe("paused");
+    expect(s.lastSuccessfulAt).toBeNull();
+  });
+
+  it("fails the sync instead of advancing lastSuccessfulAt when the registry returns a short page", async () => {
+    const stub: ProjectRegistryProvider = {
+      listProjects: async () => ({ total: 5, items: [] }),
+      getProjectDetail: async () => null,
+    };
+    await expect(runTdlrSync({ providers: { ...providers, registry: stub } })).rejects.toThrow(/empty page/);
+    const s = await readSync(SYNC_KEYS.tdlr);
+    expect(s.cursor.status).toBe("failed");
     expect(s.lastSuccessfulAt).toBeNull();
   });
 });

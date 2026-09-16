@@ -88,7 +88,13 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
   const { id: ownerId } = await getActor();
   const counts = { scanned: 0, skippedStale: 0, created: 0, updated: 0, refreshed: 0 };
   const state = await readSync(SYNC_KEYS.tdlr);
-  const registeredFrom = state.lastSuccessfulAt ?? new Date(now.getTime() - PROJECT_CONFIG.backfillMonths * 30 * DAY);
+  const registeredFrom =
+    state.lastSuccessfulAt ??
+    (() => {
+      const from = new Date(now);
+      from.setUTCMonth(from.getUTCMonth() - PROJECT_CONFIG.backfillMonths);
+      return from;
+    })();
   const registeredTo = now;
   const staleBefore = new Date(now.getTime() - PROJECT_CONFIG.staleAfterDays * DAY);
   const cursor = (c: Partial<SyncCursor>) => writeSync(SYNC_KEYS.tdlr, { status: "running", startedAt: now.toISOString(), counts, ...c });
@@ -101,7 +107,17 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
       await checkPause(deps);
       const page = await deps.providers.registry.listProjects({ registeredFrom, registeredTo, start, length: PAGE });
       total = page.total;
-      if (page.items.length === 0) break;
+      if (page.items.length === 0) {
+        // total === 0 legitimately means nothing to scan; total > 0 with an
+        // empty page means the registry returned short, which would silently
+        // advance lastSuccessfulAt past unscanned registrations if allowed
+        // to fall through to the success path. Fail loudly instead so
+        // pg-boss retries and lastSuccessfulAt is left untouched.
+        if (start < total) {
+          throw new Error(`TDLR returned an empty page at offset ${start} of ${total}`);
+        }
+        break;
+      }
       for (const s of page.items) {
         await checkPause(deps);
         counts.scanned++;
@@ -115,6 +131,10 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         const detail = await deps.providers.registry.getProjectDetail(s.projectNumber);
         const data = projectData(s, detail, now);
         if (existing) {
+          // projectData builds a create-shaped object (all scalar fields, no
+          // relation connect/disconnect wrappers), which is structurally
+          // compatible with the update-input shape but not nominally
+          // assignable to it, hence the cast.
           await prisma.project.update({ where: { id: existing.id }, data: data as unknown as Prisma.ProjectUncheckedUpdateInput });
           counts.updated++;
         } else {
@@ -153,6 +173,10 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         startDate: detail.startDate,
         completionDate: detail.completionDate,
       };
+      // projectData builds a create-shaped object (all scalar fields, no
+      // relation connect/disconnect wrappers), which is structurally
+      // compatible with the update-input shape but not nominally assignable
+      // to it, hence the cast.
       await prisma.project.update({
         where: { id: p.id },
         data: projectData(summary, detail, now) as unknown as Prisma.ProjectUncheckedUpdateInput,
