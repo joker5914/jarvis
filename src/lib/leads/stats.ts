@@ -7,7 +7,7 @@ export async function getDashboardStats(ownerId: string) {
     prisma.business.count({ where: { ownerId, exclusion: "none", contactQualityBand: "green" } }),
     prisma.project.count({ where: { ownerId, exclusion: "none", timingWindow: "opening_soon" } }),
     prisma.activityLog.findMany({
-      where: { ownerId, kind: "status_changed", createdAt: { gte: weekAgo }, message: { contains: "contacted" } },
+      where: { ownerId, kind: "status_changed", createdAt: { gte: weekAgo }, message: { startsWith: "Status set to contacted" } },
       select: { businessId: true },
       distinct: ["businessId"],
     }),

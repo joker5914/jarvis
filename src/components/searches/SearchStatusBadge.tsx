@@ -1,3 +1,4 @@
+import { JobStatus } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
 
 const STYLES: Record<string, string> = {
@@ -8,6 +9,6 @@ const STYLES: Record<string, string> = {
   failed: "bg-red-100 text-red-800",
 };
 
-export function SearchStatusBadge({ status }: { status: string }) {
+export function SearchStatusBadge({ status }: { status: JobStatus }) {
   return <Badge className={`${STYLES[status] ?? ""} border-0 capitalize`}>{status}</Badge>;
 }

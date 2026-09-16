@@ -41,7 +41,7 @@ export default async function DashboardPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Recent searches</CardTitle>
             <Link href="/searches" className="text-sm text-blue-600 hover:underline">All searches</Link>
           </CardHeader>
@@ -67,7 +67,7 @@ export default async function DashboardPage() {
         </Card>
 
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Hot projects</CardTitle>
             <Link href="/projects" className="text-sm text-blue-600 hover:underline">All projects</Link>
           </CardHeader>
