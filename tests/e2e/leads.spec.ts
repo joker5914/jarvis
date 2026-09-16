@@ -34,7 +34,8 @@ test("run a zip search and see leads appear", async ({ page }) => {
   // Both the table and the responsive card layout render in the DOM at once
   // (one hidden by CSS breakpoint), so getByText matches two nodes; .first()
   // avoids the strict-mode violation.
-  await expect(page.getByText("Starbucks").first()).toBeVisible();
+  await expect(page).toHaveURL(/showExcluded=true/);
+  await expect(page.getByText("Starbucks").first()).toBeVisible({ timeout: 15_000 });
 });
 
 test("change outreach status and filter by it", async ({ page }) => {

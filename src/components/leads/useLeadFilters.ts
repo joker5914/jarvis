@@ -10,7 +10,10 @@ export function useLeadFilters() {
 
   const set = useCallback(
     (key: string, value: string | null) => {
-      const next = new URLSearchParams(params.toString());
+      // Compose from the live URL, not the captured `params` snapshot: a debounced write
+      // (e.g. the search box) can otherwise drop a param another control set moments earlier.
+      const live = typeof window !== "undefined" ? window.location.search : params.toString();
+      const next = new URLSearchParams(live);
       if (value == null || value === "") next.delete(key);
       else next.set(key, value);
       if (key !== "page") next.delete("page");
