@@ -12,8 +12,13 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
       className="h-7 w-7"
       aria-label={`Copy ${label}`}
       onClick={async () => {
-        await navigator.clipboard.writeText(value);
-        toast.success(`${label} copied`);
+        try {
+          if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+          await navigator.clipboard.writeText(value);
+          toast.success(`${label} copied`);
+        } catch {
+          toast.error("Copy failed");
+        }
       }}
     >
       <Copy className="h-3.5 w-3.5" />

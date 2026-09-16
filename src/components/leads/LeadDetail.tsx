@@ -47,6 +47,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function load() {
+    setB(null);
     const res = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
     if (!res.ok) return toast.error("Could not load lead");
     const { business } = await res.json();
@@ -55,19 +56,22 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   }
   useEffect(() => { load(); fetch("/api/tags").then((r) => r.json()).then((d) => setTags(d.items ?? [])); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function patch(body: Record<string, unknown>, quiet = false) {
+  useEffect(() => () => { if (notesTimer.current) clearTimeout(notesTimer.current); }, []);
+
+  async function patch(body: Record<string, unknown>, opts: { quiet?: boolean; refresh?: boolean } = {}) {
+    const { quiet = false, refresh = true } = opts;
     const res = await fetch(`/api/businesses/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) return toast.error("Save failed");
     const { business } = await res.json();
     setB(business);
-    onChanged?.();
+    if (refresh) onChanged?.();
     if (!quiet) toast.success("Saved");
   }
 
   function onNotes(v: string) {
     setNotes(v);
     if (notesTimer.current) clearTimeout(notesTimer.current);
-    notesTimer.current = setTimeout(() => patch({ notes: v }, true), 800);
+    notesTimer.current = setTimeout(() => patch({ notes: v }, { quiet: true, refresh: false }), 800);
   }
 
   async function createTag() {
@@ -168,6 +172,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           <div className="mt-1 flex flex-wrap gap-2">
             {tags.filter((t) => !t.isSystem).map((t) => (
               <button key={t.id} type="button"
+                aria-pressed={userTagIds.has(t.id)}
                 className={`rounded-full border px-2 py-0.5 text-xs ${userTagIds.has(t.id) ? "text-white" : "text-neutral-600"}`}
                 style={userTagIds.has(t.id) ? { background: t.color, borderColor: t.color } : undefined}
                 onClick={() => patch({ tagIds: userTagIds.has(t.id) ? [...userTagIds].filter((x) => x !== t.id) : [...userTagIds, t.id] })}>
