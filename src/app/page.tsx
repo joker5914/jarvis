@@ -73,7 +73,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent>
             {hot.length === 0 ? (
-              <p className="text-sm text-neutral-500">No projects yet. TDLR sync arrives in the next plan.</p>
+              <p className="text-sm text-neutral-500">No projects yet. Run a sync from the Projects page.</p>
             ) : (
               <ul className="divide-y">
                 {hot.map((p) => (

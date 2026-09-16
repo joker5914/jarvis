@@ -7,8 +7,9 @@ details, validates emails, and scores contact quality and SMB fit so a solo
 SDR can triage and track outreach from one leads table.
 
 This is Plan 1 of the project: zip-code search and the leads table, detail
-drawer, and CSV export. TDLR permit intel, the always-on scanner, Apollo
-enrichment, and a settings/API-key UI are upcoming plans, not yet built.
+drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
+The always-on scanner, Apollo enrichment, and a settings/API-key UI are
+upcoming plans, not yet built.
 
 ## Prerequisites
 
@@ -45,6 +46,30 @@ Relevant env vars (see `.env.example`):
 - `JOB_MODE`: `queue` (default) enqueues zip searches to the worker via
   pg-boss; `inline` runs a search inside the web process instead, so a single
   `npm run dev` is enough (used by the e2e tests).
+
+## Projects (TDLR)
+
+The Projects page tracks Texas Department of Licensing and Regulation (TDLR)
+construction-project registrations for Houston: new businesses building out
+or renovating a space are strong SMB leads before they've even opened.
+
+- TDLR is always the real registry (`https://www.tdlr.texas.gov/TABS`)
+  unless `PROVIDER_MODE=fake`, which is used for local dev and tests.
+- The worker schedules a sync nightly at 03:00 America/Chicago, and it dedupes
+  against any sync already running so the cron fire can't queue behind a
+  manual one.
+- **Sync now** on the Projects page enqueues an on-demand sync. Each run
+  scores projects for SMB fit, excludes enterprise-scale work, computes a
+  timing window (opening soon / under construction / planned / just
+  completed / stale), and refreshes previously-seen open projects whose
+  details are more than 30 days old.
+- **Find business** looks up a matching Google Places business for a project
+  (by name, address, and zip) and offers candidates to link; a confident
+  match can be linked automatically. **Promote high-fit** batch-runs that
+  same matching step across every high-scoring, unlinked project.
+- The first sync backfills 12 months of Houston registrations at one request
+  per second (TDLR's own rate limit), which is roughly 2,500-4,000 detail
+  fetches — expect it to take up to an hour.
 
 ## Testing
 

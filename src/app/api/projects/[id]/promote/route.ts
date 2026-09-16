@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json, parseJson } from "@/lib/api";
 import { createBusinessFromProject, findBusinessCandidates, linkProjectToPlace } from "@/lib/jobs/promote";
@@ -11,6 +12,11 @@ const schema = z.object({ placeId: z.string().min(1).optional(), createFromProje
 export const POST = handle(async (req, ctx) => {
   const { id } = await ctx.params;
   const actor = await getActor();
+
+  const project = await prisma.project.findFirst({ where: { id, ownerId: actor.id } });
+  if (!project) throw new ApiError(404, "Project not found");
+  if (project.businessId) return json({ businessId: project.businessId }, 200);
+
   const body = await parseJson(req, schema);
 
   let businessId: string;
