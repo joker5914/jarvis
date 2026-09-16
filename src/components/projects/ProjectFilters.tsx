@@ -31,7 +31,9 @@ const TIMINGS = ["opening_soon", "under_construction", "planned", "just_complete
 export function ProjectFilters() {
   const { params, set, reset } = useLeadFilters();
   const [q, setQ] = useState(params.get("q") ?? "");
+  const [zip, setZip] = useState(params.get("zip") ?? "");
   const dirty = useRef(false);
+  const zipDirty = useRef(false);
 
   useEffect(() => {
     if (!dirty.current) return;
@@ -44,6 +46,9 @@ export function ProjectFilters() {
   useEffect(() => {
     if (!dirty.current) setQ(params.get("q") ?? "");
   }, [params]);
+  useEffect(() => {
+    if (!zipDirty.current) setZip(params.get("zip") ?? "");
+  }, [params]);
 
   return (
     <div className="space-y-4" data-testid="project-filters">
@@ -53,8 +58,12 @@ export function ProjectFilters() {
       </div>
       <div className="space-y-1">
         <Label htmlFor="pf-zip">Zip</Label>
-        <Input id="pf-zip" defaultValue={params.get("zip") ?? ""} inputMode="numeric" maxLength={5}
-          onBlur={(e) => set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null)} />
+        <Input id="pf-zip" value={zip} inputMode="numeric" maxLength={5}
+          onChange={(e) => { zipDirty.current = true; setZip(e.target.value.replace(/\D/g, "").slice(0, 5)); }}
+          onBlur={(e) => { set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null); zipDirty.current = false; }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { set("zip", /^\d{5}$/.test(zip) ? zip : null); zipDirty.current = false; }
+          }} />
       </div>
       <Choice id="pf-timing" label="Timing" value={params.get("timing") ?? ""} onChange={(v) => set("timing", v)}
         options={TIMINGS.map((v) => ({ value: v, label: titleCase(v) }))} />
@@ -70,7 +79,7 @@ export function ProjectFilters() {
         <Checkbox id="pf-excluded" checked={params.get("showExcluded") === "true"} onCheckedChange={(c) => set("showExcluded", c ? "true" : null)} />
         <Label htmlFor="pf-excluded">Show excluded (enterprise)</Label>
       </div>
-      <Button variant="outline" size="sm" onClick={() => { dirty.current = false; setQ(""); reset(); }}>Clear filters</Button>
+      <Button variant="outline" size="sm" onClick={() => { dirty.current = false; zipDirty.current = false; setQ(""); setZip(""); reset(); }}>Clear filters</Button>
     </div>
   );
 }

@@ -83,6 +83,9 @@ export function ProjectsTable({ rows, onOpen, onFind }: Props) {
               <TimingBadge window={p.timingWindow} />
               <span className="text-xs text-neutral-500">completes {formatDate(p.completionDate)}</span>
               {p.business && <Link href={`/leads/${p.business.id}`} onClick={(e) => e.stopPropagation()} className="text-xs text-blue-600">Lead: {p.business.name}</Link>}
+              {!p.business && p.exclusion === "none" && (
+                <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onFind(p.id); }} data-testid="find-business">Find business</Button>
+              )}
             </div>
           </li>
         ))}

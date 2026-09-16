@@ -17,13 +17,24 @@ type ListResponse = { items: ProjectRow[]; total: number; page: number; pageSize
 export function ProjectsView() {
   const { params, set } = useLeadFilters();
   const [data, setData] = useState<ListResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [findId, setFindId] = useState<string | null>(null);
   const [syncActive, setSyncActive] = useState(false);
 
   const load = useCallback(async () => {
-    const r = await fetch(`/api/projects?${params.toString()}`, { cache: "no-store" });
-    if (r.ok) setData(await r.json());
+    try {
+      const r = await fetch(`/api/projects?${params.toString()}`, { cache: "no-store" });
+      const d = await r.json();
+      if (!r.ok) {
+        setError(d.error ?? "Failed to load projects");
+        return;
+      }
+      setData(d);
+      setError(null);
+    } catch {
+      setError("Failed to load projects");
+    }
   }, [params]);
 
   useEffect(() => { load(); }, [load]);
@@ -45,7 +56,7 @@ export function ProjectsView() {
         </aside>
         <div className="min-w-0 flex-1 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-neutral-500" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : "Loading…"}</div>
+            <div className="text-sm text-neutral-500" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : error ? "" : "Loading…"}</div>
             <Sheet>
               <SheetTrigger render={<Button variant="outline" size="sm" className="md:hidden" />}><SlidersHorizontal className="mr-1 h-4 w-4" />Filters</SheetTrigger>
               <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto p-4">
@@ -54,6 +65,7 @@ export function ProjectsView() {
               </SheetContent>
             </Sheet>
           </div>
+          {error && <p className="text-sm text-red-600" data-testid="projects-error">{error}</p>}
           {data && data.items.length === 0 && <p className="text-sm text-neutral-500">No projects match. Run a sync to pull Houston projects from TDLR.</p>}
           {data && data.items.length > 0 && <ProjectsTable rows={data.items} onOpen={setOpenId} onFind={setFindId} />}
           {pages > 1 && (

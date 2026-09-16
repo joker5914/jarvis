@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
@@ -10,10 +10,23 @@ type Status = { lastSuccessfulAt: string | null; cursor: Cursor; batch: { lastSu
 
 export function SyncBar({ onActivity }: { onActivity: (running: boolean) => void }) {
   const [s, setS] = useState<Status | null>(null);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const toastedRef = useRef(false);
 
   const load = useCallback(async () => {
-    const r = await fetch("/api/projects/sync", { cache: "no-store" });
-    if (r.ok) setS(await r.json());
+    try {
+      const r = await fetch("/api/projects/sync", { cache: "no-store" });
+      if (!r.ok) throw new Error("failed");
+      setS(await r.json());
+      setStatusFailed(false);
+      toastedRef.current = false;
+    } catch {
+      setStatusFailed(true);
+      if (!toastedRef.current) {
+        toastedRef.current = true;
+        toast.error("Could not load sync status");
+      }
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -39,7 +52,9 @@ export function SyncBar({ onActivity }: { onActivity: (running: boolean) => void
     <div className="flex flex-col gap-2 rounded-lg border bg-white p-3 text-sm md:flex-row md:items-center md:justify-between dark:bg-neutral-900" data-testid="sync-bar">
       <div>
         <span className="font-medium">TDLR sync:</span>{" "}
-        {c?.status === "running" ? (
+        {statusFailed && !s ? (
+          <span className="text-red-600" data-testid="sync-status-unavailable">status unavailable</span>
+        ) : c?.status === "running" ? (
           <span>{c.message ?? "running"}{c.total ? ` (${c.current ?? 0}/${c.total})` : ""}</span>
         ) : c?.status === "failed" ? (
           <span className="text-red-600">failed — {c.error}</span>
