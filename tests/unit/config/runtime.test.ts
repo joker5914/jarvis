@@ -32,4 +32,10 @@ describe("overridesSchema", () => {
     expect(() => overridesSchema.parse({ categories: { disabled: ["nope"] } })).toThrow();
     expect(() => overridesSchema.parse({ bogus: 1 })).toThrow();
   });
+  it("accepts a single package override without requiring every category slug (partial record, not exhaustive)", () => {
+    const ok = overridesSchema.parse({ categories: { packageOverrides: { cafe: "internet_mobile" } } });
+    expect(ok.categories?.packageOverrides).toEqual({ cafe: "internet_mobile" });
+    expect(() => overridesSchema.parse({ categories: { packageOverrides: { nope: "internet_mobile" } } })).toThrow();
+    expect(() => overridesSchema.parse({ categories: { packageOverrides: { cafe: "not_a_package" } } })).toThrow();
+  });
 });

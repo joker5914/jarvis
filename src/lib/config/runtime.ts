@@ -27,7 +27,7 @@ export const overridesSchema = z
     categories: z
       .object({
         disabled: z.array(z.enum(CATEGORY_SLUGS)).optional(),
-        packageOverrides: z.record(z.enum(CATEGORY_SLUGS), z.enum(PACKAGE_SLUGS)).optional(),
+        packageOverrides: z.partialRecord(z.enum(CATEGORY_SLUGS), z.enum(PACKAGE_SLUGS)).optional(),
       })
       .strict()
       .optional(),

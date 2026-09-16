@@ -129,4 +129,20 @@ describe("Settings API", () => {
     const cfg = await loadConfig(OWNER);
     expect(cfg.exclusion.chains).toEqual(["not-a-real-fixture-chain-zzq"]);
   });
+
+  it("PUT config with a single category package override succeeds and leaves other categories at their defaults", async () => {
+    const res = await configPut(jsonReq({ categories: { packageOverrides: { cafe: "internet_mobile" } } }), noCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const cafe = body.config.categories.find((c: { slug: string }) => c.slug === "cafe");
+    expect(cafe.packageSlug).toBe("internet_mobile");
+    const other = body.config.categories.find((c: { slug: string }) => c.slug === "restaurant");
+    expect(other.packageSlug).toBe(other.defaultPackageSlug);
+
+    const cfg = await loadConfig(OWNER);
+    expect(cfg.allCategories.find((c) => c.slug === "cafe")?.packageSlug).toBe("internet_mobile");
+    expect(cfg.allCategories.find((c) => c.slug === "restaurant")?.packageSlug).toBe(
+      cfg.allCategories.find((c) => c.slug === "restaurant")?.defaultPackageSlug,
+    );
+  });
 });

@@ -40,7 +40,7 @@ export function CategoriesCard({
                 }}
                 items={items}
               >
-                <SelectTrigger className="h-8 w-56">
+                <SelectTrigger className="h-8 w-56" data-testid={`category-package-${c.slug}`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

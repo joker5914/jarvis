@@ -40,9 +40,17 @@ test("config save is validated and persisted", async ({ page }) => {
   const chainsField = page.getByTestId("exclusion-chains");
   const existingChains = await chainsField.inputValue();
   await chainsField.fill(`${existingChains}\nacme-not-a-real-chain-zzq`);
+
+  // A single category's package override must round-trip too (F1: overridesSchema used to be
+  // an exhaustive z.record, so any partial packageOverrides payload failed validation and the
+  // save silently never persisted this field).
+  await page.getByTestId("category-package-cafe").click();
+  await page.getByRole("option", { name: "Internet + Mobile", exact: true }).click();
+
   await page.getByTestId("settings-config-save").click();
   await expect(page.getByText("Configuration saved")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("projects-high")).toHaveValue("70");
   await expect(page.getByTestId("exclusion-chains")).toHaveValue(/acme-not-a-real-chain-zzq/);
+  await expect(page.getByTestId("category-package-cafe")).toHaveText("Internet + Mobile");
 });
