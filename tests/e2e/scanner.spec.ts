@@ -16,6 +16,23 @@ test("scanner is disabled until the schedule is enabled, then runs a target zip"
   await page.getByTestId("target-add").click();
   await expect(page.getByTestId("target-row")).toHaveCount(1);
 
+  // The planner only picks a zip search once a TDLR sync has succeeded at least once
+  // (tdlrLastSuccessfulAt gates it ahead of any target). This test must pass standalone
+  // (`npx playwright test tests/e2e/scanner.spec.ts`), so it can't rely on projects.spec.ts
+  // having already synced — sync directly via the API and poll until it's done (`running` is
+  // false) rather than just "not running yet", since that's also true for an instant before
+  // the fire-and-forget sync has actually started; `lastSuccessfulAt` set confirms it finished.
+  await page.request.post("/api/projects/sync");
+  await expect
+    .poll(
+      async () => {
+        const status = await (await page.request.get("/api/projects/sync")).json();
+        return !status.running && !!status.lastSuccessfulAt;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+
   await page.getByTestId("scanner-run-now").click();
   await expect(page.getByTestId("scanner-state")).toHaveText("Running", { timeout: 20_000 });
   await expect(page.getByTestId("scanner-status")).toContainText("Zip search 77084");
