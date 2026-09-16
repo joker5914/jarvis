@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { FailureRateLimiter, clientKey } from "@/lib/auth/rateLimit";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { FailureRateLimiter, clientKey, unlockLimiter, unlockGlobalLimiter } from "@/lib/auth/rateLimit";
 
 function limiter(start = 0) {
   let t = start;
@@ -45,9 +45,40 @@ describe("FailureRateLimiter", () => {
 });
 
 describe("clientKey", () => {
-  it("uses the first x-forwarded-for address, then x-real-ip, then unknown", () => {
-    expect(clientKey(new Request("http://x", { headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.1" } }))).toBe("1.2.3.4");
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns 'direct' when TRUST_PROXY is not set, even if x-forwarded-for is present", () => {
+    vi.stubEnv("TRUST_PROXY", "");
+    expect(
+      clientKey(new Request("http://x", { headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.1" } })),
+    ).toBe("direct");
+  });
+
+  it("with TRUST_PROXY=1, uses the last x-forwarded-for entry, then x-real-ip, then 'direct'", () => {
+    vi.stubEnv("TRUST_PROXY", "1");
+    expect(
+      clientKey(new Request("http://x", { headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.1" } })),
+    ).toBe("10.0.0.1");
     expect(clientKey(new Request("http://x", { headers: { "x-real-ip": "5.6.7.8" } }))).toBe("5.6.7.8");
-    expect(clientKey(new Request("http://x"))).toBe("unknown");
+    expect(clientKey(new Request("http://x"))).toBe("direct");
+  });
+});
+
+describe("unlockGlobalLimiter", () => {
+  it("locks after 100 failures recorded across distinct clients, refusing an unrelated client that never failed", () => {
+    const GLOBAL_KEY = "__test_global__";
+    // The route records every failed attempt under one shared global key regardless of which
+    // client made it, so 100 distinct clients failing once each trips the same bucket.
+    for (let i = 0; i < 100; i++) unlockGlobalLimiter.recordFailure(GLOBAL_KEY);
+    expect(unlockGlobalLimiter.check(GLOBAL_KEY).allowed).toBe(false);
+
+    // A brand-new client identity that itself never failed is still fine on the per-client
+    // limiter (proving per-client tracking is untouched)...
+    expect(unlockLimiter.check("never-failed-client").allowed).toBe(true);
+    // ...but the route ORs both gates, so once the shared global bucket is tripped, that
+    // unrelated client is refused too because the global check alone is enough to lock them out.
+    expect(unlockGlobalLimiter.check(GLOBAL_KEY).allowed).toBe(false);
   });
 });

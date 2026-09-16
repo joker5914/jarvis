@@ -39,12 +39,33 @@ export class FailureRateLimiter {
   }
 }
 
+/**
+ * Only trust proxy-supplied client-address headers when TRUST_PROXY=1 (set behind Railway or
+ * any reverse proxy that terminates/overwrites these headers at a trusted edge). Otherwise any
+ * client could spoof x-forwarded-for/x-real-ip to defeat per-client throttling, so we collapse
+ * everyone onto a single "direct" key and rely on the global limiter instead.
+ */
 export function clientKey(req: Request): string {
+  if (process.env.TRUST_PROXY !== "1") return "direct";
   const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0].trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
+  if (xff) {
+    const parts = xff.split(",").map((p) => p.trim()).filter(Boolean);
+    // The rightmost entry is the hop the trusted edge itself appended; earlier entries are
+    // client-supplied and spoofable.
+    if (parts.length) return parts[parts.length - 1];
+  }
+  return req.headers.get("x-real-ip")?.trim() || "direct";
 }
 
-const g = globalThis as unknown as { unlockLimiter?: FailureRateLimiter };
+const g = globalThis as unknown as {
+  unlockLimiter?: FailureRateLimiter;
+  unlockGlobalLimiter?: FailureRateLimiter;
+};
 /** Per-process limiter: 5 wrong passphrases in 15 minutes locks that client out for 15 minutes. */
 export const unlockLimiter = (g.unlockLimiter ??= new FailureRateLimiter({ maxFailures: 5, windowMs: 15 * 60_000, lockoutMs: 15 * 60_000 }));
+/**
+ * Per-process global limiter: bounds total brute-force throughput to 100 wrong passphrases in
+ * 15 minutes across ALL clients, so header rotation (or TRUST_PROXY being unset) can't be used
+ * to defeat the per-client limiter above.
+ */
+export const unlockGlobalLimiter = (g.unlockGlobalLimiter ??= new FailureRateLimiter({ maxFailures: 100, windowMs: 15 * 60_000, lockoutMs: 15 * 60_000 }));

@@ -2,7 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions, safeRedirectPath } from "@/lib/session";
 import { getActor } from "@/lib/actor";
-import { unlockLimiter, clientKey } from "@/lib/auth/rateLimit";
+import { unlockLimiter, unlockGlobalLimiter, clientKey } from "@/lib/auth/rateLimit";
+
+const GLOBAL_KEY = "__global__";
 
 function safeEqual(a: string, b: string) {
   const ab = Buffer.from(a);
@@ -21,8 +23,10 @@ export async function POST(req: NextRequest) {
     return new NextResponse("APP_PASSPHRASE/APP_SECRET not configured", { status: 500 });
   }
   const key = clientKey(req);
-  const gate = unlockLimiter.check(key);
-  if (!gate.allowed) {
+  const clientGate = unlockLimiter.check(key);
+  const globalGate = unlockGlobalLimiter.check(GLOBAL_KEY);
+  const gate = !clientGate.allowed ? clientGate : !globalGate.allowed ? globalGate : clientGate;
+  if (!clientGate.allowed || !globalGate.allowed) {
     const url = new URL("/unlock", req.url);
     url.searchParams.set("error", "locked");
     url.searchParams.set("next", next);
@@ -30,6 +34,7 @@ export async function POST(req: NextRequest) {
   }
   if (!safeEqual(passphrase, expected)) {
     unlockLimiter.recordFailure(key);
+    unlockGlobalLimiter.recordFailure(GLOBAL_KEY);
     await new Promise((r) => setTimeout(r, 300)); // constant small delay on failure
     const url = new URL("/unlock", req.url);
     url.searchParams.set("error", "1");
