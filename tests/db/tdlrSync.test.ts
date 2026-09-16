@@ -29,6 +29,7 @@ describe("runTdlrSync", () => {
     const bella = await prisma.project.findUniqueOrThrow({ where: { ownerId_projectNumber: { ownerId: "local-user", projectNumber: "TABS2027000001" } } });
     expect(bella.facilityName).toBe("Bella Nails & Spa");
     expect(bella.zip).toBe("77084");
+    expect(bella.state).toBe("TX");
     expect(bella.workType).toBe("renovation");
     expect(bella.tenantFunded).toBe(true);
     expect(bella.smbFitScore).toBe(95);

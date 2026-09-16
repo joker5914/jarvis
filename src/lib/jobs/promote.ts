@@ -124,11 +124,25 @@ export async function linkProjectToPlace(projectId: string, ownerId: string, biz
   return business.id;
 }
 
-export async function createBusinessFromProject(projectId: string, ownerId: string): Promise<string> {
+export async function createBusinessFromProject(
+  projectId: string,
+  ownerId: string,
+  deps?: { providers: Providers },
+): Promise<string> {
   const p = await ownedProject(projectId, ownerId);
   if (p.businessId) return p.businessId;
-  const cityLine = [p.city, "TX"].filter(Boolean).join(", ");
-  const formattedAddress = [p.locationAddress, cityLine, p.zip].filter(Boolean).join(", ").replace(", " + p.zip, ` ${p.zip}`);
+  let city = p.city;
+  let state = p.state;
+  if ((!city || !state) && deps && p.zip) {
+    const geo = await deps.providers.geocode.geocodeZip(p.zip);
+    if (geo) {
+      city = city ?? geo.city;
+      state = state ?? geo.state;
+    }
+  }
+  const cityLine = [city, state].filter(Boolean).join(", ");
+  const joinedAddress = [p.locationAddress, cityLine, p.zip].filter(Boolean).join(", ");
+  const formattedAddress = cityLine && p.zip ? joinedAddress.replace(`, ${p.zip}`, ` ${p.zip}`) : joinedAddress;
   const business = await prisma.business.create({
     data: {
       ownerId,

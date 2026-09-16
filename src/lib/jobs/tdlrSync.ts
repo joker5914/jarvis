@@ -50,6 +50,7 @@ function projectData(s: ProjectSummary, d: ProjectDetail | null, now: Date): Pri
     facilityName: d?.facilityName ?? s.facilityName,
     locationAddress: d?.locationAddress ?? null,
     city: d?.city ?? null,
+    state: d?.state ?? null,
     zip: d?.zip ?? null,
     county: d?.county ?? null,
     statusCode: s.statusCode,

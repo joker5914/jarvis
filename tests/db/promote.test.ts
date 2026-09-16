@@ -79,6 +79,24 @@ describe("promote", () => {
     expect(await createBusinessFromProject(cafe.id, OWNER)).toBe(businessId);
   });
 
+  it("falls back to geocoding the zip for city/state when the project is missing them", async () => {
+    const cafe = await project("TABS2027000002");
+    await prisma.project.update({ where: { id: cafe.id }, data: { city: null, state: null } });
+
+    const businessId = await createBusinessFromProject(cafe.id, OWNER, { providers });
+    const b = await prisma.business.findUniqueOrThrow({ where: { id: businessId } });
+    expect(b.formattedAddress).toBe("123 Fake St, Houston, TX 77084");
+  });
+
+  it("omits the city line when city/state are missing and no geocode deps are provided", async () => {
+    const cafe = await project("TABS2027000002");
+    await prisma.project.update({ where: { id: cafe.id }, data: { city: null, state: null } });
+
+    const businessId = await createBusinessFromProject(cafe.id, OWNER);
+    const b = await prisma.business.findUniqueOrThrow({ where: { id: businessId } });
+    expect(b.formattedAddress).toBe("123 Fake St, 77084");
+  });
+
   it("links an existing business instead of duplicating it", async () => {
     const bella = await project("TABS2027000001");
     const found = await findBusinessCandidates(bella.id, OWNER, { providers });

@@ -15,7 +15,7 @@ export const POST = handle(async (req, ctx) => {
 
   let businessId: string;
   if (body.createFromProject) {
-    businessId = await createBusinessFromProject(id, actor.id);
+    businessId = await createBusinessFromProject(id, actor.id, { providers: getProviders() });
   } else {
     const found = await findBusinessCandidates(id, actor.id, { providers: getProviders() });
     const pick = [found.auto, ...found.candidates].find((c) => c?.placeId === body.placeId);

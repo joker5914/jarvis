@@ -219,6 +219,7 @@ model Project {
   facilityName     String?
   locationAddress  String?
   city             String?
+  state            String?
   zip              String?
   county           String?
   statusCode       Int?
