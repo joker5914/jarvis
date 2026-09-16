@@ -8,50 +8,24 @@ import { suggestPackage } from "@/lib/scoring/packageMap";
 import { extractWebsiteContacts } from "@/lib/extract/website";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
-import type { DiscoveredBusiness, Providers } from "@/lib/providers/types";
+import type { DiscoveredBusiness } from "@/lib/providers/types";
+import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, type JobDeps } from "./shared";
 
-export type ZipSearchDeps = {
-  providers: Providers;
-  shouldPause?: () => Promise<boolean>;
-  log?: (msg: string) => void;
-  /**
-   * Aborted when pg-boss expires or cancels the underlying job (e.g. the job
-   * ran past `expireInSeconds`, or the worker is shutting down). Treated like
-   * a pause: the search is marked `paused` (resumable) rather than left
-   * `running` forever while a retried job also processes the same searchId.
-   */
-  signal?: AbortSignal;
-};
-
-export class JobPausedError extends Error {
-  constructor() {
-    super("paused");
-    this.name = "JobPausedError";
-  }
-}
+/**
+ * `signal` is aborted when pg-boss expires or cancels the underlying job (e.g. the job
+ * ran past `expireInSeconds`, or the worker is shutting down). Treated like
+ * a pause: the search is marked `paused` (resumable) rather than left
+ * `running` forever while a retried job also processes the same searchId.
+ */
+export type ZipSearchDeps = JobDeps;
+export { JobPausedError, normalizeName };
 
 const SCRAPE_CONCURRENCY = 4;
-const SUFFIX_RE = /\b(llc|inc|co|corp|ltd|pllc|pc)\b\.?/g;
-
-export function normalizeName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/'/g, "")
-    .replace(SUFFIX_RE, " ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
 
 type Progress = { step: string; current?: number; total?: number; message?: string; doneSteps: string[] };
 
 async function setProgress(searchId: string, p: Progress) {
   await prisma.search.update({ where: { id: searchId }, data: { progress: p as Prisma.InputJsonValue } });
-}
-
-async function checkPause(deps: ZipSearchDeps) {
-  if (deps.signal?.aborted) throw new JobPausedError();
-  if (deps.shouldPause && (await deps.shouldPause())) throw new JobPausedError();
 }
 
 export async function recomputeContactQuality(businessId: string) {
@@ -92,16 +66,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
   for (const { biz, category } of found.values()) {
     const fit = scoreSmbFit({ name: biz.name, sameNameCount: nameCounts.get(normalizeName(biz.name)) });
     const googleFields = {
-      name: biz.name,
-      formattedAddress: biz.formattedAddress,
-      zip: biz.zip,
-      lat: biz.lat,
-      lng: biz.lng,
-      phone: biz.phone,
-      websiteUrl: biz.websiteUrl,
-      googleRating: biz.rating,
-      googleReviewCount: biz.reviewCount,
-      googleTypes: biz.types,
+      ...discoveredToBusinessFields(biz),
       exclusion: fit.excluded ? ("enterprise" as const) : ("none" as const),
       exclusionReasons: fit.exclusionReasons,
       smbFitScore: fit.score,

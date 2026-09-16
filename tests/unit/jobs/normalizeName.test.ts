@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeName } from "@/lib/jobs/zipSearch";
+import { normalizeName } from "@/lib/jobs/shared";
 
 describe("normalizeName", () => {
   it("lowercases, strips punctuation and suffix noise", () => {
