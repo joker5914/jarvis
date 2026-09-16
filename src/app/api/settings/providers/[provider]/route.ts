@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json } from "@/lib/api";
@@ -27,7 +27,13 @@ export const PUT = handle(async (req, ctx) => {
   } catch {
     throw new ApiError(400, "Invalid JSON body");
   }
-  const parsed = bodySchema.parse(body);
+  let parsed: z.infer<typeof bodySchema>;
+  try {
+    parsed = bodySchema.parse(body);
+  } catch (e) {
+    if (e instanceof ZodError) throw new ApiError(400, e.issues[0]?.message ?? "Invalid body");
+    throw e;
+  }
 
   const data: { encryptedKey?: string | null; enabled?: boolean; dailyBudget?: number } = {};
   if (parsed.key === null) {
@@ -55,6 +61,7 @@ export const PUT = handle(async (req, ctx) => {
       provider,
       label: PROVIDER_LABELS[provider],
       source,
+      hasStoredKey: Boolean(row?.encryptedKey),
       enabled: row?.enabled ?? true,
       dailyBudget: status.limit,
       usedToday: status.used,

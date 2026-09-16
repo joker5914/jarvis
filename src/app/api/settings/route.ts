@@ -21,7 +21,14 @@ export const GET = handle(async () => {
       const env = process.env[p.provider === "google" ? "GOOGLE_MAPS_API_KEY" : "APOLLO_API_KEY"];
       const status = await budgetStatus(p.provider);
       const source: "env" | "stored" | "none" = env ? "env" : row?.encryptedKey ? "stored" : "none";
-      return { ...p, source, enabled: row?.enabled ?? true, dailyBudget: status.limit, usedToday: status.used };
+      return {
+        ...p,
+        source,
+        hasStoredKey: Boolean(row?.encryptedKey),
+        enabled: row?.enabled ?? true,
+        dailyBudget: status.limit,
+        usedToday: status.used,
+      };
     }),
   );
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- entityPatterns are fixed in code, not editable via the API

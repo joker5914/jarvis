@@ -4,6 +4,8 @@ export type ProviderEntry = {
   provider: "google" | "apollo";
   label: string;
   source: "env" | "stored" | "none";
+  /** True when a ProviderConfig row has an encryptedKey, regardless of `source` (env still wins). */
+  hasStoredKey: boolean;
   enabled: boolean;
   dailyBudget: number;
   usedToday: number;

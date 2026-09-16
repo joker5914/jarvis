@@ -18,7 +18,9 @@ function jsonReq(body: unknown): NextRequest {
   return { json: async () => body } as unknown as NextRequest;
 }
 
-type SettingsPayload = { providers: { provider: string; source: string; enabled: boolean; dailyBudget: number; usedToday: number }[] };
+type SettingsPayload = {
+  providers: { provider: string; source: string; hasStoredKey: boolean; enabled: boolean; dailyBudget: number; usedToday: number }[];
+};
 
 async function getPayload(): Promise<SettingsPayload> {
   const res = await settingsGet({} as NextRequest, noCtx);
@@ -62,6 +64,7 @@ describe("Settings API", () => {
     const payload = await getPayload();
     const apollo = payload.providers.find((p) => p.provider === "apollo")!;
     expect(apollo.source).toBe("stored");
+    expect(apollo.hasStoredKey).toBe(true);
     expect(JSON.stringify(payload)).not.toContain("abc123zz");
     expect(JSON.stringify(payload)).not.toContain("encryptedKey");
 
@@ -75,8 +78,13 @@ describe("Settings API", () => {
     expect(clearRes.status).toBe(200);
     const clearBody = await clearRes.json();
     expect(clearBody.provider.source).toBe("none");
+    expect(clearBody.provider.hasStoredKey).toBe(false);
     const cleared = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
     expect(cleared?.encryptedKey).toBeNull();
+
+    const afterClear = await getPayload();
+    const apolloAfterClear = afterClear.providers.find((p) => p.provider === "apollo")!;
+    expect(apolloAfterClear.hasStoredKey).toBe(false);
   });
 
   it("updates dailyBudget and enabled, reflected in GET and budgetStatus", async () => {
@@ -96,6 +104,14 @@ describe("Settings API", () => {
   it("rejects an unknown provider with 400", async () => {
     const res = await providerPut(jsonReq({ key: "abc123zz45" }), ctxFor("bing"));
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a too-short key with a 400 that names the length rule, not the generic message", async () => {
+    const res = await providerPut(jsonReq({ key: "abcd" }), ctxFor("apollo"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).not.toBe("Validation failed");
+    expect(body.error).toMatch(/8 characters/);
   });
 
   it("PUT config validates via zod (400 with the refine message) and persists valid overrides", async () => {

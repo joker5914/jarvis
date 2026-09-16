@@ -77,6 +77,11 @@ function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void
           {p.usedToday} / {p.dailyBudget} used today
         </span>
       </div>
+      {p.source === "env" && p.hasStoredKey && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          A stored key also exists; the environment variable takes precedence until it is unset.
+        </p>
+      )}
       <div className="flex flex-wrap items-end gap-2">
         <div className="space-y-1">
           <Label htmlFor={`key-${p.provider}`}>API key</Label>
@@ -98,7 +103,7 @@ function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void
         >
           Save
         </Button>
-        {p.source === "stored" && (
+        {p.hasStoredKey && (
           <Button size="sm" variant="outline" disabled={busy} onClick={clearKey} data-testid={`provider-${p.provider}-clear`}>
             Clear
           </Button>
