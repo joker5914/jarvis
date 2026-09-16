@@ -3,7 +3,7 @@ import { checkPause, upsertIgnoringConflict, type JobDeps } from "./shared";
 import { validateEmails, recomputeContactQuality } from "./zipSearch";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
-import { ProviderNotConfiguredError } from "@/lib/providers/errors";
+import { ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 import type { EnrichPerson } from "@/lib/providers/types";
 
 const SOCIAL_HOSTS = ["facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com", "sites.google.com", "business.site", "wixsite.com", "squarespace.com", "godaddysites.com"];
@@ -119,6 +119,7 @@ export async function runEnrich(
   } catch (e) {
     if (e instanceof BudgetExhaustedError) await log("Enrichment paused: Apollo daily budget exhausted");
     else if (e instanceof ProviderNotConfiguredError) await log("Enrichment skipped: Apollo API key is not configured");
+    else if (e instanceof ProviderDisabledError) await log("Enrichment skipped: Apollo is disabled in Settings");
     throw e;
   }
 }

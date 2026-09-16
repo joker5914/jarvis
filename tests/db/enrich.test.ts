@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
+import { ProviderDisabledError } from "@/lib/providers/errors";
 import type { JobDeps } from "@/lib/jobs/shared";
 
 const OWNER = "test-enrich-owner";
@@ -88,8 +89,19 @@ describe("runEnrich", () => {
     const fake = new FakeEnrichmentProvider();
     fake.searchPeople = async () => { throw new BudgetExhaustedError("apollo"); };
     await expect(runEnrich(b.id, OWNER, deps(fake))).rejects.toBeInstanceOf(BudgetExhaustedError);
-    const log = await prisma.activityLog.findFirst({ where: { businessId: b.id } });
-    expect(log?.message).toMatch(/budget/i);
+    const logs = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toMatch(/budget/i);
+    expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
+  });
+  it("logs a disabled-provider activity row and rethrows ProviderDisabledError", async () => {
+    const b = await biz();
+    const fake = new FakeEnrichmentProvider();
+    fake.searchPeople = async () => { throw new ProviderDisabledError("apollo"); };
+    await expect(runEnrich(b.id, OWNER, deps(fake))).rejects.toBeInstanceOf(ProviderDisabledError);
+    const logs = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toBe("Enrichment skipped: Apollo is disabled in Settings");
     expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
   });
 });

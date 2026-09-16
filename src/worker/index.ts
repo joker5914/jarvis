@@ -23,6 +23,8 @@ import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { prisma } from "@/lib/db";
 import { getProviders } from "@/lib/providers";
 import { getActor } from "@/lib/actor";
+import { BudgetExhaustedError } from "@/lib/providers/budget";
+import { ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 
 async function main() {
   const boss = new PgBoss({ connectionString: process.env.DATABASE_URL! });
@@ -88,8 +90,20 @@ async function main() {
   await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {
     const { businessId, ownerId, force } = job.data;
     console.log(`[enrich] start ${businessId}`);
-    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal }, { force });
-    console.log(`[enrich] done ${businessId}`);
+    try {
+      await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal }, { force });
+      console.log(`[enrich] done ${businessId}`);
+    } catch (e) {
+      // These are unrecoverable by retrying: runEnrich already recorded exactly one activity
+      // row explaining why. Log and return (pg-boss records success) rather than rethrow, so
+      // the job isn't retried into a duplicate activity row. Any other error still propagates
+      // to pg-boss's retry policy.
+      if (e instanceof BudgetExhaustedError || e instanceof ProviderNotConfiguredError || e instanceof ProviderDisabledError) {
+        console.log(`[enrich] skipped ${businessId}: ${e.message}`);
+        return;
+      }
+      throw e;
+    }
   });
 
   await boss.work<ScannerTickJobData>(QUEUES.scannerTick, { batchSize: 1 }, async () => {

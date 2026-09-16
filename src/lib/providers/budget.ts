@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { REGION } from "@/lib/config/region";
+import { ProviderDisabledError } from "./errors";
 
 export class BudgetExhaustedError extends Error {
   constructor(public provider: string) {
@@ -43,7 +44,7 @@ export async function withBudget<T>(provider: string, fn: () => Promise<T>): Pro
   if (reserved === 0) {
     // Re-read to determine the error reason.
     const cfg = await prisma.providerConfig.findUnique({ where: { provider } });
-    if (!cfg?.enabled) throw new Error(`Provider ${provider} is disabled`);
+    if (!cfg?.enabled) throw new ProviderDisabledError(provider);
     throw new BudgetExhaustedError(provider);
   }
   return fn();
