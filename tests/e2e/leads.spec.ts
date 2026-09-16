@@ -63,3 +63,31 @@ test("notes autosave and export link carries filters", async ({ page }) => {
   await expect(page.getByTestId("notes")).toHaveValue("Spoke with owner");
   await expect(page.getByTestId("export-csv")).toHaveAttribute("href", /q=restaurant/);
 });
+
+test("mobile filter sheet search does not fight the hidden desktop instance", async ({ page }) => {
+  // Regression test: LeadsView renders <LeadFilters> twice (desktop aside +
+  // mobile sheet), both mounted at once via CSS `hidden`. Without the
+  // dirty-flag guard, the debounced instance whose local `q` still reads ""
+  // would see the other instance's URL push as drift and immediately null it
+  // out, so typing in the sheet on a phone never stuck.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await unlock(page);
+  await page.goto("/leads");
+
+  await page.getByRole("button", { name: "Filters" }).click();
+  // LeadFilters renders once in the (CSS-hidden but still mounted) desktop
+  // aside and again inside this sheet once it opens, both with the same
+  // input id, so getByLabel("Search") resolves ambiguously; scope to the
+  // open sheet instead.
+  const sheet = page.locator('[data-slot="sheet-content"]');
+  await sheet.getByPlaceholder("Business name").fill("restaurant One");
+
+  await page.waitForURL(/q=restaurant/);
+  await page.waitForTimeout(1500);
+  await expect(page).toHaveURL(/q=restaurant/);
+  await expect(page.getByTestId("leads-count")).toContainText("1 lead");
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(1000);
+  await expect(page).toHaveURL(/q=restaurant/);
+});

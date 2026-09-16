@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Tag } from "@prisma/client";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,17 +40,35 @@ export function LeadFilters() {
   const [q, setQ] = useState(params.get("q") ?? "");
   const [zip, setZip] = useState(params.get("zip") ?? "");
   const [tags, setTags] = useState<Tag[]>([]);
+  // Two <LeadFilters> instances can be mounted at once (desktop aside + mobile
+  // sheet, hidden via CSS only). Each instance's debounce/resync effects run
+  // independently, so without tracking "did *this* instance's input change"
+  // one instance's URL push looks like a drift to the other and they fight
+  // over the query string. `dirty` scopes the push to the instance the user
+  // is actually typing into; the other instance just follows the URL.
+  const dirty = useRef(false);
+  const zipDirty = useRef(false);
 
   useEffect(() => {
     fetch("/api/tags").then((r) => r.json()).then((d) => setTags(d.items ?? []));
   }, []);
 
   useEffect(() => {
+    if (!dirty.current) return;
     const t = setTimeout(() => {
       if ((params.get("q") ?? "") !== q) set("q", q || null);
+      dirty.current = false;
     }, 300);
     return () => clearTimeout(t);
   }, [q, params, set]);
+
+  useEffect(() => {
+    if (!dirty.current) setQ(params.get("q") ?? "");
+  }, [params]);
+
+  useEffect(() => {
+    if (!zipDirty.current) setZip(params.get("zip") ?? "");
+  }, [params]);
 
   const statuses = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
 
@@ -58,15 +76,15 @@ export function LeadFilters() {
     <div className="space-y-4" data-testid="lead-filters">
       <div className="space-y-1">
         <Label htmlFor="f-q">Search</Label>
-        <Input id="f-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Business name" />
+        <Input id="f-q" value={q} onChange={(e) => { dirty.current = true; setQ(e.target.value); }} placeholder="Business name" />
       </div>
       <div className="space-y-1">
         <Label htmlFor="f-zip">Zip</Label>
         <Input id="f-zip" value={zip} inputMode="numeric" maxLength={5}
-          onChange={(e) => setZip(e.target.value.replace(/\D/g, "").slice(0, 5))}
-          onBlur={(e) => set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null)}
+          onChange={(e) => { zipDirty.current = true; setZip(e.target.value.replace(/\D/g, "").slice(0, 5)); }}
+          onBlur={(e) => { set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null); zipDirty.current = false; }}
           onKeyDown={(e) => {
-            if (e.key === "Enter") set("zip", /^\d{5}$/.test(zip) ? zip : null);
+            if (e.key === "Enter") { set("zip", /^\d{5}$/.test(zip) ? zip : null); zipDirty.current = false; }
           }} />
       </div>
       <Choice id="f-category" label="Category" value={params.get("category") ?? ""} onChange={(v) => set("category", v)}
@@ -88,7 +106,7 @@ export function LeadFilters() {
           onCheckedChange={(c) => set("showExcluded", c ? "true" : null)} />
         <Label htmlFor="f-excluded">Show excluded (enterprise)</Label>
       </div>
-      <Button variant="outline" size="sm" onClick={() => { setQ(""); setZip(""); reset(); }}>Clear filters</Button>
+      <Button variant="outline" size="sm" onClick={() => { dirty.current = false; zipDirty.current = false; setQ(""); setZip(""); reset(); }}>Clear filters</Button>
     </div>
   );
 }
