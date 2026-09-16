@@ -1,3 +1,13 @@
+import { Suspense } from "react";
+import { LeadsView } from "@/components/leads/LeadsView";
+
 export default function LeadsPage() {
-  return <h1 className="text-2xl font-semibold">Leads</h1>;
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-semibold">Leads</h1>
+      <Suspense fallback={<p className="text-sm text-neutral-500">Loading…</p>}>
+        <LeadsView />
+      </Suspense>
+    </div>
+  );
 }
