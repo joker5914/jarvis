@@ -22,7 +22,11 @@ function diffFields<T extends Record<string, unknown>>(current: T, defaults: T):
   return out;
 }
 
-export function SettingsView() {
+// ownerId is accepted so every server component that renders this can obtain and pass the
+// actor (the app-wide convention — see src/lib/actor.ts), even though the client-side fetches
+// below rely on the API routes to resolve the actor server-side and don't need it directly yet.
+export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
+  void ownerId;
   const [data, setData] = useState<SettingsPayload | null>(null);
   const [categories, setCategories] = useState<CategoryEntry[]>([]);
   const [exclusion, setExclusion] = useState<ExclusionConfig | null>(null);
