@@ -56,6 +56,15 @@ describe("runZipSearch", () => {
     const dead = await prisma.business.findFirst({ where: { websiteUrl: { contains: "dead." } } });
     expect(dead?.websiteReachable).toBe(false);
     expect(dead?.websiteError).toBe("timeout");
+
+    // R1: every business linked by an uninterrupted search has exactly one "discovered"
+    // ActivityLog entry (previously lost once discover() started persisting the row itself,
+    // which made upsertBusinesses' own create-and-log branch unreachable).
+    const linked = await prisma.searchBusiness.findMany({ where: { searchId: search.id }, select: { businessId: true } });
+    expect(linked).toHaveLength(done.countsFound);
+    for (const { businessId } of linked) {
+      expect(await prisma.activityLog.count({ where: { businessId, kind: "discovered" } })).toBe(1);
+    }
   });
 
   it("keeps outreach fields when the same business is found again", async () => {
@@ -71,6 +80,8 @@ describe("runZipSearch", () => {
     expect(again.notes).toBe("left voicemail");
     expect(again.searches.map((s) => s.searchId).sort()).toEqual([s1.id, s2.id].sort());
     expect(await prisma.business.count({ where: { name: "restaurant One" } })).toBe(1);
+    // R1: re-discovering the same business in a second search doesn't log "discovered" again.
+    expect(await prisma.activityLog.count({ where: { businessId: biz.id, kind: "discovered" } })).toBe(1);
   });
 
   it("pauses when shouldPause returns true and marks the search paused", async () => {

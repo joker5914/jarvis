@@ -8,8 +8,8 @@ SDR can triage and track outreach from one leads table.
 
 This is Plan 1 of the project: zip-code search and the leads table, detail
 drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
-The always-on scanner, Apollo enrichment, and a settings/API-key UI are
-upcoming plans, not yet built.
+Plan 3 (below) adds the always-on Scanner. Apollo enrichment and a
+settings/API-key UI are upcoming plans, not yet built.
 
 ## Prerequisites
 
@@ -71,6 +71,43 @@ or renovating a space are strong SMB leads before they've even opened.
   per second (TDLR's own rate limit), which is roughly 2,500-4,000 detail
   fetches — expect it to take up to an hour.
 
+## Scanner
+
+The Scanner runs the dashboard unattended. A pg-boss cron job (`scanner-tick`)
+fires every 5 minutes, reads the schedule, targets, and current state, and
+enqueues at most one scanner-origin job at a time (`maxConcurrentJobs`,
+default 1):
+
+- **Window**: the schedule has an absolute `windowStart`/`windowEnd`, an
+  optional daily `dailyStartTime`/`dailyEndTime` (in the configured
+  timezone), and optional `daysOfWeek`. Outside the window the scanner is
+  idle even if enabled.
+- **Targets**: `ScanTarget` rows are zip codes to search, each with a
+  priority and a refresh interval (`zipRefreshDays`).
+- **Priority order** each tick: (1) a TDLR sync if it hasn't succeeded
+  recently (`tdlrSyncHours`); (2) resuming a paused scanner-origin zip
+  search; (3) the highest-priority target whose zip hasn't been searched
+  recently, ties broken by oldest `lastSearchedAt`; (4) up to 25 businesses
+  whose website hasn't been rechecked recently (`websiteRecheckDays`);
+  otherwise the scanner goes idle until the next planned item.
+- **Hot zips**: when `autoAddHotZips` is on, any non-excluded project that
+  scores `smbFitScore >= 60` and is `opening_soon` or `under_construction`
+  automatically upserts a high-priority (100) `ScanTarget` for its zip.
+- **Pause / resume / stop**: pause takes effect within seconds — every
+  scanner-origin job checks the pause flag between steps and around website
+  fetches. Resume clears the flag and the next tick picks the paused item
+  back up where it left off. Stop pauses and disables the schedule.
+- Manual searches (started from the Leads page) are sent at a higher queue
+  priority than scanner-origin searches and run on the worker via
+  `localConcurrency: 2` on the zip-search queue, so a manual search never has
+  to wait behind an in-flight scanner search; they ignore the window and
+  pause state. The Scanner itself still self-limits to `maxConcurrentJobs`
+  concurrent scanner-origin jobs.
+
+The Scanner page (`/scanner`) shows live state, the schedule form, targets,
+and a scanner-origin activity log; a pill in the navbar and a dashboard card
+mirror the current state with quick pause/resume controls.
+
 ## Testing
 
 ```bash
@@ -82,6 +119,13 @@ npm run test:e2e  # Playwright end-to-end tests (own server on port 3100)
 `npm run test:db` and `npm run test:e2e` both require `TEST_DATABASE_URL` in
 `.env` to point at a `*_test` database — they reset and reseed it on every
 run, so it must never be the dev database.
+
+`npm run test:e2e` runs the browser suite against a **production build**,
+not the dev server: Playwright's `webServer` runs `npm run e2e:server`
+(`scripts/e2e-server.mjs`), which builds with `next build` and serves with
+`next start` on port 3100. The build uses `NEXT_DIST_DIR=.next-e2e` so it
+writes to a separate build directory (`next.config.ts` reads it into
+`distDir`) and never clobbers a `.next` build from a running `npm run dev`.
 
 ## More detail
 

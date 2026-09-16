@@ -1,3 +1,4 @@
+import { REGION } from "@/lib/config/region";
 import type { PageFetcher } from "@/lib/extract/website";
 import type {
   DiscoveredBusiness,
@@ -24,7 +25,10 @@ export class FakeGeocodeProvider implements GeocodeProvider {
 
 /** Two SMBs per query plus one chain for coffee-shop queries so exclusion is exercised. */
 export class FakeDiscoveryProvider implements DiscoveryProvider {
-  async searchCategory(rawQuery: string): Promise<DiscoveredBusiness[]> {
+  calls = { searchCategory: 0, searchCategoryIds: 0, getPlaceDetails: 0 };
+  private known = new Map<string, DiscoveredBusiness>();
+
+  private generate(rawQuery: string): DiscoveredBusiness[] {
     // Promote flow: a query beginning with a fake project's facility name returns one exact match.
     if (/^bella nails & spa\b/i.test(rawQuery)) {
       return [{
@@ -66,6 +70,23 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
     ];
     if (slug.startsWith("coffee-shop")) list.push(mk(3, "Starbucks", "https://www.starbucks.com/"));
     return list;
+  }
+
+  async searchCategory(rawQuery: string): Promise<DiscoveredBusiness[]> {
+    this.calls.searchCategory++;
+    return this.generate(rawQuery);
+  }
+
+  async searchCategoryIds(rawQuery: string): Promise<string[]> {
+    this.calls.searchCategoryIds++;
+    const list = this.generate(rawQuery);
+    for (const biz of list) this.known.set(biz.placeId, biz);
+    return list.map((b) => b.placeId);
+  }
+
+  async getPlaceDetails(placeId: string): Promise<DiscoveredBusiness | null> {
+    this.calls.getPlaceDetails++;
+    return this.known.get(placeId) ?? null;
   }
 }
 
@@ -109,7 +130,7 @@ function fakeProject(
     facilityName: p.facilityName ?? null,
     registeredAt: p.registeredAt ?? daysFromNow(-5),
     statusCode: p.statusCode ?? 3008,
-    cityCode: 785,
+    cityCode: REGION.tdlrCityCode,
     countyCode: 2101,
     workTypeCode: p.workTypeCode ?? 9002,
     estimatedCost: p.estimatedCost ?? null,

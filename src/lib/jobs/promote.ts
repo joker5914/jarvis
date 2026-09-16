@@ -1,31 +1,22 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError } from "@/lib/api";
+import { REGION } from "@/lib/config/region";
 import { PROJECT_CONFIG } from "@/lib/config/projects";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { suggestPackage } from "@/lib/scoring/packageMap";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness, Providers } from "@/lib/providers/types";
 import type { Project } from "@prisma/client";
-import { JobPausedError, normalizeName, recomputeContactQuality, scrapeOne, validateEmails, type ZipSearchDeps } from "./zipSearch";
+import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, type JobDeps } from "./shared";
+import { recomputeContactQuality, scrapeOne, validateEmails, type ZipSearchDeps } from "./zipSearch";
 import { SYNC_KEYS, writeSync } from "./syncStatus";
 
-export type PromoteDeps = {
-  providers: Providers;
-  shouldPause?: () => Promise<boolean>;
-  signal?: AbortSignal;
-  log?: (msg: string) => void;
-};
+export type PromoteDeps = JobDeps;
 
 export type FindResult = { auto: DiscoveredBusiness | null; candidates: DiscoveredBusiness[] };
 
-const HOUSTON_CENTER = { lat: 29.7604, lng: -95.3698 };
 const SEARCH_RADIUS_M = 5000;
-
-async function checkPause(deps: PromoteDeps) {
-  if (deps.signal?.aborted) throw new JobPausedError();
-  if (deps.shouldPause && (await deps.shouldPause())) throw new JobPausedError();
-}
 
 function tokens(s: string): Set<string> {
   // Normalize "&" to "and" before handing off to normalizeName (which would otherwise just
@@ -58,7 +49,7 @@ export async function findBusinessCandidates(projectId: string, ownerId: string,
   const p = await ownedProject(projectId, ownerId);
   const name = displayName(p);
   const geo = p.zip ? await deps.providers.geocode.geocodeZip(p.zip) : null;
-  const center = geo ? { lat: geo.lat, lng: geo.lng } : HOUSTON_CENTER;
+  const center = geo ? { lat: geo.lat, lng: geo.lng } : REGION.defaultCenter;
   const query = [name, p.locationAddress, p.zip].filter(Boolean).join(" ");
   const results = await deps.providers.discovery.searchCategory(query, center, SEARCH_RADIUS_M, 5);
   const top = results[0];
@@ -97,18 +88,7 @@ async function finishLink(businessId: string, ownerId: string, p: Project, how: 
 
 export async function linkProjectToPlace(projectId: string, ownerId: string, biz: DiscoveredBusiness): Promise<string> {
   const p = await ownedProject(projectId, ownerId);
-  const googleFields = {
-    name: biz.name,
-    formattedAddress: biz.formattedAddress,
-    zip: biz.zip,
-    lat: biz.lat,
-    lng: biz.lng,
-    phone: biz.phone,
-    websiteUrl: biz.websiteUrl,
-    googleRating: biz.rating,
-    googleReviewCount: biz.reviewCount,
-    googleTypes: biz.types,
-  };
+  const googleFields = discoveredToBusinessFields(biz);
   const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
   const business = existing
     ? await prisma.business.update({ where: { id: existing.id }, data: googleFields })

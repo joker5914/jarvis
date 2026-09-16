@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Search } from "@prisma/client";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { SearchStatusBadge } from "./SearchStatusBadge";
@@ -15,6 +16,7 @@ type Progress = { step?: string; current?: number; total?: number; message?: str
 const STEP_LABELS: Record<string, string> = {
   geocode: "Locating zip",
   discover: "Finding businesses",
+  details: "Fetching place details",
   save: "Saving businesses",
   scrape: "Extracting contacts from websites",
   validate: "Validating emails",
@@ -49,6 +51,18 @@ export function SearchList({ initial }: { initial: Search[] }) {
     }
   }
 
+  async function resume(id: string) {
+    try {
+      const res = await fetch(`/api/searches/${id}/resume`, { method: "POST" });
+      if (!res.ok) return toast.error("Could not resume search");
+      const { search } = await res.json();
+      setItems((prev) => prev.map((s) => (s.id === id ? search : s)));
+      toast.success(`Resuming ${search.zip}`);
+    } catch {
+      toast.error("Could not resume search");
+    }
+  }
+
   if (items.length === 0) {
     return <p className="text-sm text-neutral-500">No searches yet. Start one from the dashboard.</p>;
   }
@@ -79,12 +93,19 @@ export function SearchList({ initial }: { initial: Search[] }) {
               </div>
               <div className="flex items-center gap-2">
                 <SearchStatusBadge status={s.status} />
+                {s.origin === "scanner" && <Badge variant="outline">auto</Badge>}
                 <Button variant="outline" size="sm" render={<Link href={`/leads?searchId=${s.id}`} />}>
                   View leads
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => rerun(s.id)} disabled={running}>
-                  {s.status === "failed" ? "Retry" : "Re-run"}
-                </Button>
+                {s.status === "paused" ? (
+                  <Button variant="outline" size="sm" onClick={() => resume(s.id)}>
+                    Resume
+                  </Button>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => rerun(s.id)} disabled={running}>
+                    {s.status === "failed" ? "Retry" : "Re-run"}
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>

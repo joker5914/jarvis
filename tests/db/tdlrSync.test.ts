@@ -147,6 +147,16 @@ describe("runTdlrSync", () => {
     expect(s.lastSuccessfulAt).toBeNull();
   });
 
+  it("tolerates two concurrent syncs for the same owner racing project.create for the same projectNumber (R4)", async () => {
+    const providersB = { geocode: new FakeGeocodeProvider(), discovery: new FakeDiscoveryProvider(), validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher };
+    const [r1, r2] = await Promise.all([runTdlrSync({ providers }), runTdlrSync({ providers: providersB })]);
+    // Neither call throws (the P2002-tolerant create means the race loser just skips its own
+    // create instead of failing the whole sync), and no projects are duplicated.
+    expect(r1.scanned).toBe(FAKE_PROJECTS.length);
+    expect(r2.scanned).toBe(FAKE_PROJECTS.length);
+    expect(await prisma.project.count()).toBe(3);
+  });
+
   it("fails the sync instead of advancing lastSuccessfulAt when the registry returns a short page", async () => {
     const stub: ProjectRegistryProvider = {
       listProjects: async () => ({ total: 5, items: [] }),

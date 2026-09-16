@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { REGION } from "@/lib/config/region";
 
 export class BudgetExhaustedError extends Error {
   constructor(public provider: string) {
@@ -7,7 +8,7 @@ export class BudgetExhaustedError extends Error {
   }
 }
 
-export function todayKey(tz = "America/Chicago"): string {
+export function todayKey(tz: string = REGION.timezone): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",

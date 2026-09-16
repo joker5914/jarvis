@@ -1,11 +1,12 @@
 import { REQUEST_TIMEOUT_MS, USER_AGENT } from "@/lib/extract/website";
 import { parseTdlrDetail } from "@/lib/extract/tdlrDetail";
+import { REGION } from "@/lib/config/region";
 import { TDLR_STATUS_CLOSED as CONFIG_TDLR_STATUS_CLOSED } from "@/lib/config/projects";
 import type { SmbWorkType } from "@/lib/scoring/types";
 import type { ProjectDetail, ProjectRegistryProvider, ProjectSummary } from "./types";
 
 export const TDLR_BASE = "https://www.tdlr.texas.gov/TABS";
-export const TDLR_HOUSTON_CITY_CODE = 785;
+export const TDLR_HOUSTON_CITY_CODE = REGION.tdlrCityCode;
 export const TDLR_MIN_INTERVAL_MS = 1000;
 
 export const TDLR_STATUS_LABELS: Record<number, string> = {

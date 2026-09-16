@@ -1,9 +1,21 @@
 import { getBoss } from "./boss";
-import { QUEUES, type PromoteBatchJobData, type PromoteJobData, type TdlrSyncJobData, type ZipSearchJobData } from "./queues";
+import {
+  QUEUES,
+  type JobOrigin,
+  type PromoteBatchJobData,
+  type PromoteJobData,
+  type ScannerTickJobData,
+  type TdlrSyncJobData,
+  type WebsiteRecheckJobData,
+  type ZipSearchJobData,
+} from "./queues";
 import { runZipSearch } from "./zipSearch";
 import { runTdlrSync } from "./tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "./promote";
+import { runWebsiteRecheck } from "./websiteRecheck";
+import { scannerPauseCheck } from "./shared";
 import { getProviders } from "@/lib/providers";
+import { getActor } from "@/lib/actor";
 
 export const MANUAL_PRIORITY = 10;
 export const SCANNER_PRIORITY = 1;
@@ -12,31 +24,36 @@ export const SCANNER_PRIORITY = 1;
  * JOB_MODE=queue (default): hand the job to the pg-boss worker.
  * JOB_MODE=inline: run it inside this process (e2e tests and single-process demos).
  */
-export async function enqueueZipSearch(searchId: string, opts: { priority?: number } = {}): Promise<void> {
+export async function enqueueZipSearch(searchId: string, opts: { priority?: number; origin?: JobOrigin } = {}): Promise<boolean> {
+  const origin = opts.origin ?? "manual";
   if (process.env.JOB_MODE === "inline") {
-    void runZipSearch(searchId, { providers: getProviders(), log: console.log }).catch((e) =>
+    const shouldPause = origin === "scanner" ? scannerPauseCheck((await getActor()).id) : undefined;
+    void runZipSearch(searchId, { providers: getProviders(), log: console.log, shouldPause }).catch((e) =>
       console.error("[inline zip-search]", e),
     );
-    return;
+    return true;
   }
   const boss = await getBoss();
-  const data: ZipSearchJobData = { searchId };
-  await boss.send(QUEUES.zipSearch, data, {
+  const data: ZipSearchJobData = { searchId, origin };
+  const id = await boss.send(QUEUES.zipSearch, data, {
     retryLimit: 3,
     retryDelay: 60,
     priority: opts.priority ?? MANUAL_PRIORITY,
     singletonKey: searchId,
   });
+  return id !== null;
 }
 
 /** Returns false when a tdlr-sync job is already queued under the "tdlr" singleton key (boss.send returns null). */
-export async function enqueueTdlrSync(): Promise<boolean> {
+export async function enqueueTdlrSync(opts: { origin?: JobOrigin } = {}): Promise<boolean> {
+  const origin = opts.origin ?? "manual";
   if (process.env.JOB_MODE === "inline") {
-    void runTdlrSync({ providers: getProviders(), log: console.log }).catch((e) => console.error("[inline tdlr-sync]", e));
+    const shouldPause = origin === "scanner" ? scannerPauseCheck((await getActor()).id) : undefined;
+    void runTdlrSync({ providers: getProviders(), log: console.log, shouldPause }).catch((e) => console.error("[inline tdlr-sync]", e));
     return true;
   }
   const boss = await getBoss();
-  const data: TdlrSyncJobData = {};
+  const data: TdlrSyncJobData = { origin };
   const id = await boss.send(QUEUES.tdlrSync, data, { retryLimit: 3, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "tdlr" });
   return id !== null;
 }
@@ -62,5 +79,48 @@ export async function enqueuePromoteBatch(): Promise<boolean> {
   const boss = await getBoss();
   const data: PromoteBatchJobData = {};
   const id = await boss.send(QUEUES.promoteBatch, data, { retryLimit: 1, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "promote-batch" });
+  return id !== null;
+}
+
+export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: string): Promise<boolean> {
+  if (process.env.JOB_MODE === "inline") {
+    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => console.error("[inline website-recheck]", e));
+    return true;
+  }
+  const boss = await getBoss();
+  const data: WebsiteRecheckJobData = { businessIds, ownerId };
+  const id = await boss.send(QUEUES.websiteRecheck, data, { retryLimit: 1, retryDelay: 60, priority: SCANNER_PRIORITY, singletonKey: "website-recheck" });
+  return id !== null;
+}
+
+/**
+ * `enqueue.ts` <-> `scanner/tick.ts` import cycle: `runScannerTick` calls
+ * `enqueueZipSearch`/`enqueueTdlrSync`/`enqueueWebsiteRecheck` from this file, so this
+ * function imports it lazily instead of at module scope.
+ */
+let inlineTick: Promise<unknown> | null = null;
+
+/**
+ * In `JOB_MODE=inline`, a tick isn't sent to pg-boss (whose "exclusive" policy on this queue
+ * would dedupe it), so it needs its own in-process guard: without it, two calls that land
+ * before either's first `await` (e.g. the navbar pill and a manual "Run now" firing close
+ * together) would both pass a naive check-then-set and run `runScannerTick` concurrently.
+ * Assigning `inlineTick` synchronously, before any `await` in this branch, closes that race —
+ * a concurrent call sees it set and returns `false` instead of starting a second tick.
+ */
+export async function enqueueScannerTick(): Promise<boolean> {
+  if (process.env.JOB_MODE === "inline") {
+    if (inlineTick) return false;
+    inlineTick = import("@/lib/scanner/tick")
+      .then(({ runScannerTick }) => runScannerTick())
+      .catch((e) => console.error("[inline scanner-tick]", e))
+      .finally(() => {
+        inlineTick = null;
+      });
+    return true;
+  }
+  const boss = await getBoss();
+  const data: ScannerTickJobData = {};
+  const id = await boss.send(QUEUES.scannerTick, data, { retryLimit: 0, priority: MANUAL_PRIORITY, singletonKey: "scanner-tick" });
   return id !== null;
 }

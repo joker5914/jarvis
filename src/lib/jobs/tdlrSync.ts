@@ -1,29 +1,19 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
+import { REGION } from "@/lib/config/region";
 import { PROJECT_CONFIG, TDLR_STATUS_CLOSED } from "@/lib/config/projects";
 import { statusCodeFromLabel, TDLR_STATUS_LABELS, TDLR_WORK_TYPE_CODES, workTypeFromCode, workTypeFromLabel } from "@/lib/providers/tdlr";
-import type { ProjectDetail, ProjectSummary, Providers } from "@/lib/providers/types";
+import type { ProjectDetail, ProjectSummary } from "@/lib/providers/types";
 import { scoreProjectFields } from "@/lib/scoring/projectScoring";
 import { timingWindowFor } from "@/lib/scoring/timingWindow";
-import { JobPausedError } from "./zipSearch";
+import { checkPause, JobPausedError, type JobDeps } from "./shared";
 import { readSync, SYNC_KEYS, writeSync, type SyncCursor } from "./syncStatus";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
-export type TdlrSyncDeps = {
-  providers: Providers;
-  shouldPause?: () => Promise<boolean>;
-  signal?: AbortSignal;
-  log?: (msg: string) => void;
-  now?: () => Date;
-};
+export type TdlrSyncDeps = JobDeps & { now?: () => Date };
 
 const PAGE = 100;
 const DAY = 86_400_000;
-
-async function checkPause(deps: TdlrSyncDeps) {
-  if (deps.signal?.aborted) throw new JobPausedError();
-  if (deps.shouldPause && (await deps.shouldPause())) throw new JobPausedError();
-}
 
 function projectData(s: ProjectSummary, d: ProjectDetail | null, now: Date): Prisma.ProjectUncheckedCreateInput {
   const workType = workTypeFromCode(s.workTypeCode) ?? workTypeFromLabel(d?.workTypeLabel);
@@ -147,8 +137,17 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
           await prisma.project.update({ where: { id: existing.id }, data: data as unknown as Prisma.ProjectUncheckedUpdateInput });
           counts.updated++;
         } else {
-          await prisma.project.create({ data: { ...data, ownerId } });
-          counts.created++;
+          try {
+            await prisma.project.create({ data: { ...data, ownerId } });
+            counts.created++;
+          } catch (e) {
+            // Two concurrent TDLR syncs for the same owner (e.g. two e2e specs both POSTing
+            // /api/projects/sync at once — isSyncRunning() isn't atomic with starting the sync)
+            // can race this create for the same projectNumber; the loser's row already exists
+            // with equivalent data from the same registry scan, so skip it rather than fail
+            // the whole sync.
+            if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+          }
         }
       }
       start += page.items.length;
@@ -187,7 +186,7 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         facilityName: detail.facilityName,
         registeredAt: p.registrationDate ?? now,
         statusCode: statusCodeFromLabel(detail.statusLabel) ?? p.statusCode ?? 0,
-        cityCode: 785,
+        cityCode: REGION.tdlrCityCode,
         countyCode: 0,
         workTypeCode: p.workType ? TDLR_WORK_TYPE_CODES[p.workType] : 0,
         estimatedCost: detail.estimatedCost,

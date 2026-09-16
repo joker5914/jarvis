@@ -4,6 +4,7 @@ import { getActor } from "@/lib/actor";
 import { getDashboardStats } from "@/lib/leads/stats";
 import { formatDate, timeAgo } from "@/lib/format";
 import { StatTile } from "@/components/dashboard/StatTile";
+import { ScannerCard } from "@/components/dashboard/ScannerCard";
 import { ZipSearchForm } from "@/components/searches/ZipSearchForm";
 import { SearchStatusBadge } from "@/components/searches/SearchStatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,7 +40,7 @@ export default async function DashboardPage() {
         <StatTile label="Contacted this week" value={stats.contactedThisWeek} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Recent searches</CardTitle>
@@ -86,6 +87,8 @@ export default async function DashboardPage() {
             )}
           </CardContent>
         </Card>
+
+        <ScannerCard ownerId={actor.id} />
       </div>
     </div>
   );

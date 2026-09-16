@@ -10,16 +10,17 @@ export default defineConfig({
   testDir: "tests/e2e",
   globalSetup: "./tests/e2e/global-setup.ts",
   timeout: 90_000,
-  // The e2e server is `next dev`, which compiles each route on first visit; cold CI runners
-  // need well over Playwright's 5 s default for those first navigations.
+  // The production server responds fast, but CI runners are shared and can still be slow;
+  // the wider default stays to absorb that variance.
   expect: { timeout: 15_000 },
   retries: 0,
   use: { baseURL: "http://localhost:3100", trace: "retain-on-failure" },
   webServer: {
-    command: "npx next dev -p 3100",
+    command: "npm run e2e:server",
     url: "http://localhost:3100/unlock",
     reuseExistingServer: false,
-    timeout: 120_000,
+    // next build takes a minute or two on a cold runner before the server starts.
+    timeout: 300_000,
     env: {
       DATABASE_URL: testDb,
       PROVIDER_MODE: "fake",
@@ -28,6 +29,7 @@ export default defineConfig({
       APP_SECRET: "e2e-secret-e2e-secret-e2e-secret-1234",
       GOOGLE_DAILY_BUDGET: "100000",
       NEXT_TELEMETRY_DISABLED: "1",
+      NEXT_DIST_DIR: ".next-e2e",
     },
   },
 });
