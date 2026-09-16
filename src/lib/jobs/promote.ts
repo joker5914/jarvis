@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
+import { ApiError } from "@/lib/api";
 import { PROJECT_CONFIG } from "@/lib/config/projects";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { suggestPackage } from "@/lib/scoring/packageMap";
@@ -45,7 +46,7 @@ function displayName(p: Project): string {
 
 async function ownedProject(projectId: string, ownerId: string): Promise<Project> {
   const p = await prisma.project.findFirst({ where: { id: projectId, ownerId } });
-  if (!p) throw new Error("Project not found");
+  if (!p) throw new ApiError(404, "Project not found");
   return p;
 }
 
