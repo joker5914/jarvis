@@ -5,7 +5,7 @@ import { SlidersHorizontal } from "lucide-react";
 import type { LeadRow } from "@/lib/leads/queries";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { LeadFilters } from "./LeadFilters";
+import { LeadFilters, type CategoryOption } from "./LeadFilters";
 import { LeadsTable } from "./LeadsTable";
 import { useLeadFilters } from "./useLeadFilters";
 
@@ -14,9 +14,11 @@ type ListResponse = { items: LeadRow[]; total: number; page: number; pageSize: n
 export function LeadsView({
   renderDrawer,
   renderBulkBar,
+  categories,
 }: {
   renderDrawer?: (id: string | null, close: () => void, refresh: () => void) => React.ReactNode;
   renderBulkBar?: (ids: string[], clear: () => void, refresh: () => void) => React.ReactNode;
+  categories?: CategoryOption[];
 }) {
   const { params, set } = useLeadFilters();
   const [data, setData] = useState<ListResponse | null>(null);
@@ -45,7 +47,7 @@ export function LeadsView({
   return (
     <div className="flex flex-col gap-4 md:flex-row">
       <aside className="hidden w-64 shrink-0 md:block">
-        <div className="sticky top-20 rounded-lg border bg-white p-4 dark:bg-neutral-900"><LeadFilters /></div>
+        <div className="sticky top-20 rounded-lg border bg-white p-4 dark:bg-neutral-900"><LeadFilters categories={categories} /></div>
       </aside>
 
       <div className="min-w-0 flex-1 space-y-3">
@@ -61,7 +63,7 @@ export function LeadsView({
               </SheetTrigger>
               <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto p-4">
                 <SheetTitle className="mb-3">Filters</SheetTitle>
-                <LeadFilters />
+                <LeadFilters categories={categories} />
               </SheetContent>
             </Sheet>
             {/* Base UI translation: the Button primitive assumes a native <button> (nativeButton

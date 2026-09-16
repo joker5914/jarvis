@@ -35,7 +35,9 @@ function Choice({
   );
 }
 
-export function LeadFilters() {
+export type CategoryOption = { slug: string; label: string };
+
+export function LeadFilters({ categories = CATEGORIES }: { categories?: CategoryOption[] } = {}) {
   const { params, set, reset } = useLeadFilters();
   const [q, setQ] = useState(params.get("q") ?? "");
   const [zip, setZip] = useState(params.get("zip") ?? "");
@@ -88,7 +90,7 @@ export function LeadFilters() {
           }} />
       </div>
       <Choice id="f-category" label="Category" value={params.get("category") ?? ""} onChange={(v) => set("category", v)}
-        options={CATEGORIES.map((c) => ({ value: c.slug, label: c.label }))} />
+        options={categories.map((c) => ({ value: c.slug, label: c.label }))} />
       <Choice id="f-quality" label="Contact quality" value={params.get("quality") ?? ""} onChange={(v) => set("quality", v)}
         options={["green", "yellow", "red"].map((v) => ({ value: v, label: titleCase(v) }))} />
       <Choice id="f-status" label="Outreach status" value={params.get("status") ?? ""} onChange={(v) => set("status", v)}

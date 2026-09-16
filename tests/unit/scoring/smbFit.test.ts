@@ -1,5 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { scoreSmbFit } from "@/lib/scoring/smbFit";
+import { bandFor, scoreSmbFit } from "@/lib/scoring/smbFit";
+
+describe("bandFor", () => {
+  it("uses the default (static) thresholds when none are passed", () => {
+    expect(bandFor(65)).toBe("high");
+    expect(bandFor(45)).toBe("medium");
+    expect(bandFor(10)).toBe("low");
+  });
+
+  it("uses custom thresholds when passed, e.g. from an owner's RuntimeConfig", () => {
+    // A score that's "high" under the default thresholds (60/30) but only "medium" once an
+    // owner raises highFitThreshold to 70 — this is the exact case the Projects UI and API
+    // must agree on: FitBadge and the API's fit=high|medium|low filter both need to call
+    // bandFor with the same thresholds or a row can be listed under one band and badged another.
+    expect(bandFor(65, { highFitThreshold: 70, mediumFitThreshold: 30 })).toBe("medium");
+    expect(bandFor(70, { highFitThreshold: 70, mediumFitThreshold: 30 })).toBe("high");
+    expect(bandFor(29, { highFitThreshold: 70, mediumFitThreshold: 30 })).toBe("low");
+  });
+});
 
 describe("scoreSmbFit", () => {
   it("scores a tenant-funded adult day care renovation as high", () => {

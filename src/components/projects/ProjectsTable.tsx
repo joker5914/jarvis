@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { ProjectRow } from "@/lib/projects/queries";
+import type { SmbFitThresholds } from "@/lib/scoring/smbFit";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { formatDate, titleCase } from "@/lib/format";
@@ -10,7 +11,7 @@ import { FitBadge } from "./FitBadge";
 
 const money = (n: number | null) => (n == null ? "" : `$${Math.round(n).toLocaleString()}`);
 
-type Props = { rows: ProjectRow[]; onOpen: (id: string) => void; onFind: (id: string) => void };
+type Props = { rows: ProjectRow[]; onOpen: (id: string) => void; onFind: (id: string) => void; thresholds?: SmbFitThresholds };
 
 function rowKeys(onOpen: () => void) {
   return {
@@ -20,7 +21,7 @@ function rowKeys(onOpen: () => void) {
   };
 }
 
-export function ProjectsTable({ rows, onOpen, onFind }: Props) {
+export function ProjectsTable({ rows, onOpen, onFind, thresholds }: Props) {
   return (
     <>
       <div className="hidden overflow-x-auto rounded-lg border bg-white md:block dark:bg-neutral-900">
@@ -50,7 +51,7 @@ export function ProjectsTable({ rows, onOpen, onFind }: Props) {
                 <TableCell className="text-sm tabular-nums">{money(p.estimatedCost)}</TableCell>
                 <TableCell className="text-sm">{formatDate(p.completionDate)}</TableCell>
                 <TableCell><TimingBadge window={p.timingWindow} /></TableCell>
-                <TableCell><FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} /></TableCell>
+                <TableCell><FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} thresholds={thresholds} /></TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   {p.business ? (
                     <Link href={`/leads/${p.business.id}`} className="text-sm text-blue-600 hover:underline">{p.business.name}</Link>
@@ -77,7 +78,7 @@ export function ProjectsTable({ rows, onOpen, onFind }: Props) {
                 <div className="font-medium">{p.facilityName || p.projectName}</div>
                 <div className="text-xs text-neutral-500">{p.zip} · {titleCase(p.workType)} · {money(p.estimatedCost)}</div>
               </div>
-              <FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} />
+              <FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} thresholds={thresholds} />
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <TimingBadge window={p.timingWindow} />

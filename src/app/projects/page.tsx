@@ -1,9 +1,11 @@
-"use client";
-
 import { Suspense } from "react";
+import { getActor } from "@/lib/actor";
+import { loadConfig } from "@/lib/config/runtime";
 import { ProjectsView } from "@/components/projects/ProjectsView";
 
-export default function ProjectsPage() {
+export default async function ProjectsPage() {
+  const actor = await getActor();
+  const cfg = await loadConfig(actor.id);
   return (
     <div className="space-y-4">
       <div>
@@ -11,7 +13,7 @@ export default function ProjectsPage() {
         <p className="text-sm text-neutral-500">Houston construction and renovation projects from the TDLR registry, scored for SMB fit and timing.</p>
       </div>
       <Suspense fallback={<p className="text-sm text-neutral-500">Loading…</p>}>
-        <ProjectsView />
+        <ProjectsView thresholds={cfg.projects} />
       </Suspense>
     </div>
   );

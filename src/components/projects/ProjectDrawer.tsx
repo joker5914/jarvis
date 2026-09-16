@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import type { SmbFitThresholds } from "@/lib/scoring/smbFit";
 import { TimingBadge } from "./TimingBadge";
 import { FitBadge } from "./FitBadge";
 
@@ -22,7 +23,7 @@ type Detail = {
 
 const money = (n: number | null) => (n == null ? "—" : `$${Math.round(n).toLocaleString()}`);
 
-export function ProjectDrawer({ id, onClose, onFind }: { id: string | null; onClose: () => void; onFind: (id: string) => void }) {
+export function ProjectDrawer({ id, onClose, onFind, thresholds }: { id: string | null; onClose: () => void; onFind: (id: string) => void; thresholds?: SmbFitThresholds }) {
   const [p, setP] = useState<Detail | null>(null);
 
   useEffect(() => {
@@ -43,7 +44,7 @@ export function ProjectDrawer({ id, onClose, onFind }: { id: string | null; onCl
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-xl font-semibold">{p.facilityName || p.projectName}</h2>
-                <FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} />
+                <FitBadge score={p.smbFitScore} excluded={p.exclusion !== "none"} thresholds={thresholds} />
                 <TimingBadge window={p.timingWindow} />
               </div>
               <p className="text-sm text-neutral-500">{p.projectName} · {p.projectNumber} · {p.statusLabel}</p>
