@@ -16,6 +16,7 @@ import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
 import { scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
+import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { prisma } from "@/lib/db";
 import { getProviders } from "@/lib/providers";
 
@@ -66,10 +67,10 @@ async function main() {
     const r = await runScannerTick();
     console.log(`[scanner-tick] ${r.status}${r.work ? ` ${r.work.kind}` : ""}`);
   });
-  // Every 5 minutes; the tick itself decides whether there's anything to do.
+  // Every SCANNER_CONFIG.tickMinutes; the tick itself decides whether there's anything to do.
   // singletonKey matches enqueueScannerTick's manual key so a cron fire can never
   // queue a second tick behind one already in flight.
-  await boss.schedule(QUEUES.scannerTick, "*/5 * * * *", {}, { tz: REGION.timezone, singletonKey: "scanner-tick" });
+  await boss.schedule(QUEUES.scannerTick, `*/${SCANNER_CONFIG.tickMinutes} * * * *`, {}, { tz: REGION.timezone, singletonKey: "scanner-tick" });
 
   console.log(`worker ready (PROVIDER_MODE=${process.env.PROVIDER_MODE ?? "fake"})`);
 

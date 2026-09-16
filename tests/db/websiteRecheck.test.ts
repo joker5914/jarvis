@@ -5,6 +5,12 @@ import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeV
 
 const providers = { geocode: new FakeGeocodeProvider(), discovery: new FakeDiscoveryProvider(), validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher };
 
+class ThrowingValidationProvider extends FakeValidationProvider {
+  async domainHasMx(): Promise<boolean> {
+    throw new Error("mx lookup failed");
+  }
+}
+
 beforeEach(async () => {
   await prisma.activityLog.deleteMany();
   await prisma.contact.deleteMany();
@@ -27,5 +33,12 @@ describe("runWebsiteRecheck", () => {
     const b = await prisma.business.create({ data: { name: "X", websiteUrl: "https://x.fake.test/" } });
     let calls = 0;
     await expect(runWebsiteRecheck([b.id], "local-user", { providers, shouldPause: async () => ++calls > 0 })).rejects.toThrow(/paused/);
+  });
+  it("keeps rechecking the batch even when email validation throws", async () => {
+    const b = await prisma.business.create({ data: { name: "Reachable", websiteUrl: "https://old-site.fake.test/" } });
+    const throwingProviders = { ...providers, validation: new ThrowingValidationProvider() };
+    const r = await runWebsiteRecheck([b.id], "local-user", { providers: throwingProviders });
+    expect(r.rechecked).toBe(1);
+    expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).websiteReachable).toBe(true);
   });
 });

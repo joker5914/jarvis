@@ -4,7 +4,10 @@ import { Prisma, type ScannerStatus } from "@prisma/client";
 export async function readScanner(ownerId: string) {
   const [schedule, state, targets] = await Promise.all([
     prisma.scanSchedule.upsert({ where: { ownerId }, update: {}, create: { ownerId } }),
-    prisma.scannerState.upsert({ where: { ownerId }, update: {}, create: { ownerId } }),
+    // A brand-new state row baselines lastTickAt at "now" rather than leaving it null (which
+    // the tick would otherwise treat as "since the epoch" for failure accounting), so the
+    // very first tick doesn't scoop up every scanner-origin search ever created.
+    prisma.scannerState.upsert({ where: { ownerId }, update: {}, create: { ownerId, lastTickAt: new Date() } }),
     prisma.scanTarget.findMany({ where: { ownerId }, orderBy: [{ priority: "desc" }, { zip: "asc" }] }),
   ]);
   return { schedule, state, targets };

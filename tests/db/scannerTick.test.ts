@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runScannerTick, type TickDeps } from "@/lib/scanner/tick";
+import { readScanner } from "@/lib/scanner/state";
 import { writeSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 
 const OWNER = "local-user";
@@ -37,6 +38,27 @@ describe("runScannerTick", () => {
     const r = await runScannerTick({ now: () => now, enqueue });
     expect(r.status).toBe("disabled");
     expect(calls.zip).toHaveLength(0);
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.lastTickAt).not.toBeNull();
+  });
+
+  it("stays disabled and leaves pauseRequested alone when a scanner search failed while off", async () => {
+    // The disabled gate runs before failure accounting/auto-pause, so a schedule the user
+    // switched off is never nudged into pauseRequested by a search that failed while it was off.
+    await prisma.scanTarget.create({ data: { ownerId: OWNER, zip: "77001" } });
+    await prisma.search.create({ data: { ownerId: OWNER, zip: "77001", origin: "scanner", status: "failed", error: "boom" } });
+    const { calls, enqueue } = spies();
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.status).toBe("disabled");
+    expect(calls.zip).toHaveLength(0);
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.pauseRequested).toBe(false);
+  });
+
+  it("baselines a freshly created ScannerState row's lastTickAt at now", async () => {
+    const { state } = await readScanner(OWNER);
+    expect(state.lastTickAt).not.toBeNull();
+    expect(Date.now() - state.lastTickAt!.getTime()).toBeLessThan(60_000);
   });
 
   it("reports outside_window when the daily hours exclude now", async () => {
@@ -80,6 +102,26 @@ describe("runScannerTick", () => {
     const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
     // TDLR synced 1 h ago with a 6 h interval → due in 5 h, sooner than the zip (due in 5 d).
     expect((state.nextPlanned as { at: string }).at).toBe(new Date(now.getTime() + 5 * 3_600_000).toISOString());
+  });
+
+  it("is busy when the TDLR sync is running, regardless of a stale currentJobId", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    await prisma.scanTarget.create({ data: { ownerId: OWNER, zip: "77001" } }); // due immediately
+    // currentJobId points at something unrelated; runningScannerJobs must not depend on it.
+    await prisma.scannerState.create({ data: { ownerId: OWNER, currentJobId: "some-unrelated-id" } });
+    // updatedAt is set explicitly (rather than via writeSync's real-clock stamp) so the cursor
+    // reads as fresh relative to the fake `now` used throughout this suite.
+    await prisma.syncState.upsert({
+      where: { key: SYNC_KEYS.tdlr },
+      update: { cursor: { status: "running", updatedAt: new Date(now.getTime() - 60_000).toISOString() } },
+      create: { key: SYNC_KEYS.tdlr, cursor: { status: "running", updatedAt: new Date(now.getTime() - 60_000).toISOString() } },
+    });
+    const { calls, enqueue } = spies();
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.work).toEqual({ kind: "busy" });
+    expect(calls.zip).toHaveLength(0);
+    expect(calls.tdlr).toBe(0);
+    expect(calls.recheck).toHaveLength(0);
   });
 
   it("respects pauseRequested and resumes a paused search first", async () => {

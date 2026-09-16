@@ -50,13 +50,21 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     return { status, work };
   };
 
-  // Failure accounting: scanner-origin searches that failed since the last tick.
+  // Clean up expired per-item skips regardless of whether the Scanner is enabled, so a
+  // disabled schedule doesn't leave stale entries sitting in the persisted state forever.
   const since = state.lastTickAt ?? new Date(0);
+  const skipUntil: Record<string, string> = { ...((state.skipUntil as Record<string, string> | null) ?? {}) };
+  for (const k of Object.keys(skipUntil)) if (Date.parse(skipUntil[k]) <= now.getTime()) delete skipUntil[k];
+
+  // The disabled gate comes before failure accounting/auto-pause: a schedule the user has
+  // turned off shouldn't have its failure counter or pauseRequested touched by searches
+  // that happened to fail while it was off (e.g. a stray manual-origin retry).
+  if (!schedule.enabled) return finish("disabled", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures: state.consecutiveFailures });
+
+  // Failure accounting: scanner-origin searches that failed since the last tick.
   const failed = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: "failed", updatedAt: { gt: since } }, select: { zip: true, error: true } });
   const completed = await prisma.search.count({ where: { ownerId, origin: "scanner", status: "complete", updatedAt: { gt: since } } });
   let consecutiveFailures = completed > 0 ? 0 : state.consecutiveFailures;
-  const skipUntil: Record<string, string> = { ...((state.skipUntil as Record<string, string> | null) ?? {}) };
-  for (const k of Object.keys(skipUntil)) if (Date.parse(skipUntil[k]) <= now.getTime()) delete skipUntil[k];
   let lastError = state.lastError;
   for (const f of failed) {
     consecutiveFailures++;
@@ -70,7 +78,6 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     return finish("paused", { consecutiveFailures: 0, skipUntil, lastError, currentActivity: null, nextPlanned: null });
   }
 
-  if (!schedule.enabled) return finish("disabled", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures });
   const win = isWithinWindow(schedule, now);
   if (!win.ok) return finish("outside_window", { currentActivity: null, nextPlanned: { kind: "window", at: schedule.windowStart?.toISOString() ?? null, detail: win.reason }, skipUntil, consecutiveFailures });
   if (state.pauseRequested) return finish("paused", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures });
@@ -98,7 +105,10 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   const running = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: { in: ["queued", "running"] } }, select: { id: true, zip: true, progress: true } });
   const tdlr = await readSync(SYNC_KEYS.tdlr);
   const tdlrRunning = isSyncRunning(tdlr.cursor, now);
-  const runningScannerJobs = running.length + (tdlrRunning && state.currentJobId === "tdlr" ? 1 : 0);
+  // A running TDLR sync counts against the scanner's concurrency regardless of who started
+  // it (conservative and correct) — don't gate this on currentJobId, which only reflects
+  // what this tick's own bookkeeping last wrote.
+  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0);
   const pausedSearch = await prisma.search.findFirst({ where: { ownerId, origin: "scanner", status: "paused" }, select: { id: true, zip: true }, orderBy: { updatedAt: "asc" } });
   const staleBefore = new Date(now.getTime() - schedule.websiteRecheckDays * DAY);
   const stale = await prisma.business.findMany({

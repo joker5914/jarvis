@@ -20,8 +20,18 @@ export async function runWebsiteRecheck(businessIds: string[], ownerId: string, 
     }
     rechecked++;
   }
-  await validateEmails(businessIds, deps);
-  for (const id of businessIds) await recomputeContactQuality(id);
+  try {
+    await validateEmails(businessIds, deps);
+  } catch (e) {
+    deps.log?.(`website recheck: validateEmails failed: ${(e as Error).message}`);
+  }
+  for (const id of businessIds) {
+    try {
+      await recomputeContactQuality(id);
+    } catch (e) {
+      deps.log?.(`website recheck: recomputeContactQuality failed for ${id}: ${(e as Error).message}`);
+    }
+  }
   deps.log?.(`website recheck: ${rechecked} businesses`);
   return { rechecked };
 }
