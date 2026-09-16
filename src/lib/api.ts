@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError, type ZodType } from "zod";
+import { BudgetExhaustedError } from "@/lib/providers/budget";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -33,6 +34,7 @@ export function handle(fn: (req: NextRequest, ctx: Ctx) => Promise<Response>) {
     } catch (e) {
       if (e instanceof ApiError) return json({ error: e.message }, e.status);
       if (e instanceof ZodError) return json({ error: "Validation failed", issues: e.issues }, 400);
+      if (e instanceof BudgetExhaustedError) return json({ error: e.message }, 429);
       console.error(`[api] ${req.method} ${req.nextUrl.pathname}`, e);
       return json({ error: "Internal error" }, 500);
     }

@@ -1,0 +1,52 @@
+{
+  "draw": 1,
+  "recordsTotal": 48901,
+  "recordsFiltered": 48901,
+  "data": [
+    {
+      "ProjectId": "1b273ef7-de56-40bf-b69b-45d6f3237f8b",
+      "ProjectNumber": "TABS2027001141",
+      "ProjectName": "TIRR MH Dialysis EVS and Main Entry Relocation",
+      "ProjectCreatedOn": "2026-09-15T19:41:39.203",
+      "ProjectStatus": 3008,
+      "FacilityName": "TIRR Memorial Hermann",
+      "City": 785,
+      "County": 2101,
+      "TypeOfWork": 9002,
+      "EstimatedCost": 1705000.0000,
+      "DataVersionId": 900001,
+      "EstimatedStartDate": "2026-10-21T00:00:00",
+      "EstimatedEndDate": "2027-03-16T00:00:00"
+    },
+    {
+      "ProjectId": "05427a06-17aa-4383-979c-76a2913a815b",
+      "ProjectNumber": "TABS2027001125",
+      "ProjectName": "Hightower Business Park - Building 05",
+      "ProjectCreatedOn": "2026-09-15T15:42:26.19",
+      "ProjectStatus": 3008,
+      "FacilityName": "Hightower Business Park - Building 05",
+      "City": 785,
+      "County": 2079,
+      "TypeOfWork": 9001,
+      "EstimatedCost": 28800000.0000,
+      "DataVersionId": 900001,
+      "EstimatedStartDate": "2026-09-14T00:00:00",
+      "EstimatedEndDate": "2027-12-31T00:00:00"
+    },
+    {
+      "ProjectId": "fa71b4ea-723d-4677-909d-da25fccb4240",
+      "ProjectNumber": "TABS2027001122",
+      "ProjectName": "Hightower Business Park - Building 04",
+      "ProjectCreatedOn": "2026-09-15T15:31:15.94",
+      "ProjectStatus": 3008,
+      "FacilityName": "Hightower Business Park - Building 04",
+      "City": 785,
+      "County": 2079,
+      "TypeOfWork": 9001,
+      "EstimatedCost": 14695000.0000,
+      "DataVersionId": 900001,
+      "EstimatedStartDate": "2026-09-14T00:00:00",
+      "EstimatedEndDate": "2027-12-31T00:00:00"
+    }
+  ]
+}

@@ -1,12 +1,5 @@
 import { PgBoss } from "pg-boss";
-import { QUEUES } from "./queues";
-
-// A real-mode zip search (discovery + scraping + MX validation across many
-// businesses) can run well past pg-boss's default 900s job expiry. Once a job
-// expires, pg-boss retries it while the original run may still be in flight,
-// so both instances touch the same searchId concurrently. Give the queue
-// plenty of headroom instead.
-const EXPIRE_IN_SECONDS = 3600;
+import { QUEUES, QUEUE_OPTIONS } from "./queues";
 
 const globalForBoss = globalThis as unknown as { boss?: Promise<PgBoss> };
 
@@ -19,7 +12,7 @@ export function getBoss(): Promise<PgBoss> {
       const boss = new PgBoss({ connectionString: process.env.DATABASE_URL!, supervise: false, schedule: false });
       boss.on("error", (e) => console.error("[pg-boss]", e));
       await boss.start();
-      for (const q of Object.values(QUEUES)) await boss.createQueue(q, { expireInSeconds: EXPIRE_IN_SECONDS });
+      for (const q of Object.values(QUEUES)) await boss.createQueue(q, QUEUE_OPTIONS[q]);
       return boss;
     })();
   }

@@ -8,6 +8,7 @@ import { packageLabel } from "@/lib/config/packages";
 import { QualityBadge } from "./QualityBadge";
 import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
+import { TimingBadge } from "@/components/projects/TimingBadge";
 
 type Props = {
   rows: LeadRow[];
@@ -32,6 +33,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
               <TableHead>Zip</TableHead>
               <TableHead>Quality</TableHead>
               <TableHead>Source</TableHead>
+              <TableHead>Timing</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Package</TableHead>
               <TableHead>Provider</TableHead>
@@ -64,6 +66,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                 <TableCell>{b.zip}</TableCell>
                 <TableCell><QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} /></TableCell>
                 <TableCell><SourceBadge source={b.source} /></TableCell>
+                <TableCell><TimingBadge window={b.projects?.[0]?.timingWindow} /></TableCell>
                 <TableCell><StatusBadge status={b.outreachStatus} /></TableCell>
                 <TableCell className="text-sm text-neutral-600">{packageLabel(b.suggestedPackage)}</TableCell>
                 <TableCell className="text-sm text-neutral-600">{b.currentProviderHint ? `${b.currentProviderHint} (hint)` : ""}</TableCell>
@@ -102,6 +105,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
             <div className="mt-2 flex flex-wrap gap-1">
               <StatusBadge status={b.outreachStatus} />
               <SourceBadge source={b.source} />
+              {b.projects?.[0]?.timingWindow && <TimingBadge window={b.projects[0].timingWindow} />}
             </div>
           </li>
         ))}

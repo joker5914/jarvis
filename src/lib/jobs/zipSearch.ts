@@ -150,7 +150,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
   return ids;
 }
 
-async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
+export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b?.websiteUrl) return;
   const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher);
@@ -188,7 +188,7 @@ async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDep
   });
 }
 
-async function validateEmails(businessIds: string[], deps: ZipSearchDeps) {
+export async function validateEmails(businessIds: string[], deps: ZipSearchDeps) {
   const contacts = await prisma.contact.findMany({
     where: { businessId: { in: businessIds }, type: "email", validationStatus: "unchecked" },
   });

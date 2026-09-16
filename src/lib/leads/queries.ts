@@ -8,6 +8,7 @@ export const leadInclude = {
     orderBy: { type: "asc" as const },
   },
   tags: { include: { tag: true } },
+  projects: { select: { id: true, timingWindow: true, completionDate: true }, orderBy: { completionDate: "asc" as const }, take: 1 },
 } satisfies Prisma.BusinessInclude;
 
 export type LeadRow = Prisma.BusinessGetPayload<{ include: typeof leadInclude }>;
