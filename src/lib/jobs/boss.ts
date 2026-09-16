@@ -1,5 +1,5 @@
 import { PgBoss } from "pg-boss";
-import { QUEUES, QUEUE_OPTIONS } from "./queues";
+import { ensureQueue, QUEUES, QUEUE_OPTIONS } from "./queues";
 
 const globalForBoss = globalThis as unknown as { boss?: Promise<PgBoss> };
 
@@ -12,7 +12,7 @@ export function getBoss(): Promise<PgBoss> {
       const boss = new PgBoss({ connectionString: process.env.DATABASE_URL!, supervise: false, schedule: false });
       boss.on("error", (e) => console.error("[pg-boss]", e));
       await boss.start();
-      for (const q of Object.values(QUEUES)) await boss.createQueue(q, QUEUE_OPTIONS[q]);
+      for (const q of Object.values(QUEUES)) await ensureQueue(boss, q, QUEUE_OPTIONS[q]);
       return boss;
     })();
   }

@@ -45,13 +45,15 @@ export async function enqueueZipSearch(searchId: string, opts: { priority?: numb
 }
 
 /** Returns false when a tdlr-sync job is already queued under the "tdlr" singleton key (boss.send returns null). */
-export async function enqueueTdlrSync(): Promise<boolean> {
+export async function enqueueTdlrSync(opts: { origin?: JobOrigin } = {}): Promise<boolean> {
+  const origin = opts.origin ?? "manual";
   if (process.env.JOB_MODE === "inline") {
-    void runTdlrSync({ providers: getProviders(), log: console.log }).catch((e) => console.error("[inline tdlr-sync]", e));
+    const shouldPause = origin === "scanner" ? scannerPauseCheck((await getActor()).id) : undefined;
+    void runTdlrSync({ providers: getProviders(), log: console.log, shouldPause }).catch((e) => console.error("[inline tdlr-sync]", e));
     return true;
   }
   const boss = await getBoss();
-  const data: TdlrSyncJobData = {};
+  const data: TdlrSyncJobData = { origin };
   const id = await boss.send(QUEUES.tdlrSync, data, { retryLimit: 3, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "tdlr" });
   return id !== null;
 }
@@ -96,10 +98,25 @@ export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: stri
  * `enqueueZipSearch`/`enqueueTdlrSync`/`enqueueWebsiteRecheck` from this file, so this
  * function imports it lazily instead of at module scope.
  */
+let inlineTick: Promise<unknown> | null = null;
+
+/**
+ * In `JOB_MODE=inline`, a tick isn't sent to pg-boss (whose "exclusive" policy on this queue
+ * would dedupe it), so it needs its own in-process guard: without it, two calls that land
+ * before either's first `await` (e.g. the navbar pill and a manual "Run now" firing close
+ * together) would both pass a naive check-then-set and run `runScannerTick` concurrently.
+ * Assigning `inlineTick` synchronously, before any `await` in this branch, closes that race —
+ * a concurrent call sees it set and returns `false` instead of starting a second tick.
+ */
 export async function enqueueScannerTick(): Promise<boolean> {
   if (process.env.JOB_MODE === "inline") {
-    const { runScannerTick } = await import("@/lib/scanner/tick");
-    void runScannerTick().catch((e) => console.error("[inline scanner-tick]", e));
+    if (inlineTick) return false;
+    inlineTick = import("@/lib/scanner/tick")
+      .then(({ runScannerTick }) => runScannerTick())
+      .catch((e) => console.error("[inline scanner-tick]", e))
+      .finally(() => {
+        inlineTick = null;
+      });
     return true;
   }
   const boss = await getBoss();

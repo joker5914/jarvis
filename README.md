@@ -97,8 +97,12 @@ default 1):
   scanner-origin job checks the pause flag between steps and around website
   fetches. Resume clears the flag and the next tick picks the paused item
   back up where it left off. Stop pauses and disables the schedule.
-- Manual searches (started from the Leads page) always run ahead of scanner
-  work and ignore the window and pause state.
+- Manual searches (started from the Leads page) are sent at a higher queue
+  priority than scanner-origin searches and run on the worker via
+  `localConcurrency: 2` on the zip-search queue, so a manual search never has
+  to wait behind an in-flight scanner search; they ignore the window and
+  pause state. The Scanner itself still self-limits to `maxConcurrentJobs`
+  concurrent scanner-origin jobs.
 
 The Scanner page (`/scanner`) shows live state, the schedule form, targets,
 and a scanner-origin activity log; a pill in the navbar and a dashboard card

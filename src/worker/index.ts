@@ -1,5 +1,6 @@
 import { PgBoss } from "pg-boss";
 import {
+  ensureQueue,
   QUEUES,
   QUEUE_OPTIONS,
   type PromoteBatchJobData,
@@ -19,14 +20,19 @@ import { REGION } from "@/lib/config/region";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { prisma } from "@/lib/db";
 import { getProviders } from "@/lib/providers";
+import { getActor } from "@/lib/actor";
 
 async function main() {
   const boss = new PgBoss({ connectionString: process.env.DATABASE_URL! });
   boss.on("error", (e) => console.error("[pg-boss]", e));
   await boss.start();
-  for (const q of Object.values(QUEUES)) await boss.createQueue(q, QUEUE_OPTIONS[q]);
+  for (const q of Object.values(QUEUES)) await ensureQueue(boss, q, QUEUE_OPTIONS[q]);
 
-  await boss.work<ZipSearchJobData>(QUEUES.zipSearch, { batchSize: 1 }, async ([job]) => {
+  // localConcurrency: 2 so a manual search (MANUAL_PRIORITY, fetched first) never has to wait
+  // behind an in-flight scanner-origin search (SCANNER_PRIORITY) — the scanner still
+  // self-limits to one job via ScanSchedule.maxConcurrentJobs, and the queue's "stately"
+  // policy (see queues.ts) still allows only one active job per searchId.
+  await boss.work<ZipSearchJobData>(QUEUES.zipSearch, { batchSize: 1, localConcurrency: 2 }, async ([job]) => {
     const { searchId, origin } = job.data;
     console.log(`[zip-search] start ${searchId} (${origin ?? "manual"})`);
     const search = await prisma.search.findUnique({ where: { id: searchId }, select: { ownerId: true } });
@@ -36,14 +42,16 @@ async function main() {
   });
 
   await boss.work<TdlrSyncJobData>(QUEUES.tdlrSync, { batchSize: 1 }, async ([job]) => {
-    console.log(`[tdlr-sync] start`);
-    await runTdlrSync({ providers: getProviders(), log: console.log, signal: job.signal });
+    const { origin } = job.data;
+    console.log(`[tdlr-sync] start (${origin ?? "manual"})`);
+    const shouldPause = origin === "scanner" ? scannerPauseCheck((await getActor()).id) : undefined;
+    await runTdlrSync({ providers: getProviders(), log: console.log, signal: job.signal, shouldPause });
     console.log(`[tdlr-sync] done`);
   });
-  // Nightly at 03:00 Central; pg-boss dedupes the schedule by queue name.
+  // Nightly at 03:00 in the configured region; pg-boss dedupes the schedule by queue name.
   // singletonKey matches the manual "Sync now" key so a cron fire can never
   // queue a second run behind one already in flight.
-  await boss.schedule(QUEUES.tdlrSync, "0 3 * * *", {}, { tz: "America/Chicago", singletonKey: "tdlr" });
+  await boss.schedule(QUEUES.tdlrSync, "0 3 * * *", {}, { tz: REGION.timezone, singletonKey: "tdlr" });
 
   await boss.work<PromoteJobData>(QUEUES.promote, { batchSize: 1 }, async ([job]) => {
     console.log(`[promote] start ${job.data.businessId}`);
