@@ -2,11 +2,14 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json, parseJson } from "@/lib/api";
+import { enqueueEnrich } from "@/lib/jobs/enqueue";
+import { isProviderConfigured } from "@/lib/providers/keys";
 
 const schema = z.object({
   ids: z.array(z.string()).min(1).max(500),
   outreachStatus: z.enum(["not_contacted", "contacted", "interested", "not_a_fit", "customer"]).optional(),
   addTagId: z.string().optional(),
+  enrich: z.boolean().optional(),
 });
 
 export const POST = handle(async (req) => {
@@ -20,6 +23,11 @@ export const POST = handle(async (req) => {
     if (!tag) throw new ApiError(404, "Tag not found");
   }
 
+  if (body.enrich) {
+    if (ids.length > 200) throw new ApiError(400, "Enrich at most 200 leads per action");
+    if (!(await isProviderConfigured("apollo"))) throw new ApiError(409, "Apollo API key is not configured");
+  }
+
   if (body.outreachStatus) {
     await prisma.business.updateMany({ where: { id: { in: ids } }, data: { outreachStatus: body.outreachStatus } });
     await prisma.activityLog.createMany({
@@ -29,5 +37,9 @@ export const POST = handle(async (req) => {
   if (body.addTagId) {
     await prisma.businessTag.createMany({ data: ids.map((businessId) => ({ businessId, tagId: body.addTagId! })), skipDuplicates: true });
   }
-  return json({ updated: ids.length });
+  let enrichQueued = 0;
+  if (body.enrich) {
+    for (const id of ids) if (await enqueueEnrich(id, actor.id)) enrichQueued++;
+  }
+  return json({ updated: ids.length, enrichQueued });
 });

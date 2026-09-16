@@ -1,6 +1,8 @@
 import { getBoss } from "./boss";
 import {
   QUEUES,
+  QUEUE_OPTIONS,
+  type EnrichJobData,
   type JobOrigin,
   type PromoteBatchJobData,
   type PromoteJobData,
@@ -79,6 +81,29 @@ export async function enqueuePromoteBatch(): Promise<boolean> {
   const boss = await getBoss();
   const data: PromoteBatchJobData = {};
   const id = await boss.send(QUEUES.promoteBatch, data, { retryLimit: 1, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "promote-batch" });
+  return id !== null;
+}
+
+/**
+ * Unlike the other inline branches (which fire-and-forget with `void run…().catch(...)`),
+ * this one awaits `runEnrich` so a `JOB_MODE=inline` caller's 202 response comes back only
+ * after enrichment has actually finished (the Task 5 e2e relies on this).
+ */
+export async function enqueueEnrich(businessId: string, ownerId: string): Promise<boolean> {
+  if (process.env.JOB_MODE === "inline") {
+    const { runEnrich } = await import("./enrich");
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log });
+    return true;
+  }
+  const boss = await getBoss();
+  const data: EnrichJobData = { businessId, ownerId };
+  const id = await boss.send(QUEUES.enrich, data, {
+    singletonKey: businessId,
+    priority: MANUAL_PRIORITY,
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: QUEUE_OPTIONS.enrich.expireInSeconds,
+  });
   return id !== null;
 }
 

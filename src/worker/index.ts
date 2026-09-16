@@ -3,6 +3,7 @@ import {
   ensureQueue,
   QUEUES,
   QUEUE_OPTIONS,
+  type EnrichJobData,
   type PromoteBatchJobData,
   type PromoteJobData,
   type ScannerTickJobData,
@@ -14,6 +15,7 @@ import { runZipSearch } from "@/lib/jobs/zipSearch";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
+import { runEnrich } from "@/lib/jobs/enrich";
 import { scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
@@ -69,6 +71,13 @@ async function main() {
     console.log(`[website-recheck] start ${job.data.businessIds.length}`);
     await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
     console.log(`[website-recheck] done`);
+  });
+
+  await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {
+    const { businessId, ownerId } = job.data;
+    console.log(`[enrich] start ${businessId}`);
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal });
+    console.log(`[enrich] done ${businessId}`);
   });
 
   await boss.work<ScannerTickJobData>(QUEUES.scannerTick, { batchSize: 1 }, async () => {
