@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions, safeRedirectPath } from "@/lib/session";
 import { getActor } from "@/lib/actor";
+import { unlockLimiter, clientKey } from "@/lib/auth/rateLimit";
 
 function safeEqual(a: string, b: string) {
   const ab = Buffer.from(a);
@@ -19,12 +20,23 @@ export async function POST(req: NextRequest) {
   if (!expected || !secret) {
     return new NextResponse("APP_PASSPHRASE/APP_SECRET not configured", { status: 500 });
   }
+  const key = clientKey(req);
+  const gate = unlockLimiter.check(key);
+  if (!gate.allowed) {
+    const url = new URL("/unlock", req.url);
+    url.searchParams.set("error", "locked");
+    url.searchParams.set("next", next);
+    return NextResponse.redirect(url, { status: 303, headers: { "retry-after": String(gate.retryAfterSec ?? 900) } });
+  }
   if (!safeEqual(passphrase, expected)) {
+    unlockLimiter.recordFailure(key);
+    await new Promise((r) => setTimeout(r, 300)); // constant small delay on failure
     const url = new URL("/unlock", req.url);
     url.searchParams.set("error", "1");
     url.searchParams.set("next", next);
     return NextResponse.redirect(url, { status: 303 });
   }
+  unlockLimiter.reset(key);
   const actor = await getActor();
   const token = await createSessionToken(secret, actor.id);
   const safeNext = safeRedirectPath(next);
