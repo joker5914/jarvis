@@ -38,11 +38,15 @@ export function SearchList({ initial }: { initial: Search[] }) {
   }, [active]);
 
   async function rerun(id: string) {
-    const res = await fetch(`/api/searches/${id}/rerun`, { method: "POST" });
-    if (!res.ok) return toast.error("Could not re-run search");
-    const { search } = await res.json();
-    setItems((prev) => [search, ...prev]);
-    toast.success(`Re-running ${search.zip}`);
+    try {
+      const res = await fetch(`/api/searches/${id}/rerun`, { method: "POST" });
+      if (!res.ok) return toast.error("Could not re-run search");
+      const { search } = await res.json();
+      setItems((prev) => [search, ...prev]);
+      toast.success(`Re-running ${search.zip}`);
+    } catch {
+      toast.error("Could not re-run search");
+    }
   }
 
   if (items.length === 0) {
