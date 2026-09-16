@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual } from "node:crypto";
-import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
+import { createSessionToken, SESSION_COOKIE, sessionCookieOptions, safeRedirectPath } from "@/lib/session";
 
 function safeEqual(a: string, b: string) {
   const ab = Buffer.from(a);
@@ -25,7 +25,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.redirect(url, { status: 303 });
   }
   const token = await createSessionToken(secret);
-  const res = NextResponse.redirect(new URL(next.startsWith("/") ? next : "/", req.url), {
+  const safeNext = safeRedirectPath(next);
+  const res = NextResponse.redirect(new URL(safeNext, req.url), {
     status: 303,
   });
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());

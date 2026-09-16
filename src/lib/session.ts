@@ -38,3 +38,9 @@ export function sessionCookieOptions() {
     maxAge: SESSION_DAYS * 24 * 60 * 60,
   };
 }
+
+export function safeRedirectPath(next: string): string {
+  return next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
+    ? next
+    : "/";
+}
