@@ -1,4 +1,6 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { isWithinWindow } from "@/lib/scanner/window";
 import type { DiscoveredBusiness, Providers } from "@/lib/providers/types";
 
 /** Dependencies every background job receives. Manual runs pass only `providers`. */
@@ -50,10 +52,33 @@ export function discoveredToBusinessFields(biz: DiscoveredBusiness) {
   };
 }
 
-/** shouldPause for scanner-origin jobs: true once the user has asked the Scanner to pause. */
+/**
+ * shouldPause for scanner-origin jobs: true once the user has asked the Scanner to pause, or
+ * once the schedule's window has closed out from under an in-flight job (e.g. a job started
+ * inside the window is still running when `windowEnd`/`dailyEndTime` arrives). Reads the
+ * schedule alongside the state in one round trip, matching `readScanner`'s pattern.
+ */
 export function scannerPauseCheck(ownerId: string): () => Promise<boolean> {
   return async () => {
-    const s = await prisma.scannerState.findUnique({ where: { ownerId }, select: { pauseRequested: true } });
-    return !!s?.pauseRequested;
+    const [state, schedule] = await Promise.all([
+      prisma.scannerState.findUnique({ where: { ownerId }, select: { pauseRequested: true } }),
+      prisma.scanSchedule.findUnique({ where: { ownerId } }),
+    ]);
+    if (state?.pauseRequested) return true;
+    if (schedule && !isWithinWindow(schedule).ok) return true;
+    return false;
   };
+}
+
+/**
+ * `upsert()` with `update: {}` is a no-op once the row exists, so a P2002 from a concurrent
+ * writer racing the same upsert means the desired row is already there — safe to ignore rather
+ * than fail the whole job.
+ */
+export async function upsertIgnoringConflict<T>(fn: () => Promise<T>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+  }
 }

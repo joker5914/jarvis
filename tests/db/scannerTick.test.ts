@@ -9,10 +9,10 @@ const now = new Date("2026-09-16T15:00:00Z"); // Wednesday 10:00 Central
 const DAY = 86_400_000;
 
 function spies() {
-  const calls = { zip: [] as { searchId: string; opts: unknown }[], tdlr: 0, recheck: [] as string[][] };
+  const calls = { zip: [] as { searchId: string; opts: unknown }[], tdlr: 0, tdlrOpts: [] as unknown[], recheck: [] as string[][] };
   const enqueue: NonNullable<TickDeps["enqueue"]> = {
     zipSearch: async (searchId, opts) => { calls.zip.push({ searchId, opts }); return true; },
-    tdlrSync: async () => { calls.tdlr++; return true; },
+    tdlrSync: async (opts) => { calls.tdlr++; calls.tdlrOpts.push(opts); return true; },
     websiteRecheck: async (ids) => { calls.recheck.push(ids); return true; },
   };
   return { calls, enqueue };
@@ -61,10 +61,16 @@ describe("runScannerTick", () => {
     expect(Date.now() - state.lastTickAt!.getTime()).toBeLessThan(60_000);
   });
 
-  it("reports outside_window when the daily hours exclude now", async () => {
+  it("reports outside_window when the daily hours exclude now, with a future nextPlanned.at", async () => {
     await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true, dailyStartTime: "18:00", dailyEndTime: "22:00" } });
     const r = await runScannerTick({ now: () => now, enqueue: spies().enqueue });
     expect(r.status).toBe("outside_window");
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    const at = (state.nextPlanned as { at: string | null }).at;
+    expect(at).not.toBeNull();
+    expect(Date.parse(at!)).toBeGreaterThan(now.getTime());
+    // 18:00 today, later than the 10:00 "now".
+    expect(at).toBe(new Date("2026-09-16T23:00:00Z").toISOString());
   });
 
   it("starts the highest-priority due zip search with scanner origin and records it on the target", async () => {
@@ -147,6 +153,7 @@ describe("runScannerTick", () => {
     const r = await runScannerTick({ now: () => now, enqueue });
     expect(r.work).toEqual({ kind: "tdlr_sync" });
     expect(calls.tdlr).toBe(1);
+    expect(calls.tdlrOpts).toEqual([{ origin: "scanner" }]);
     const hot = await prisma.scanTarget.findUniqueOrThrow({ where: { ownerId_zip: { ownerId: OWNER, zip: "77005" } } });
     expect(hot.addedBy).toBe("auto_tdlr");
     expect(hot.priority).toBe(100);
@@ -158,6 +165,17 @@ describe("runScannerTick", () => {
     await prisma.providerConfig.create({ data: { provider: "google", dailyBudget: 1, usedToday: 1, usageDate: new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()) } });
     const { calls, enqueue } = spies();
     expect((await runScannerTick({ now: () => now, enqueue })).status).toBe("budget_exhausted");
+    expect(calls.zip).toHaveLength(0);
+  });
+
+  it("reports busy rather than budget_exhausted when a scanner job is already running (spec order: busy before budget)", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    await prisma.search.create({ data: { ownerId: OWNER, zip: "77084", origin: "scanner", status: "running" } });
+    await prisma.providerConfig.create({ data: { provider: "google", dailyBudget: 1, usedToday: 1, usageDate: new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()) } });
+    const { calls, enqueue } = spies();
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.status).toBe("running");
+    expect(r.work).toEqual({ kind: "busy" });
     expect(calls.zip).toHaveLength(0);
   });
 

@@ -23,6 +23,38 @@ function toMinutes(hhmm: string): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * The next real-time moment the daily/weekly window opens: `dailyStartTime` (or 00:00 if
+ * unset) on the next day allowed by `daysOfWeek` (any day if empty), computed in the
+ * schedule's timezone. Used for `nextPlanned.at` on a `day_off`/`outside_daily` tick so the UI
+ * shows a real future time rather than a stale `windowStart` from the past.
+ *
+ * Walks up to 7 days ahead (today plus a full week) so it terminates even when only today's
+ * weekday is allowed and today's start time has already passed — that case wraps to the same
+ * weekday next week. Today only counts if the target time hasn't passed yet; every later day
+ * in the walk counts as soon as its weekday is allowed, since the whole day is still ahead.
+ */
+export function nextWindowStart(s: Pick<WindowInput, "dailyStartTime" | "daysOfWeek" | "timezone">, now: Date): Date {
+  const tz = s.timezone || "UTC";
+  const { weekday: todayWeekday, minutes: currentMinutes } = localParts(now, tz);
+  const targetMinutes = s.dailyStartTime ? (toMinutes(s.dailyStartTime) ?? 0) : 0;
+  // The start of "today" in local time, expressed as an absolute instant. Adding whole days
+  // and a target minute-of-day to this anchor lands on that local wall-clock time (modulo a
+  // DST shift landing exactly inside the walked span, which this schedule's tests don't hit).
+  const localMidnight = now.getTime() - currentMinutes * 60_000;
+  for (let d = 0; d <= 7; d++) {
+    const weekday = (todayWeekday + d) % 7;
+    if (s.daysOfWeek.length > 0 && !s.daysOfWeek.includes(weekday)) continue;
+    if (d === 0 && targetMinutes <= currentMinutes) continue; // today's start time already passed
+    return new Date(localMidnight + d * DAY_MS + targetMinutes * 60_000);
+  }
+  // Unreachable: `daysOfWeek` empty always matches by d=1, and a non-empty list always
+  // recurs by d=7. Kept as a defensive fallback rather than a non-null assertion.
+  return new Date(localMidnight + DAY_MS + targetMinutes * 60_000);
+}
+
 export function isWithinWindow(
   s: WindowInput,
   now: Date = new Date(),

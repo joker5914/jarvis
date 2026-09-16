@@ -5,7 +5,7 @@ import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { budgetStatus } from "@/lib/providers/budget";
 import { isSyncRunning, readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { enqueueTdlrSync, enqueueWebsiteRecheck, enqueueZipSearch, SCANNER_PRIORITY } from "@/lib/jobs/enqueue";
-import { isWithinWindow } from "./window";
+import { isWithinWindow, nextWindowStart } from "./window";
 import { pickNextWork, workKey, type Work } from "./planner";
 import { logScanner, readScanner, setScannerState } from "./state";
 import type { ScannerStatus } from "@prisma/client";
@@ -14,14 +14,14 @@ export type TickDeps = {
   now?: () => Date;
   enqueue?: {
     zipSearch(searchId: string, opts: { priority: number; origin: "scanner" }): Promise<boolean>;
-    tdlrSync(): Promise<boolean>;
+    tdlrSync(opts: { origin: "scanner" }): Promise<boolean>;
     websiteRecheck(ids: string[], ownerId: string): Promise<boolean>;
   };
 };
 
 const defaultEnqueue: NonNullable<TickDeps["enqueue"]> = {
   zipSearch: async (id, opts) => enqueueZipSearch(id, opts),
-  tdlrSync: () => enqueueTdlrSync(),
+  tdlrSync: (opts) => enqueueTdlrSync(opts),
   websiteRecheck: (ids, ownerId) => enqueueWebsiteRecheck(ids, ownerId),
 };
 
@@ -79,8 +79,34 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   }
 
   const win = isWithinWindow(schedule, now);
-  if (!win.ok) return finish("outside_window", { currentActivity: null, nextPlanned: { kind: "window", at: schedule.windowStart?.toISOString() ?? null, detail: win.reason }, skipUntil, consecutiveFailures });
+  if (!win.ok) {
+    // before_start: windowStart is itself the next future time. after_end: the window is
+    // permanently over, so there's no next time. day_off/outside_daily: windowStart (if any)
+    // is in the past by now, so compute the next real occurrence of the daily/weekly window
+    // instead of surfacing a stale past timestamp to the UI.
+    const at =
+      win.reason === "before_start" ? (schedule.windowStart?.toISOString() ?? null) : win.reason === "after_end" ? null : nextWindowStart(schedule, now).toISOString();
+    return finish("outside_window", { currentActivity: null, nextPlanned: { kind: "window", at, detail: win.reason }, skipUntil, consecutiveFailures });
+  }
   if (state.pauseRequested) return finish("paused", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures });
+
+  // Busy check (spec 5.6 step 3) runs before the budget check (step 4): a job that's still
+  // running shouldn't have this tick flip status to budget_exhausted just because the budget
+  // also happens to be used up — the running job is the more relevant thing to report, and
+  // this tick isn't going to enqueue anything regardless of budget.
+  const running = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: { in: ["queued", "running"] } }, select: { id: true, zip: true, progress: true } });
+  const tdlr = await readSync(SYNC_KEYS.tdlr);
+  const tdlrRunning = isSyncRunning(tdlr.cursor, now);
+  // A running TDLR sync counts against the scanner's concurrency regardless of who started
+  // it (conservative and correct) — don't gate this on currentJobId, which only reflects
+  // what this tick's own bookkeeping last wrote.
+  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0);
+  if (runningScannerJobs >= schedule.maxConcurrentJobs) {
+    const cur = running[0];
+    const p = (cur?.progress as { step?: string; current?: number; total?: number } | null) ?? null;
+    const activity = cur ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}` : "TDLR sync running";
+    return finish("running", { currentActivity: activity, currentJobId: cur?.id ?? state.currentJobId, nextPlanned: null, skipUntil, consecutiveFailures }, { kind: "busy" });
+  }
 
   const budget = await budgetStatus("google");
   if (budget.exhausted) return finish("budget_exhausted", { currentActivity: `Google budget used ${budget.used}/${budget.limit}; resets at midnight`, nextPlanned: null, skipUntil, consecutiveFailures });
@@ -101,14 +127,6 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     }
   }
 
-  // Running work
-  const running = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: { in: ["queued", "running"] } }, select: { id: true, zip: true, progress: true } });
-  const tdlr = await readSync(SYNC_KEYS.tdlr);
-  const tdlrRunning = isSyncRunning(tdlr.cursor, now);
-  // A running TDLR sync counts against the scanner's concurrency regardless of who started
-  // it (conservative and correct) — don't gate this on currentJobId, which only reflects
-  // what this tick's own bookkeeping last wrote.
-  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0);
   const pausedSearch = await prisma.search.findFirst({ where: { ownerId, origin: "scanner", status: "paused" }, select: { id: true, zip: true }, orderBy: { updatedAt: "asc" } });
   const staleBefore = new Date(now.getTime() - schedule.websiteRecheckDays * DAY);
   const stale = await prisma.business.findMany({
@@ -131,12 +149,8 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     skipUntil,
   });
 
-  if (work.kind === "busy") {
-    const cur = running[0];
-    const p = (cur?.progress as { step?: string; current?: number; total?: number } | null) ?? null;
-    const activity = cur ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}` : "TDLR sync running";
-    return finish("running", { currentActivity: activity, currentJobId: cur?.id ?? state.currentJobId, nextPlanned: null, skipUntil, consecutiveFailures }, work);
-  }
+  // pickNextWork's own busy check can never trigger here — runningScannerJobs is already
+  // below schedule.maxConcurrentJobs, or this tick would have returned above.
   if (work.kind === "idle") {
     return finish("idle", { currentActivity: null, currentJobId: null, nextPlanned: { kind: "next", at: work.nextDueAt?.toISOString() ?? null, detail: work.reason }, skipUntil, consecutiveFailures }, work);
   }
@@ -144,7 +158,7 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   let queued = false;
   let jobId: string | null = null;
   if (work.kind === "tdlr_sync") {
-    queued = await enqueue.tdlrSync();
+    queued = await enqueue.tdlrSync({ origin: "scanner" });
     jobId = "tdlr";
   } else if (work.kind === "resume_search") {
     await prisma.search.update({ where: { id: work.searchId }, data: { status: "queued" } });
