@@ -33,22 +33,44 @@ export function cityFromAddress(addr: string | null): string | null {
   return city && !/\d/.test(city) ? city : null;
 }
 
-function canonicalLinkedin(url: string): string {
-  const u = new URL(url);
-  return `https://www.linkedin.com${u.pathname.replace(/\/+$/, "")}`;
+/**
+ * Guards against a malformed or non-LinkedIn URL from the provider: accepts scheme-less input,
+ * requires the host to actually be linkedin.com (or a subdomain), and returns null rather than
+ * throwing on anything else so the caller can skip just that one contact row instead of
+ * aborting the whole business.
+ */
+export function canonicalLinkedin(url: string): string | null {
+  const raw = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    if (host !== "linkedin.com" && !host.endsWith(".linkedin.com")) return null;
+    return `https://www.linkedin.com${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
 }
 
 export async function runEnrich(
   businessId: string,
   ownerId: string,
   deps: JobDeps,
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | null }> {
+  opts: { force?: boolean } = {},
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
   const log = (message: string) => prisma.activityLog.create({ data: { ownerId, businessId, kind: "enriched", message } });
+  if (!opts.force && b.lastEnrichedAt) {
+    const daysSince = Math.floor((Date.now() - b.lastEnrichedAt.getTime()) / 86_400_000);
+    if (daysSince < ENRICH_CONFIG.recheckDays) {
+      await log(`Enrichment skipped: enriched ${daysSince} day(s) ago (use Re-enrich to refresh)`);
+      return { added: 0, updated: 0, skipped: "recent" as const };
+    }
+  }
   let added = 0;
   let updated = 0;
+  let contactRows = 0;
   try {
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
@@ -61,10 +83,14 @@ export async function runEnrich(
       const personTitle = full.title;
       const rows: { type: "email" | "linkedin"; value: string }[] = [];
       if (full.email) rows.push({ type: "email", value: full.email.toLowerCase() });
-      if (full.linkedinUrl) rows.push({ type: "linkedin", value: canonicalLinkedin(full.linkedinUrl) });
+      if (full.linkedinUrl) {
+        const li = canonicalLinkedin(full.linkedinUrl);
+        if (li) rows.push({ type: "linkedin", value: li });
+      }
       // added/updated are counted per person (at most one increment to each per person, per
       // run), not per contact row: a person with both a fresh email and a fresh LinkedIn row
       // still counts once toward `added`, matching how the API/UI report "N people enriched".
+      // contactRows tracks the raw row count separately, for the activity message.
       let personAdded = false;
       let personUpdated = false;
       for (const r of rows) {
@@ -80,6 +106,7 @@ export async function runEnrich(
           prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle } }),
         );
         personAdded = true;
+        contactRows++;
       }
       if (personAdded) added++;
       if (personUpdated) updated++;
@@ -87,7 +114,7 @@ export async function runEnrich(
     await validateEmails([businessId], deps);
     await recomputeContactQuality(businessId);
     await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
-    await log(`Enriched via Apollo: ${added} new contact${added === 1 ? "" : "s"}, ${updated} updated`);
+    await log(`Enriched via Apollo: ${added} ${added === 1 ? "person" : "people"}, ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
     return { added, updated, skipped: null };
   } catch (e) {
     if (e instanceof BudgetExhaustedError) await log("Enrichment paused: Apollo daily budget exhausted");

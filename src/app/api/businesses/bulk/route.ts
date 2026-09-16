@@ -10,6 +10,7 @@ const schema = z.object({
   outreachStatus: z.enum(["not_contacted", "contacted", "interested", "not_a_fit", "customer"]).optional(),
   addTagId: z.string().optional(),
   enrich: z.boolean().optional(),
+  enrichForce: z.boolean().optional(),
 });
 
 export const POST = handle(async (req) => {
@@ -38,8 +39,16 @@ export const POST = handle(async (req) => {
     await prisma.businessTag.createMany({ data: ids.map((businessId) => ({ businessId, tagId: body.addTagId! })), skipDuplicates: true });
   }
   let enrichQueued = 0;
+  let enrichFailed = 0;
   if (body.enrich) {
-    for (const id of ids) if (await enqueueEnrich(id, actor.id)) enrichQueued++;
+    for (const id of ids) {
+      try {
+        if (await enqueueEnrich(id, actor.id, { force: body.enrichForce })) enrichQueued++;
+      } catch (e) {
+        enrichFailed++;
+        console.error(`[bulk enrich] ${id}`, e);
+      }
+    }
   }
-  return json({ updated: ids.length, enrichQueued });
+  return json({ updated: ids.length, enrichQueued, enrichFailed });
 });

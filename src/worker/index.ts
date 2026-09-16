@@ -74,9 +74,9 @@ async function main() {
   });
 
   await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {
-    const { businessId, ownerId } = job.data;
+    const { businessId, ownerId, force } = job.data;
     console.log(`[enrich] start ${businessId}`);
-    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal });
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal }, { force });
     console.log(`[enrich] done ${businessId}`);
   });
 

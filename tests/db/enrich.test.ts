@@ -43,12 +43,23 @@ describe("runEnrich", () => {
     const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
     expect(log).toHaveLength(1);
     expect(log[0].message).toMatch(/Apollo/);
+    expect(log[0].message).toBe("Enriched via Apollo: 2 people, 3 new contacts, 0 updated");
   });
-  it("is idempotent: a second run updates instead of duplicating", async () => {
+  it("is idempotent: a second run without force is skipped as recently enriched, and force re-runs without duplicating", async () => {
     const b = await biz();
-    await runEnrich(b.id, OWNER, deps());
-    const r = await runEnrich(b.id, OWNER, deps());
-    expect(r.added).toBe(0);
+    const d1 = deps();
+    await runEnrich(b.id, OWNER, d1);
+    expect(d1.enrichment.calls.enrich).toBe(2);
+
+    const d2 = deps();
+    const r2 = await runEnrich(b.id, OWNER, d2);
+    expect(r2).toEqual({ added: 0, updated: 0, skipped: "recent" });
+    expect(d2.enrichment.calls.enrich).toBe(0);
+    expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(3);
+
+    const d3 = deps();
+    const r3 = await runEnrich(b.id, OWNER, d3, { force: true });
+    expect(r3.added).toBe(0);
     expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(3);
   });
   it("fills the name and title on an existing website email instead of creating a duplicate", async () => {
