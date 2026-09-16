@@ -27,12 +27,22 @@ export type DiscoveredBusiness = {
 };
 
 export interface DiscoveryProvider {
+  /** Full results (name, phone, website...). Used by the promote flow for a handful of candidates. */
   searchCategory(
     query: string,
     center: { lat: number; lng: number },
     radiusMeters: number,
     maxResults?: number,
   ): Promise<DiscoveredBusiness[]>;
+  /** IDs-only Text Search (free SKU). Used by zip search; details are fetched separately for new IDs. */
+  searchCategoryIds(
+    query: string,
+    center: { lat: number; lng: number },
+    radiusMeters: number,
+    maxResults?: number,
+  ): Promise<string[]>;
+  /** Place Details for one place; null when the place no longer exists. */
+  getPlaceDetails(placeId: string): Promise<DiscoveredBusiness | null>;
 }
 
 export interface ValidationProvider {

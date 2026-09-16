@@ -15,6 +15,7 @@ type Progress = { step?: string; current?: number; total?: number; message?: str
 const STEP_LABELS: Record<string, string> = {
   geocode: "Locating zip",
   discover: "Finding businesses",
+  details: "Fetching place details",
   save: "Saving businesses",
   scrape: "Extracting contacts from websites",
   validate: "Validating emails",

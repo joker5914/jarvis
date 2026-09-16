@@ -9,6 +9,7 @@ import { extractWebsiteContacts } from "@/lib/extract/website";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness } from "@/lib/providers/types";
+import { DISCOVERY_CONFIG } from "@/lib/config/discovery";
 import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, type JobDeps } from "./shared";
 
 /**
@@ -39,23 +40,41 @@ export async function recomputeContactQuality(businessId: string) {
 }
 
 type Found = { biz: DiscoveredBusiness; category: string };
+type KnownFresh = { placeId: string; category: string };
 
-async function discover(searchId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[]) {
-  const found = new Map<string, Found>();
+/** Per category: IDs-only search; details only for places we don't have or haven't refreshed recently. */
+async function discover(searchId: string, ownerId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[]) {
+  const idsByCategory = new Map<string, string>(); // placeId -> first surfacing category
   for (let i = 0; i < CATEGORIES.length; i++) {
     await checkPause(deps);
     const c = CATEGORIES[i];
     await setProgress(searchId, { step: "discover", current: i + 1, total: CATEGORIES.length, message: c.label, doneSteps: done });
-    const results = await deps.providers.discovery.searchCategory(`${c.query} in ${zip}`, center, radius);
-    for (const biz of results) {
-      if (!biz.placeId || !biz.name) continue;
-      if (!found.has(biz.placeId)) found.set(biz.placeId, { biz, category: c.slug });
-    }
+    const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius);
+    for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
   }
-  return found;
+
+  const refreshBefore = new Date(Date.now() - DISCOVERY_CONFIG.detailsRefreshDays * 86_400_000);
+  const existing = await prisma.business.findMany({
+    where: { ownerId, googlePlaceId: { in: [...idsByCategory.keys()] } },
+    select: { googlePlaceId: true, googleFetchedAt: true },
+  });
+  const fresh = new Set(existing.filter((b) => b.googleFetchedAt && b.googleFetchedAt > refreshBefore).map((b) => b.googlePlaceId!));
+  const known = new Set(existing.map((b) => b.googlePlaceId!));
+
+  const found = new Map<string, Found>();
+  const toFetch = [...idsByCategory.keys()].filter((id) => !fresh.has(id));
+  let n = 0;
+  for (const id of toFetch) {
+    await checkPause(deps);
+    n++;
+    await setProgress(searchId, { step: "details", current: n, total: toFetch.length, doneSteps: done });
+    const biz = await deps.providers.discovery.getPlaceDetails(id);
+    if (biz && biz.name) found.set(id, { biz, category: idsByCategory.get(id)! });
+  }
+  return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
 }
 
-async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>) {
+async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[]) {
   const nameCounts = new Map<string, number>();
   for (const { biz } of found.values()) {
     const n = normalizeName(biz.name);
@@ -67,6 +86,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
     const fit = scoreSmbFit({ name: biz.name, sameNameCount: nameCounts.get(normalizeName(biz.name)) });
     const googleFields = {
       ...discoveredToBusinessFields(biz),
+      googleFetchedAt: new Date(),
       exclusion: fit.excluded ? ("enterprise" as const) : ("none" as const),
       exclusionReasons: fit.exclusionReasons,
       smbFitScore: fit.score,
@@ -111,6 +131,21 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
         create: { businessId: b.id, tagId: systemTag.id },
       });
     }
+  }
+
+  for (const { placeId, category } of knownFresh) {
+    const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: placeId } } });
+    if (!existing) continue;
+    const b = existing.primaryCategory
+      ? existing
+      : await prisma.business.update({ where: { id: existing.id }, data: { primaryCategory: category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category) } });
+    ids.push(b.id);
+
+    await prisma.searchBusiness.upsert({
+      where: { searchId_businessId: { searchId, businessId: b.id } },
+      update: {},
+      create: { searchId, businessId: b.id, surfacedByCategory: category },
+    });
   }
   return ids;
 }
@@ -201,9 +236,9 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
     if (!done.includes("discover")) {
-      const found = await discover(searchId, search.zip, center, radius, deps, done);
-      await setProgress(searchId, { step: "save", current: 0, total: found.size, doneSteps: done });
-      businessIds = await upsertBusinesses(searchId, ownerId, found);
+      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done);
+      await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
+      businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh);
       done.push("discover");
       await prisma.search.update({ where: { id: searchId }, data: { countsFound: businessIds.length } });
       log(`search ${searchId}: ${businessIds.length} businesses`);

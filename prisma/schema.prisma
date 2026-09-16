@@ -148,6 +148,7 @@ model Business {
   websiteCheckedAt        DateTime?
   websiteError            String?
   lastEnrichedAt          DateTime?
+  googleFetchedAt         DateTime?
   searches                SearchBusiness[]
   contacts                Contact[]
   tags                    BusinessTag[]

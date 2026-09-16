@@ -19,7 +19,7 @@ export type PlacesApiPlace = {
   addressComponents?: { longText?: string; shortText?: string; types: string[] }[];
 };
 
-const FIELD_MASK = [
+const SEARCH_FIELD_MASK = [
   "places.id",
   "places.displayName",
   "places.formattedAddress",
@@ -31,6 +31,11 @@ const FIELD_MASK = [
   "places.types",
   "places.addressComponents",
   "nextPageToken",
+].join(",");
+
+export const IDS_ONLY_FIELD_MASK = "places.id,nextPageToken";
+export const PLACE_DETAILS_FIELD_MASK = [
+  "id", "displayName", "formattedAddress", "location", "nationalPhoneNumber", "websiteUri", "rating", "userRatingCount", "types", "addressComponents",
 ].join(",");
 
 function haversineMeters(a: LatLng, b: LatLng) {
@@ -135,7 +140,7 @@ export class GooglePlacesProvider implements DiscoveryProvider {
           headers: {
             "content-type": "application/json",
             "X-Goog-Api-Key": key,
-            "X-Goog-FieldMask": FIELD_MASK,
+            "X-Goog-FieldMask": SEARCH_FIELD_MASK,
           },
           body: JSON.stringify(body),
         });
@@ -148,5 +153,46 @@ export class GooglePlacesProvider implements DiscoveryProvider {
       if (!pageToken) break;
     }
     return out.slice(0, maxResults);
+  }
+
+  async searchCategoryIds(query: string, center: LatLng, radiusMeters: number, maxResults = 60): Promise<string[]> {
+    const key = await requireKey();
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 3 && ids.length < maxResults; page++) {
+      const body: Record<string, unknown> = {
+        textQuery: query,
+        pageSize: 20,
+        locationBias: { circle: { center: { latitude: center.lat, longitude: center.lng }, radius: Math.min(radiusMeters, 50_000) } },
+      };
+      if (pageToken) body.pageToken = pageToken;
+      const data = await withBudget("google", async () => {
+        const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+          method: "POST",
+          headers: { "content-type": "application/json", "X-Goog-Api-Key": key, "X-Goog-FieldMask": IDS_ONLY_FIELD_MASK },
+          body: JSON.stringify(body),
+        });
+        if (res.status === 429) throw new Error("Places rate limited (429)");
+        if (!res.ok) throw new Error(`Places HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        return res.json() as Promise<{ places?: { id: string }[]; nextPageToken?: string }>;
+      });
+      for (const p of data.places ?? []) if (p.id) ids.push(p.id);
+      pageToken = data.nextPageToken;
+      if (!pageToken) break;
+    }
+    return ids.slice(0, maxResults);
+  }
+
+  async getPlaceDetails(placeId: string): Promise<DiscoveredBusiness | null> {
+    const key = await requireKey();
+    return withBudget("google", async () => {
+      const res = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+        headers: { "X-Goog-Api-Key": key, "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK },
+      });
+      if (res.status === 404) return null;
+      if (res.status === 429) throw new Error("Places rate limited (429)");
+      if (!res.ok) throw new Error(`Place details HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return mapPlace((await res.json()) as PlacesApiPlace);
+    });
   }
 }
