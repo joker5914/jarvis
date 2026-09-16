@@ -16,11 +16,17 @@ const RULES: ProviderRule[] = [
 ];
 
 function sentences(text: string): string[] {
-  return text
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const lines = text.split(/\n+/);
+  const result: string[] = [];
+  for (const line of lines) {
+    const normalized = line.replace(/\s+/g, " ");
+    const sents = normalized.split(/(?<=[.!?])\s+/);
+    for (const sent of sents) {
+      const trimmed = sent.trim();
+      if (trimmed) result.push(trimmed);
+    }
+  }
+  return result;
 }
 
 export function detectProvider(text: string): { provider: string; evidence: string } | null {

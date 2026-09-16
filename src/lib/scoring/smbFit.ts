@@ -42,7 +42,7 @@ export function scoreSmbFit(
   const text = [input.name, input.facilityName ?? ""].join(" ").toLowerCase();
   const exclusionReasons: string[] = [];
 
-  const chain = config.chains.find((c) => text.includes(c));
+  const chain = config.chains.find((c) => hasWord(text, c.trim()));
   if (chain) exclusionReasons.push(`chain:${chain.trim()}`);
   const entity = config.entityPatterns.find((p) => p.test(text));
   if (entity) exclusionReasons.push(`entity:${entity.source}`);
@@ -78,7 +78,7 @@ export function scoreSmbFit(
   if (input.workType === "renovation") add("work_type", 10, "renovation/alteration");
   else if (input.workType === "new_construction") add("work_type", 5, "new construction");
   for (const neg of config.softNegativeKeywords) {
-    if (text.includes(neg)) add("soft_negative", -30, `name contains "${neg}"`);
+    if (hasWord(text, neg.trim())) add("soft_negative", -30, `name contains "${neg}"`);
   }
 
   score = Math.max(0, Math.min(100, score));

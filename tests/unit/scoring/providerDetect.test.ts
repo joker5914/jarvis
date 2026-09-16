@@ -18,4 +18,12 @@ describe("detectProvider", () => {
     expect(detectProvider("we use T Mobile home internet")?.provider).toBe("tmobile");
     expect(detectProvider("Google Fiber available here")?.provider).toBe("google_fiber");
   });
+  it("respects line boundaries for context-sensitive brands", () => {
+    expect(detectProvider("Spectrum Dental Care\nFree WiFi Network Available")).toBeNull();
+  });
+  it("finds context-sensitive brands on the same line", () => {
+    const r = detectProvider("Menu\nOur internet is provided by Frontier Business\nHours");
+    expect(r?.provider).toBe("frontier");
+    expect(r?.evidence).toBe("Our internet is provided by Frontier Business");
+  });
 });

@@ -36,6 +36,8 @@ export function scoreContactQuality(input: ContactQualityInput): ContactQualityR
 
   if (input.websiteReachable === true) add("website_reachable", 25, "website loads");
 
+  // Intentional asymmetry: phones score when well-formed (format validation only, !== "invalid"),
+  // while emails score only when MX-verified (=== "valid"). Phones are harder to validate than emails.
   const googlePhoneOk = !!input.phone && isValidPhoneNumber(input.phone, "US");
   const phoneContactOk = input.contacts.some(
     (c) => c.type === "phone" && c.validationStatus !== "invalid",

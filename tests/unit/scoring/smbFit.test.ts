@@ -60,4 +60,37 @@ describe("scoreSmbFit", () => {
     const r2 = scoreSmbFit({ name: "Bella Nails & Spa", estimatedCost: 100_000 });
     expect(r2.band).toBe("medium");
   });
+
+  it("does not exclude on partial chain match", () => {
+    const r = scoreSmbFit({ name: "Chasewood Family Dental" });
+    expect(r.excluded).toBe(false);
+    expect(r.score).toBe(25);
+  });
+
+  it("does not apply soft negative on partial keyword match", () => {
+    const r = scoreSmbFit({ name: "Parkway Dental", estimatedCost: 100_000 });
+    expect(r.excluded).toBe(false);
+    expect(r.score).toBe(45);
+    expect(r.band).toBe("medium");
+    expect(r.reasons.map((x) => x.code)).toEqual(["positive_keyword", "cost_under_250k"]);
+  });
+
+  it("hard-excludes by exact chain name", () => {
+    const r = scoreSmbFit({ name: "HEB Grocery" });
+    expect(r.excluded).toBe(true);
+    expect(r.exclusionReasons[0]).toMatch(/^chain:/);
+  });
+
+  it("hard-excludes McDonald's", () => {
+    const r = scoreSmbFit({ name: "McDonald's" });
+    expect(r.excluded).toBe(true);
+  });
+
+  it("floors soft negatives even when cost is positive", () => {
+    const r = scoreSmbFit({ name: "Hightower Business Park - Building 05", estimatedCost: 100_000 });
+    expect(r.excluded).toBe(false);
+    expect(r.score).toBe(0);
+    expect(r.band).toBe("low");
+    expect(r.reasons.map((x) => x.code)).toEqual(["cost_under_250k", "soft_negative", "soft_negative"]);
+  });
 });

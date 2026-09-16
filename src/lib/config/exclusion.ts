@@ -41,7 +41,7 @@ export const DEFAULT_EXCLUSION_CONFIG: ExclusionConfig = {
   ],
   softNegativeKeywords: [
     "apartments", "church", "school", "park", "sidewalk", "warehouse", "distribution",
-    "industrial", "building 0",
+    "industrial", "building",
   ],
   costHardLimit: 2_000_000,
   sameNameLimit: 5,
