@@ -16,7 +16,7 @@ const schema = z.object({
 export const POST = handle(async (req) => {
   const actor = await getActor();
   const body = await parseJson(req, schema);
-  const owned = await prisma.business.findMany({ where: { id: { in: body.ids }, ownerId: actor.id }, select: { id: true } });
+  const owned = await prisma.business.findMany({ where: { id: { in: body.ids }, ownerId: actor.id }, select: { id: true, exclusion: true } });
   const ids = owned.map((b) => b.id);
 
   if (body.addTagId) {
@@ -40,15 +40,23 @@ export const POST = handle(async (req) => {
   }
   let enrichQueued = 0;
   let enrichFailed = 0;
+  let enrichSkipped = 0;
   if (body.enrich) {
-    for (const id of ids) {
+    // Excluded businesses are never queued for enrichment (mirrors the single-business route's
+    // 409): skip them silently here (a bulk action shouldn't fail for a mixed selection) but
+    // report the count so the UI can say what happened instead of implying they were queued.
+    for (const b of owned) {
+      if (b.exclusion !== "none") {
+        enrichSkipped++;
+        continue;
+      }
       try {
-        if (await enqueueEnrich(id, actor.id, { force: body.enrichForce })) enrichQueued++;
+        if (await enqueueEnrich(b.id, actor.id, { force: body.enrichForce })) enrichQueued++;
       } catch (e) {
         enrichFailed++;
-        console.error(`[bulk enrich] ${id}`, e);
+        console.error(`[bulk enrich] ${b.id}`, e);
       }
     }
   }
-  return json({ updated: ids.length, enrichQueued, enrichFailed });
+  return json({ updated: ids.length, enrichQueued, enrichFailed, enrichSkipped });
 });

@@ -39,8 +39,10 @@ export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => v
       return;
     }
     if (!res.ok) { toast.error(data.error ?? "Bulk enrich failed"); return; }
-    const { enrichQueued, enrichFailed } = data;
-    toast.success(`Queued ${enrichQueued} for enrichment${enrichFailed ? `, ${enrichFailed} failed` : ""}`);
+    const { enrichQueued, enrichFailed, enrichSkipped } = data;
+    toast.success(
+      `Queued ${enrichQueued} for enrichment${enrichSkipped ? `, ${enrichSkipped} excluded (skipped)` : ""}${enrichFailed ? `, ${enrichFailed} failed` : ""}`,
+    );
     clear();
     refresh();
   }

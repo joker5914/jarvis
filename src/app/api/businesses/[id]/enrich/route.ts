@@ -7,8 +7,11 @@ import { isProviderConfigured } from "@/lib/providers/keys";
 export const POST = handle(async (req, ctx) => {
   const { id } = await ctx.params;
   const actor = await getActor();
-  const b = await prisma.business.findFirst({ where: { id, ownerId: actor.id }, select: { id: true } });
+  const b = await prisma.business.findFirst({ where: { id, ownerId: actor.id }, select: { id: true, exclusion: true } });
   if (!b) throw new ApiError(404, "Business not found");
+  if (b.exclusion !== "none") {
+    return json({ error: "Excluded businesses are not enriched" }, 409);
+  }
   if (!(await isProviderConfigured("apollo"))) {
     return json({ error: "Apollo API key is not configured", settingsHref: "/settings" }, 409);
   }

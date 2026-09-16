@@ -146,9 +146,15 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           <h2 className="text-xl font-semibold">{b.name}</h2>
           <QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} />
           <SourceBadge source={b.source} />
-          <Button size="sm" variant="outline" className="ml-auto" data-testid="enrich-button" disabled={enriching} onClick={enrich}>
-            {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
-          </Button>
+          {b.exclusion === "none" ? (
+            <Button size="sm" variant="outline" className="ml-auto" data-testid="enrich-button" disabled={enriching} onClick={enrich}>
+              {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+            </Button>
+          ) : (
+            <span className="ml-auto text-xs text-muted-foreground" data-testid="enrich-excluded-note">
+              Excluded — not enriched
+            </span>
+          )}
         </div>
         <p className="text-sm text-muted-foreground">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
         <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
