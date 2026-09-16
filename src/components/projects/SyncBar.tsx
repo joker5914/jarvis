@@ -8,10 +8,11 @@ import { timeAgo } from "@/lib/format";
 type Cursor = { status: string; message?: string; current?: number; total?: number; error?: string | null; counts?: Record<string, number> };
 type Status = { lastSuccessfulAt: string | null; cursor: Cursor; batch: { lastSuccessfulAt: string | null; cursor: Cursor } };
 
-export function SyncBar({ onActivity }: { onActivity: (running: boolean) => void }) {
+export function SyncBar({ onActivity, onChanged }: { onActivity: (running: boolean) => void; onChanged: () => void }) {
   const [s, setS] = useState<Status | null>(null);
   const [statusFailed, setStatusFailed] = useState(false);
   const toastedRef = useRef(false);
+  const wasRunningRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -34,10 +35,12 @@ export function SyncBar({ onActivity }: { onActivity: (running: boolean) => void
   const running = s?.cursor.status === "running" || s?.batch.cursor.status === "running";
   useEffect(() => {
     onActivity(!!running);
+    if (wasRunningRef.current && !running) onChanged();
+    wasRunningRef.current = !!running;
     if (!running) return;
     const t = setInterval(load, 3000);
     return () => clearInterval(t);
-  }, [running, load, onActivity]);
+  }, [running, load, onActivity, onChanged]);
 
   async function post(url: string, label: string) {
     const r = await fetch(url, { method: "POST" });
@@ -45,6 +48,11 @@ export function SyncBar({ onActivity }: { onActivity: (running: boolean) => void
     if (!r.ok) return toast.error(`${label} failed to start`);
     toast.success(`${label} started`);
     setTimeout(load, 500);
+    // A fast inline-mode job can finish before "running" is ever observed by
+    // the status poll above, in which case the true->false transition never
+    // fires onChanged(). This unconditional follow-up call picks up results
+    // even when the running window was missed entirely.
+    setTimeout(onChanged, 1200);
   }
 
   const c = s?.cursor;

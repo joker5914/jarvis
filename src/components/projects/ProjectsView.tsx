@@ -49,7 +49,7 @@ export function ProjectsView() {
 
   return (
     <div className="space-y-4">
-      <SyncBar onActivity={setSyncActive} />
+      <SyncBar onActivity={setSyncActive} onChanged={load} />
       <div className="flex flex-col gap-4 md:flex-row">
         <aside className="hidden w-64 shrink-0 md:block">
           <div className="sticky top-20 rounded-lg border bg-white p-4 dark:bg-neutral-900"><ProjectFilters /></div>
