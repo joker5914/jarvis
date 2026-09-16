@@ -4,7 +4,9 @@ import { config as loadEnv } from "dotenv";
 
 export default async function globalSetup() {
   loadEnv({ path: ".env" });
-  const testUrl = process.env.TEST_DATABASE_URL!;
+  const testUrl = process.env.TEST_DATABASE_URL;
+  if (!testUrl) throw new Error("TEST_DATABASE_URL missing in .env");
+  if (!testUrl.includes("_test")) throw new Error("TEST_DATABASE_URL must point at a *_test database");
   const env = { ...process.env, DATABASE_URL: testUrl };
 
   // NOTE (deviation from brief): the brief's `prisma db push --force-reset` is

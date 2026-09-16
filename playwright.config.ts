@@ -2,7 +2,9 @@ import { defineConfig } from "@playwright/test";
 import { config as loadEnv } from "dotenv";
 
 loadEnv({ path: ".env" });
-const testDb = process.env.TEST_DATABASE_URL!;
+const testDb = process.env.TEST_DATABASE_URL;
+if (!testDb) throw new Error("TEST_DATABASE_URL missing in .env");
+if (!testDb.includes("_test")) throw new Error("TEST_DATABASE_URL must point at a *_test database");
 
 export default defineConfig({
   testDir: "tests/e2e",
