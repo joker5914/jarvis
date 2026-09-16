@@ -50,12 +50,17 @@ export async function runWebsiteRecheck(businessIds: string[], ownerId: string, 
     deps.log?.(`website recheck: ${rechecked} businesses`);
     return { rechecked };
   } finally {
-    // Only clear the marker if it's still this job's own `website_recheck:<ISO>` stamp — a
-    // plain currentJobId belonging to some other job (or a newer website_recheck marker set
-    // after this run started) is left alone.
+    // Only clear the marker if it's still a `website_recheck:<ISO>` stamp — a plain
+    // currentJobId belonging to some other job is left alone. The clear itself is conditioned
+    // at the DB level on currentJobId still equalling the exact value just read: `updateMany`
+    // (not `update`, since the where clause needs both ownerId and currentJobId) only performs
+    // the write if nothing changed it between the read and the write, so a newer
+    // website_recheck marker set by another run in that gap can never be clobbered — this run
+    // can only ever clear the marker it saw, never a different one that replaced it.
     const state = await prisma.scannerState.findUnique({ where: { ownerId }, select: { currentJobId: true } });
-    if (state?.currentJobId?.startsWith(WEBSITE_RECHECK_JOB_PREFIX)) {
-      await prisma.scannerState.update({ where: { ownerId }, data: { currentJobId: null } });
+    const marker = state?.currentJobId;
+    if (marker?.startsWith(WEBSITE_RECHECK_JOB_PREFIX)) {
+      await prisma.scannerState.updateMany({ where: { ownerId, currentJobId: marker }, data: { currentJobId: null } });
     }
   }
 }

@@ -202,12 +202,21 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     // function would otherwise get around to writing the marker via `finish()` below. Writing
     // it here first means the job's `finally` always finds its own marker already in place, so
     // it always finds something to clear rather than racing to clear a marker that isn't there
-    // yet.
+    // yet. This is also the *only* write of currentJobId for this branch — see below.
     await setScannerState(ownerId, { currentJobId: jobId });
     queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
   }
   const key = workKey(work);
   if (key === "website_recheck") skipUntil[key] = new Date(now.getTime() + HOUR).toISOString(); // one batch per hour at most
   await logScanner(ownerId, `${describe(work)}${queued ? "" : " (already queued)"}`);
-  return finish("running", { currentActivity: describe(work), currentJobId: jobId, nextPlanned: null, skipUntil, consecutiveFailures }, work);
+  // website_recheck's marker was already persisted above, before enqueueing; omitting
+  // currentJobId from this patch (rather than redundantly re-writing the identical value)
+  // means this write can never race a fast inline job's own `finally` and clobber it back in
+  // after the job has already cleared it — setScannerState leaves a field untouched whenever
+  // the caller's patch doesn't include that key at all.
+  const extra: Parameters<typeof setScannerState>[1] =
+    work.kind === "website_recheck"
+      ? { currentActivity: describe(work), nextPlanned: null, skipUntil, consecutiveFailures }
+      : { currentActivity: describe(work), currentJobId: jobId, nextPlanned: null, skipUntil, consecutiveFailures };
+  return finish("running", extra, work);
 }
