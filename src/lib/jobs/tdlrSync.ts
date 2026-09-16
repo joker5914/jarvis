@@ -8,7 +8,7 @@ import { scoreProjectFields } from "@/lib/scoring/projectScoring";
 import { timingWindowFor } from "@/lib/scoring/timingWindow";
 import { checkPause, JobPausedError, type JobDeps } from "./shared";
 import { readSync, SYNC_KEYS, writeSync, type SyncCursor } from "./syncStatus";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
 export type TdlrSyncDeps = JobDeps & { now?: () => Date };
 
@@ -137,8 +137,17 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
           await prisma.project.update({ where: { id: existing.id }, data: data as unknown as Prisma.ProjectUncheckedUpdateInput });
           counts.updated++;
         } else {
-          await prisma.project.create({ data: { ...data, ownerId } });
-          counts.created++;
+          try {
+            await prisma.project.create({ data: { ...data, ownerId } });
+            counts.created++;
+          } catch (e) {
+            // Two concurrent TDLR syncs for the same owner (e.g. two e2e specs both POSTing
+            // /api/projects/sync at once — isSyncRunning() isn't atomic with starting the sync)
+            // can race this create for the same projectNumber; the loser's row already exists
+            // with equivalent data from the same registry scan, so skip it rather than fail
+            // the whole sync.
+            if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+          }
         }
       }
       start += page.items.length;

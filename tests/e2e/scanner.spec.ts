@@ -22,7 +22,14 @@ test("scanner is disabled until the schedule is enabled, then runs a target zip"
   // having already synced — sync directly via the API and poll until it's done (`running` is
   // false) rather than just "not running yet", since that's also true for an instant before
   // the fire-and-forget sync has actually started; `lastSuccessfulAt` set confirms it finished.
-  await page.request.post("/api/projects/sync");
+  //
+  // projects.spec.ts's own first test does the same thing, and Playwright runs spec files
+  // across parallel workers, so both can be racing this at once. Only POST when no sync has
+  // ever succeeded yet (a POST while one is already running/queued just 409s harmlessly, but
+  // skipping it when we already know a successful sync exists avoids two callers both passing
+  // isSyncRunning()'s check before either's fire-and-forget sync has actually started).
+  const before = await (await page.request.get("/api/projects/sync")).json();
+  if (!before.lastSuccessfulAt) await page.request.post("/api/projects/sync");
   await expect
     .poll(
       async () => {

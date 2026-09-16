@@ -22,6 +22,15 @@ const env = {
   NEXT_TELEMETRY_DISABLED: "1",
   NEXT_DIST_DIR: ".next-e2e",
 };
+// `.env` sets NODE_ENV=development (R3: so a bare `node`/`tsx` worker process, which has no
+// framework default for it, can pick up ensureQueue's dev/test-only pg-boss policy
+// reconciliation). `next build`/`next start` set NODE_ENV themselves (production) and, unlike
+// `next dev`, treat an inherited value that disagrees as a hard error rather than just
+// overriding it — so it must be stripped here before spawning either, and Next sets it back to
+// "production" on its own. JOB_MODE=inline (set below via playwright.config.ts's
+// webServer.env) means the app itself never calls getBoss()/ensureQueue at all during e2e, so
+// this queue-policy reconciliation isn't something the e2e path needs to run anyway.
+delete env.NODE_ENV;
 
 function snapshot(files) {
   return files.map((file) => {
