@@ -105,7 +105,7 @@ export class FakeValidationProvider implements ValidationProvider {
 }
 
 export class FakeEnrichmentProvider implements EnrichmentProvider {
-  calls = { search: 0, enrich: 0 };
+  calls = { search: 0, enrich: 0, orgSearch: 0 };
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
     this.calls.search++;
     const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;

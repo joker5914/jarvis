@@ -8,8 +8,11 @@ SDR can triage and track outreach from one leads table.
 
 This is Plan 1 of the project: zip-code search and the leads table, detail
 drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
-Plan 3 (below) adds the always-on Scanner. Apollo enrichment and a
-settings/API-key UI are upcoming plans, not yet built.
+Plan 3 (below) adds the always-on Scanner. Plan 4 adds Apollo enrichment
+(owner/GM contact search and match) and a Settings page for pasting API
+keys. Apollo enrichment normally searches people by the business's website
+domain; businesses without a usable website domain cost one extra Apollo
+credit for an Organization Search before the people lookup.
 
 ## Prerequisites
 

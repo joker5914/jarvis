@@ -17,37 +17,73 @@ beforeEach(() => vi.useRealTimers());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ApolloEnrichmentProvider.searchPeople", () => {
-  it("posts domain, titles, seniorities and per_page with the api key header, and ranks owners first", async () => {
+  it("sends people search parameters in the query string (arrays as name[]), and ranks owners first", async () => {
     mockFetch(() => json({ total_entries: 3, people: [
       { id: "p1", first_name: "Sam", last_name_obfuscated: "K.", title: "Barista", has_email: true },
       { id: "p2", first_name: "Maria", last_name_obfuscated: "L.", title: "Owner", has_email: true },
       { id: "p3", first_name: "Lee", last_name_obfuscated: "T.", title: "General Manager", has_email: false },
     ] }));
-    const p = new ApolloEnrichmentProvider();
-    const people = await p.searchPeople({ domain: "bellanails.com", orgName: "Bella Nails", city: "Houston" }, 5);
-    expect(calls[0].url).toBe("https://api.apollo.io/api/v1/mixed_people/api_search");
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "bellanails.com", orgName: "Bella Nails", city: "Houston" }, 5);
+    const u = new URL(calls[0].url);
+    expect(u.origin + u.pathname).toBe("https://api.apollo.io/api/v1/mixed_people/api_search");
+    expect(u.searchParams.getAll("q_organization_domains_list[]")).toEqual(["bellanails.com"]);
+    expect(u.searchParams.getAll("person_titles[]")).toContain("owner");
+    expect(u.searchParams.getAll("person_seniorities[]")).toContain("owner");
+    expect(u.searchParams.get("include_similar_titles")).toBe("true");
+    expect(u.searchParams.get("per_page")).toBe("5");
+    expect(u.searchParams.get("page")).toBe("1");
+    expect(calls[0].init.body).toBeUndefined();
     expect((calls[0].init.headers as Record<string, string>)["x-api-key"]).toBe("test-key");
-    const body = JSON.parse(String(calls[0].init.body));
-    expect(body.q_organization_domains_list).toEqual(["bellanails.com"]);
-    expect(body.per_page).toBe(5);
-    expect(body.person_titles).toContain("owner");
-    expect(body.person_seniorities).toContain("owner");
     expect(people.map((x) => x.apolloId)).toEqual(["p2", "p3", "p1"]);
     expect(people[0]).toMatchObject({ firstName: "Maria", lastName: null, title: "Owner", email: null, hasEmail: true });
   });
-  it("falls back to keyword + location when there is no domain", async () => {
-    mockFetch(() => json({ total_entries: 0, people: [] }));
-    await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston" }, 5);
-    const body = JSON.parse(String(calls[0].init.body));
-    expect(body.q_organization_domains_list).toBeUndefined();
-    expect(body.q_keywords).toBe("Bella Nails");
-    expect(body.organization_locations).toEqual(["Houston"]);
+
+  it("without a domain, organization has a primary_domain: org search by name + city, then people by q_organization_domains_list[]", async () => {
+    mockFetch((c) => c.url.includes("/mixed_companies/search")
+      ? json({ organizations: [{ id: "org1", name: "Bella Nails", primary_domain: "bellanails.com" }] })
+      : json({ total_entries: 1, people: [{ id: "p1", first_name: "Maria", title: "Owner", has_email: true }] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston" }, 5);
+    const org = new URL(calls[0].url);
+    expect(org.pathname).toBe("/api/v1/mixed_companies/search");
+    expect(org.searchParams.get("q_organization_name")).toBe("Bella Nails");
+    expect(org.searchParams.getAll("organization_locations[]")).toEqual(["Houston"]);
+    expect(org.searchParams.get("per_page")).toBe("1");
+    expect(org.searchParams.get("page")).toBe("1");
+    const ppl = new URL(calls[1].url);
+    expect(ppl.searchParams.getAll("q_organization_domains_list[]")).toEqual(["bellanails.com"]);
+    expect(ppl.searchParams.has("organization_ids[]")).toBe(false);
+    expect(people.map((p) => p.apolloId)).toEqual(["p1"]);
   });
+
+  it("without a domain, organization has no primary_domain: people search falls back to organization_ids[]", async () => {
+    mockFetch((c) => c.url.includes("/mixed_companies/search")
+      ? json({ organizations: [{ id: "org1", name: "Bella Nails" }] })
+      : json({ total_entries: 1, people: [{ id: "p1", first_name: "Maria", title: "Owner", has_email: true }] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston" }, 5);
+    const ppl = new URL(calls[1].url);
+    expect(ppl.searchParams.getAll("organization_ids[]")).toEqual(["org1"]);
+    expect(ppl.searchParams.has("q_organization_domains_list[]")).toBe(false);
+    expect(people.map((p) => p.apolloId)).toEqual(["p1"]);
+  });
+
+  it("without a domain and no organization match: returns [] after one org-search call", async () => {
+    mockFetch(() => json({ organizations: [] }));
+    expect(await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Nope", city: null }, 5)).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
   it("treats 422 as no results and throws on other errors", async () => {
     mockFetch(() => json({ error: "bad" }, 422));
     expect(await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).toEqual([]);
     mockFetch(() => json({ error: "slow down" }, 429));
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/429/);
+  });
+});
+
+describe("ApolloEnrichmentProvider.searchOrganization", () => {
+  it("422 on organization search returns null", async () => {
+    mockFetch(() => json({ error: "bad" }, 422));
+    expect(await new ApolloEnrichmentProvider().searchOrganization("Nope", null)).toBeNull();
   });
 });
 
