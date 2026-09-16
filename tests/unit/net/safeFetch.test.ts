@@ -43,4 +43,25 @@ describe("safeFetch", () => {
     const text = await readCapped(res, 1_000);
     expect(text.length).toBe(1_000);
   });
+  it("pins the connection to the validated addresses via a dispatcher lookup", async () => {
+    let seen: unknown;
+    const f = vi.fn(async (_u: string, init: RequestInit & { dispatcher?: unknown }) => {
+      seen = init.dispatcher;
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+    expect(seen).toBeDefined();
+    const d = seen as { lookupFor: (host: string) => Promise<{ address: string; family: number }[]> };
+    await expect(d.lookupFor("example.com")).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+    await expect(d.lookupFor("other.example")).rejects.toThrow(/pinned/);
+  });
+  it("does not attach a dispatcher for IP-literal hosts (nothing to pin)", async () => {
+    let seen: unknown = "unset";
+    const f = vi.fn(async (_u: string, init: RequestInit & { dispatcher?: unknown }) => {
+      seen = init.dispatcher;
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    await safeFetch("http://93.184.216.34/", {}, { fetchImpl: f });
+    expect(seen).toBeUndefined();
+  });
 });

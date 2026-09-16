@@ -26,8 +26,17 @@ describe("isPrivateAddress", () => {
 
 describe("assertSafeUrl", () => {
   it("accepts a public https host", async () => {
-    const u = await assertSafeUrl("https://example.com/contact", resolveTo(["93.184.216.34"]));
-    expect(u.hostname).toBe("example.com");
+    const { url } = await assertSafeUrl("https://example.com/contact", resolveTo(["93.184.216.34"]));
+    expect(url.hostname).toBe("example.com");
+  });
+  it("returns the resolver's addresses for a resolved public host", async () => {
+    const { addresses } = await assertSafeUrl("https://example.com/", resolveTo(["93.184.216.34", "93.184.216.35"]));
+    expect(addresses).toEqual(["93.184.216.34", "93.184.216.35"]);
+  });
+  it("returns an empty addresses list for an IP-literal host", async () => {
+    const { addresses, url } = await assertSafeUrl("http://8.8.8.8/", resolveTo(["8.8.8.8"]));
+    expect(addresses).toEqual([]);
+    expect(url.hostname).toBe("8.8.8.8");
   });
   it.each(["ftp://example.com/", "file:///etc/passwd", "javascript:alert(1)"])("rejects protocol %s", async (raw) => {
     await expect(assertSafeUrl(raw, resolveTo(["93.184.216.34"]))).rejects.toBeInstanceOf(UnsafeUrlError);
@@ -49,7 +58,8 @@ describe("assertSafeUrl", () => {
     await expect(assertSafeUrl("http://user:pw@example.com/", resolveTo(["8.8.8.8"]))).rejects.toThrow(/credentials/);
     await expect(assertSafeUrl("http://nope.example/", resolveTo([]))).rejects.toThrow(/resolve/);
     await expect(assertSafeUrl("http://example.com:5432/", resolveTo(["8.8.8.8"]))).rejects.toThrow(/port/);
-    await expect(assertSafeUrl("https://example.com:8443/", resolveTo(["8.8.8.8"]))).resolves.toBeInstanceOf(URL);
+    const { url } = await assertSafeUrl("https://example.com:8443/", resolveTo(["8.8.8.8"]));
+    expect(url).toBeInstanceOf(URL);
   });
   it("rejects a literal hex-hextet IPv4-mapped private address", async () => {
     await expect(assertSafeUrl("http://[::ffff:a9fe:a9fe]/", resolveTo([]))).rejects.toBeInstanceOf(UnsafeUrlError);

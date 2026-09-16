@@ -136,7 +136,16 @@ export function isPrivateAddress(ip: string): boolean {
   return isPrivateIPv6Bytes(bytes);
 }
 
-export async function assertSafeUrl(raw: string, resolve: Resolver = defaultResolver): Promise<URL> {
+export type SafeUrlResult = { url: URL; addresses: string[] };
+
+/**
+ * Validates a URL against SSRF rules and, for resolved hostnames, returns the
+ * exact set of addresses that were validated as public. Callers (safeFetch)
+ * pin the outbound connection to these addresses so a DNS answer that changes
+ * between validation and connection (DNS rebinding) cannot be used to reach a
+ * private address. IP-literal hosts have nothing to pin (`addresses: []`).
+ */
+export async function assertSafeUrl(raw: string, resolve: Resolver = defaultResolver): Promise<SafeUrlResult> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -151,11 +160,11 @@ export async function assertSafeUrl(raw: string, resolve: Resolver = defaultReso
   if (bare === "localhost" || BLOCKED_HOST_SUFFIXES.some((s) => bare.endsWith(s))) throw new UnsafeUrlError(`host ${bare}`);
   if (isIP(bare)) {
     if (isPrivateAddress(bare)) throw new UnsafeUrlError(`private address ${bare}`);
-    return url;
+    return { url, addresses: [] };
   }
   const addrs = await resolve(bare);
   if (addrs.length === 0) throw new UnsafeUrlError(`cannot resolve ${bare}`);
   const bad = addrs.find(isPrivateAddress);
   if (bad) throw new UnsafeUrlError(`private address ${bad} for ${bare}`);
-  return url;
+  return { url, addresses: addrs };
 }
