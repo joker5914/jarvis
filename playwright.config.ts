@@ -9,7 +9,10 @@ if (!testDb.includes("_test")) throw new Error("TEST_DATABASE_URL must point at 
 export default defineConfig({
   testDir: "tests/e2e",
   globalSetup: "./tests/e2e/global-setup.ts",
-  timeout: 60_000,
+  timeout: 90_000,
+  // The e2e server is `next dev`, which compiles each route on first visit; cold CI runners
+  // need well over Playwright's 5 s default for those first navigations.
+  expect: { timeout: 15_000 },
   retries: 0,
   use: { baseURL: "http://localhost:3100", trace: "retain-on-failure" },
   webServer: {

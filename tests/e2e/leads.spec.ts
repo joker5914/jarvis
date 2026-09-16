@@ -17,7 +17,8 @@ test("run a zip search and see leads appear", async ({ page }) => {
   await unlock(page);
   await page.getByLabel("Zip code").fill("77084");
   await page.getByRole("button", { name: "Run search" }).click();
-  await expect(page).toHaveURL(/\/searches/);
+  // First visit to /searches compiles the route on the dev server; allow for a cold runner.
+  await expect(page).toHaveURL(/\/searches/, { timeout: 30_000 });
   await expect(page.locator('[data-testid="search-card"][data-status="complete"]').first()).toBeVisible({ timeout: 45_000 });
 
   await page.goto("/leads");
