@@ -1,6 +1,7 @@
 import { getBoss } from "./boss";
-import { QUEUES, type ZipSearchJobData } from "./queues";
+import { QUEUES, type TdlrSyncJobData, type ZipSearchJobData } from "./queues";
 import { runZipSearch } from "./zipSearch";
+import { runTdlrSync } from "./tdlrSync";
 import { getProviders } from "@/lib/providers";
 
 export const MANUAL_PRIORITY = 10;
@@ -25,4 +26,14 @@ export async function enqueueZipSearch(searchId: string, opts: { priority?: numb
     priority: opts.priority ?? MANUAL_PRIORITY,
     singletonKey: searchId,
   });
+}
+
+export async function enqueueTdlrSync(): Promise<void> {
+  if (process.env.JOB_MODE === "inline") {
+    void runTdlrSync({ providers: getProviders(), log: console.log }).catch((e) => console.error("[inline tdlr-sync]", e));
+    return;
+  }
+  const boss = await getBoss();
+  const data: TdlrSyncJobData = {};
+  await boss.send(QUEUES.tdlrSync, data, { retryLimit: 3, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "tdlr" });
 }

@@ -250,6 +250,7 @@ model Project {
   lastCheckedAt    DateTime?
   parseError       String?
   business         Business?     @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  activity         ActivityLog[]
 
   @@unique([ownerId, projectNumber])
   @@index([ownerId, completionDate])
@@ -280,8 +281,10 @@ model ActivityLog {
   kind       String
   message    String
   business   Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  project    Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([businessId, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model ScanSchedule {
