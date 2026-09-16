@@ -7,7 +7,11 @@ const HEADER = [
 ];
 
 function cell(v: unknown): string {
-  const s = v == null ? "" : String(v);
+  let s = v == null ? "" : String(v);
+  // Neutralize spreadsheet formula prefixes
+  if (s && /^[=+\-@\t\r]/.test(s)) {
+    s = "'" + s;
+  }
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

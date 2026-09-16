@@ -27,6 +27,13 @@ export const PATCH = handle(async (req, ctx) => {
   if (!existing) throw new ApiError(404, "Business not found");
   const body = await parseJson(req, patchSchema);
 
+  // Verify tag ownership before transaction
+  let ownedTagIds: string[] = [];
+  if (body.tagIds) {
+    const ownedTags = await prisma.tag.findMany({ where: { id: { in: body.tagIds }, ownerId: actor.id }, select: { id: true } });
+    ownedTagIds = ownedTags.map((t) => t.id);
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.business.update({
       where: { id },
@@ -38,7 +45,7 @@ export const PATCH = handle(async (req, ctx) => {
     });
     if (body.tagIds) {
       await tx.businessTag.deleteMany({ where: { businessId: id } });
-      await tx.businessTag.createMany({ data: body.tagIds.map((tagId) => ({ businessId: id, tagId })), skipDuplicates: true });
+      await tx.businessTag.createMany({ data: ownedTagIds.map((tagId) => ({ businessId: id, tagId })), skipDuplicates: true });
     }
     if (body.outreachStatus && body.outreachStatus !== existing.outreachStatus) {
       await tx.activityLog.create({

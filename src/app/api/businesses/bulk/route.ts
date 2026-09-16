@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
-import { handle, json, parseJson } from "@/lib/api";
+import { ApiError, handle, json, parseJson } from "@/lib/api";
 
 const schema = z.object({
   ids: z.array(z.string()).min(1).max(500),
@@ -14,6 +14,11 @@ export const POST = handle(async (req) => {
   const body = await parseJson(req, schema);
   const owned = await prisma.business.findMany({ where: { id: { in: body.ids }, ownerId: actor.id }, select: { id: true } });
   const ids = owned.map((b) => b.id);
+
+  if (body.addTagId) {
+    const tag = await prisma.tag.findFirst({ where: { id: body.addTagId, ownerId: actor.id } });
+    if (!tag) throw new ApiError(404, "Tag not found");
+  }
 
   if (body.outreachStatus) {
     await prisma.business.updateMany({ where: { id: { in: ids } }, data: { outreachStatus: body.outreachStatus } });

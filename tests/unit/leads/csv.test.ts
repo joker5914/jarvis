@@ -33,4 +33,46 @@ describe("businessesToCsv", () => {
       '"Bella ""B"" Nails, LLC",nail_salon,77084,"1 Main St, Houston, TX",(713) 555-0100,https://bellanails.com/,hello@bellanails.com,https://www.facebook.com/bella,green,75,contacted,internet_mobile,att,mobile,hot,"line1\nline2"',
     );
   });
+
+  it("neutralizes spreadsheet formula prefixes", () => {
+    const csv = businessesToCsv([
+      {
+        name: "=SUM(A1)",
+        primaryCategory: null,
+        zip: null,
+        formattedAddress: null,
+        phone: null,
+        websiteUrl: null,
+        contactQualityBand: "green",
+        contactQualityScore: 50,
+        outreachStatus: "not_contacted",
+        suggestedPackage: null,
+        currentProviderHint: null,
+        notes: null,
+        productsPitched: [],
+        contacts: [],
+        tags: [],
+      } as never,
+      {
+        name: "+1 Nails, LLC",
+        primaryCategory: null,
+        zip: null,
+        formattedAddress: null,
+        phone: null,
+        websiteUrl: null,
+        contactQualityBand: "green",
+        contactQualityScore: 50,
+        outreachStatus: "not_contacted",
+        suggestedPackage: null,
+        currentProviderHint: null,
+        notes: null,
+        productsPitched: [],
+        contacts: [],
+        tags: [],
+      } as never,
+    ]);
+    const lines = csv.split("\r\n");
+    expect(lines[1]).toBe("'=SUM(A1),,,,,,,,green,50,not_contacted,,,,,");
+    expect(lines[2]).toBe('"\'+1 Nails, LLC",,,,,,,,green,50,not_contacted,,,,,');
+  });
 });
