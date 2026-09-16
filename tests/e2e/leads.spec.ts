@@ -27,15 +27,17 @@ test("run a zip search and see leads appear", async ({ page }) => {
   await expect(page.getByText("Starbucks")).toHaveCount(0);
 
   await page.getByRole("checkbox", { name: "Show excluded (enterprise)" }).click();
+  // Wait for the toggle's navigation to land before typing, as a person effectively does.
+  await expect(page).toHaveURL(/showExcluded=true/);
   // Default sort is quality desc / name asc with 50/page; with showExcluded on,
   // the fixture set is large enough that Starbucks (low quality, "S") lands on
   // page 2. Narrow with the existing search filter so the assertion doesn't
   // depend on pagination.
   await page.getByPlaceholder("Business name").fill("Starbucks");
+  await expect(page).toHaveURL(/showExcluded=true.*q=Starbucks|q=Starbucks.*showExcluded=true/);
   // Both the table and the responsive card layout render in the DOM at once
   // (one hidden by CSS breakpoint), so getByText matches two nodes; .first()
   // avoids the strict-mode violation.
-  await expect(page).toHaveURL(/showExcluded=true/);
   await expect(page.getByText("Starbucks").first()).toBeVisible({ timeout: 15_000 });
 });
 
