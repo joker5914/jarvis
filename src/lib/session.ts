@@ -7,10 +7,10 @@ function key(secret: string) {
   return new TextEncoder().encode(secret);
 }
 
-export async function createSessionToken(secret: string): Promise<string> {
+export async function createSessionToken(secret: string, subject: string): Promise<string> {
   return new SignJWT({})
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject("local-user")
+    .setSubject(subject)
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DAYS}d`)
     .sign(key(secret));

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions, safeRedirectPath } from "@/lib/session";
+import { getActor } from "@/lib/actor";
 
 function safeEqual(a: string, b: string) {
   const ab = Buffer.from(a);
@@ -24,7 +25,8 @@ export async function POST(req: NextRequest) {
     url.searchParams.set("next", next);
     return NextResponse.redirect(url, { status: 303 });
   }
-  const token = await createSessionToken(secret);
+  const actor = await getActor();
+  const token = await createSessionToken(secret, actor.id);
   const safeNext = safeRedirectPath(next);
   const res = NextResponse.redirect(new URL(safeNext, req.url), {
     status: 303,
