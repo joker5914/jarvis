@@ -12,6 +12,7 @@ export const leadFiltersSchema = z.object({
   status: z.enum(["not_contacted", "contacted", "interested", "not_a_fit", "customer"]).optional(),
   tag: z.string().optional(),
   product: z.string().optional(),
+  timing: z.enum(["opening_soon", "under_construction", "planned", "just_completed", "stale"]).optional(),
   searchId: z.string().optional(),
   showExcluded: bool,
   page: z.coerce.number().int().min(1).default(1),
@@ -41,6 +42,7 @@ export function buildBusinessWhere(f: LeadFilters, ownerId: string): Prisma.Busi
   if (f.tag) where.tags = { some: { tag: { name: f.tag } } };
   if (f.product) where.productsPitched = { has: f.product };
   if (f.searchId) where.searches = { some: { searchId: f.searchId } };
+  if (f.timing) where.projects = { some: { timingWindow: f.timing } };
   return where;
 }
 

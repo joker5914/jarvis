@@ -36,6 +36,11 @@ describe("buildBusinessWhere", () => {
       searches: { some: { searchId: "s1" } },
     });
   });
+  it("filters by a linked project's timing window", () => {
+    const w = buildBusinessWhere(parseLeadFilters(new URLSearchParams("timing=opening_soon")), "u1");
+    expect(w).toEqual({ ownerId: "u1", exclusion: "none", projects: { some: { timingWindow: "opening_soon" } } });
+    expect(() => parseLeadFilters(new URLSearchParams("timing=never"))).toThrow();
+  });
 });
 
 describe("buildBusinessOrderBy", () => {

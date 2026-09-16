@@ -99,6 +99,8 @@ export function LeadFilters() {
         options={tags.filter((t) => !t.isSystem).map((t) => ({ value: t.name, label: t.name }))} />
       <Choice id="f-product" label="Product pitched" value={params.get("product") ?? ""} onChange={(v) => set("product", v)}
         options={PRODUCTS.map((p) => ({ value: p.slug, label: p.label }))} />
+      <Choice id="f-timing" label="Project timing" value={params.get("timing") ?? ""} onChange={(v) => set("timing", v)}
+        options={["opening_soon", "under_construction", "planned", "just_completed", "stale"].map((v) => ({ value: v, label: titleCase(v) }))} />
       <Choice id="f-sort" label="Sort" value={params.get("sort") ?? ""} onChange={(v) => set("sort", v)}
         options={[{ value: "quality", label: "Contact quality" }, { value: "name", label: "Name" }, { value: "updated", label: "Recently updated" }]} />
       <div className="flex items-center gap-2">
