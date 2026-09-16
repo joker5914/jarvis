@@ -1,5 +1,4 @@
-import { PROJECT_CONFIG } from "@/lib/config/projects";
-import { TDLR_STATUS_CLOSED } from "@/lib/providers/tdlr";
+import { PROJECT_CONFIG, TDLR_STATUS_CLOSED } from "@/lib/config/projects";
 
 export type TimingWindowValue = "opening_soon" | "under_construction" | "planned" | "just_completed" | "stale";
 

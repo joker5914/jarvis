@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
-import { PROJECT_CONFIG } from "@/lib/config/projects";
-import { TDLR_STATUS_LABELS, workTypeFromCode, workTypeFromLabel } from "@/lib/providers/tdlr";
+import { PROJECT_CONFIG, TDLR_STATUS_CLOSED } from "@/lib/config/projects";
+import { statusCodeFromLabel, TDLR_STATUS_LABELS, TDLR_WORK_TYPE_CODES, workTypeFromCode, workTypeFromLabel } from "@/lib/providers/tdlr";
 import type { ProjectDetail, ProjectSummary, Providers } from "@/lib/providers/types";
 import { scoreProjectFields } from "@/lib/scoring/projectScoring";
+import { timingWindowFor } from "@/lib/scoring/timingWindow";
 import { JobPausedError } from "./zipSearch";
 import { readSync, SYNC_KEYS, writeSync, type SyncCursor } from "./syncStatus";
 import type { Prisma } from "@prisma/client";
@@ -87,7 +88,7 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
   const log = deps.log ?? (() => {});
   const now = deps.now ? deps.now() : new Date();
   const { id: ownerId } = await getActor();
-  const counts = { scanned: 0, skippedStale: 0, created: 0, updated: 0, refreshed: 0 };
+  const counts = { scanned: 0, skippedStale: 0, created: 0, updated: 0, refreshed: 0, retimed: 0 };
   const state = await readSync(SYNC_KEYS.tdlr);
   const registeredFrom =
     state.lastSuccessfulAt ??
@@ -97,6 +98,13 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
       return from;
     })();
   const registeredTo = now;
+  // TDLR filters RegistrationDateBegin/End by its own local calendar date,
+  // while we store and compare registeredFrom in UTC. Widen the list window
+  // by one day so a registration that TDLR considers "today" isn't missed
+  // when our UTC cutoff falls a few hours earlier. This is free: rows already
+  // detailed from the prior run are skipped via the `existing?.detailFetchedAt`
+  // check below, so re-scanning the overlap day does no extra work.
+  const listFrom = new Date(registeredFrom.getTime() - DAY);
   const staleBefore = new Date(now.getTime() - PROJECT_CONFIG.staleAfterDays * DAY);
   const cursor = (c: Partial<SyncCursor>) => writeSync(SYNC_KEYS.tdlr, { status: "running", startedAt: now.toISOString(), counts, ...c });
 
@@ -106,7 +114,7 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
     let total = Infinity;
     while (start < total) {
       await checkPause(deps);
-      const page = await deps.providers.registry.listProjects({ registeredFrom, registeredTo, start, length: PAGE });
+      const page = await deps.providers.registry.listProjects({ registeredFrom: listFrom, registeredTo, start, length: PAGE });
       total = page.total;
       if (page.items.length === 0) {
         // total === 0 legitimately means nothing to scan; total > 0 with an
@@ -146,10 +154,22 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
       start += page.items.length;
     }
 
-    // Refresh open, unlinked, non-excluded projects not checked recently: dates and status move.
+    // Refresh open, unlinked, non-excluded projects not checked recently: dates and status
+    // move. Closed and already-stale projects are excluded since they won't change further,
+    // and the batch is capped + ordered oldest-first so one run can't grow unbounded as the
+    // backlog accumulates.
     const recheckBefore = new Date(now.getTime() - PROJECT_CONFIG.recheckAfterDays * DAY);
     const stale = await prisma.project.findMany({
-      where: { ownerId, businessId: null, exclusion: "none", lastCheckedAt: { lt: recheckBefore } },
+      where: {
+        ownerId,
+        businessId: null,
+        exclusion: "none",
+        lastCheckedAt: { lt: recheckBefore },
+        statusCode: { not: TDLR_STATUS_CLOSED },
+        OR: [{ timingWindow: null }, { timingWindow: { not: "stale" } }],
+      },
+      orderBy: { lastCheckedAt: "asc" },
+      take: PROJECT_CONFIG.refreshBatchSize,
       select: { id: true, projectNumber: true, tdlrProjectId: true, statusCode: true, registrationDate: true, workType: true },
     });
     for (const p of stale) {
@@ -166,10 +186,10 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         projectName: detail.projectName ?? "",
         facilityName: detail.facilityName,
         registeredAt: p.registrationDate ?? now,
-        statusCode: p.statusCode ?? 0,
+        statusCode: statusCodeFromLabel(detail.statusLabel) ?? p.statusCode ?? 0,
         cityCode: 785,
         countyCode: 0,
-        workTypeCode: Object.entries({ new_construction: 9001, renovation: 9002, addition: 9003, historic: 9004, row: 9005 }).find(([k]) => k === p.workType)?.[1] ?? 0,
+        workTypeCode: p.workType ? TDLR_WORK_TYPE_CODES[p.workType] : 0,
         estimatedCost: detail.estimatedCost,
         startDate: detail.startDate,
         completionDate: detail.completionDate,
@@ -183,6 +203,24 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         data: projectData(summary, detail, now) as unknown as Prisma.ProjectUncheckedUpdateInput,
       });
       counts.refreshed++;
+    }
+
+    // Recompute timingWindow for every project of this owner: it's a pure function of
+    // (startDate, completionDate, statusCode, now), so a project can cross a window
+    // boundary (e.g. opening_soon -> under_construction) purely from the passage of time,
+    // without any detail refetch. This is a local computation over already-stored fields,
+    // not a network call, so it's cheap to run over the whole set each sync.
+    await checkPause(deps);
+    const allProjects = await prisma.project.findMany({
+      where: { ownerId },
+      select: { id: true, startDate: true, completionDate: true, statusCode: true, timingWindow: true },
+    });
+    for (const p of allProjects) {
+      const timingWindow = timingWindowFor({ startDate: p.startDate, completionDate: p.completionDate, statusCode: p.statusCode }, now);
+      if (timingWindow !== p.timingWindow) {
+        await prisma.project.update({ where: { id: p.id }, data: { timingWindow } });
+        counts.retimed++;
+      }
     }
 
     await writeSync(SYNC_KEYS.tdlr, { status: "idle", finishedAt: new Date().toISOString(), counts, error: null }, registeredTo);

@@ -28,4 +28,13 @@ describe("isSyncRunning", () => {
   it("exports the stale cutoff as 2 hours", () => {
     expect(RUNNING_STALE_MS).toBe(2 * 60 * 60 * 1000);
   });
+
+  it("running with updatedAt 5 minutes ago is still running even when startedAt is 3 hours stale", () => {
+    const cursor: SyncCursor = {
+      status: "running",
+      startedAt: new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
+    };
+    expect(isSyncRunning(cursor, now)).toBe(true);
+  });
 });

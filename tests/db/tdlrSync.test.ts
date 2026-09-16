@@ -5,6 +5,9 @@ import { readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher, FAKE_PROJECTS } from "@/lib/providers/fake";
 import type { ProjectRegistryProvider } from "@/lib/providers/types";
 
+const OWNER = "local-user";
+const DAY = 86_400_000;
+
 const providers = {
   geocode: new FakeGeocodeProvider(),
   discovery: new FakeDiscoveryProvider(),
@@ -12,6 +15,10 @@ const providers = {
   registry: new FakeRegistryProvider(),
   fetcher: fakeFetcher,
 };
+
+async function project(number: string) {
+  return prisma.project.findUniqueOrThrow({ where: { ownerId_projectNumber: { ownerId: OWNER, projectNumber: number } } });
+}
 
 beforeEach(async () => {
   await prisma.activityLog.deleteMany();
@@ -63,9 +70,72 @@ describe("runTdlrSync", () => {
     const old = new Date(Date.now() - 40 * 86_400_000);
     await prisma.project.updateMany({ data: { lastCheckedAt: old } });
     const r = await runTdlrSync({ providers });
-    expect(r.refreshed).toBe(2); // Bella + Corner Cafe; Memorial Hermann is excluded and not refreshed
+    // Bella + Corner Cafe; Memorial Hermann is excluded (enterprise) and not refreshed. The
+    // refresh scope also now excludes closed and already-"stale"-timing projects, but neither
+    // Bella (opening_soon) nor Corner Cafe (planned) is closed or stale, so the count here is
+    // unchanged from before that scoping was added — see the dedicated refresh-scope test below.
+    expect(r.refreshed).toBe(2);
     const bella = await prisma.project.findFirstOrThrow({ where: { projectNumber: "TABS2027000001" } });
     expect(bella.lastCheckedAt!.getTime()).toBeGreaterThan(old.getTime());
+  });
+
+  it("excludes already-stale-timing-window projects from the refresh pass, while still refreshing others", async () => {
+    await runTdlrSync({ providers });
+    const old = new Date(Date.now() - 40 * DAY);
+    await prisma.project.updateMany({ data: { lastCheckedAt: old } });
+    const cafe = await project("TABS2027000002");
+    await prisma.project.update({ where: { id: cafe.id }, data: { timingWindow: "stale", lastCheckedAt: old } });
+
+    const r = await runTdlrSync({ providers });
+    expect(r.refreshed).toBe(1); // Bella only; Corner Cafe is skipped for being "stale", Memorial Hermann for exclusion
+
+    const cafeAfter = await project("TABS2027000002");
+    expect(cafeAfter.lastCheckedAt!.getTime()).toBe(old.getTime());
+
+    const bellaAfter = await project("TABS2027000001");
+    expect(bellaAfter.lastCheckedAt!.getTime()).toBeGreaterThan(old.getTime());
+  });
+
+  it("recomputes timingWindow for all projects as time passes, independent of the refresh pass", async () => {
+    const now = new Date();
+    await runTdlrSync({ providers, now: () => now });
+
+    const bella = await project("TABS2027000001");
+    await prisma.project.update({
+      where: { id: bella.id },
+      data: { completionDate: new Date(now.getTime() + 100 * DAY), timingWindow: "opening_soon" },
+    });
+
+    const r = await runTdlrSync({ providers, now: () => now });
+    expect(r.retimed).toBeGreaterThanOrEqual(1);
+
+    const bellaAfter = await project("TABS2027000001");
+    expect(bellaAfter.timingWindow).toBe("under_construction");
+  });
+
+  it("creates projects with parseError set when the detail page is unavailable, and fills them in on a later run", async () => {
+    const detaillessRegistry: ProjectRegistryProvider = {
+      listProjects: (opts) => providers.registry.listProjects(opts),
+      getProjectDetail: async () => null,
+    };
+    const r1 = await runTdlrSync({ providers: { ...providers, registry: detaillessRegistry } });
+    expect(r1.created).toBe(3);
+
+    const bella1 = await project("TABS2027000001");
+    expect(bella1.detailFetchedAt).toBeNull();
+    expect(bella1.parseError).toBe("detail page unavailable");
+
+    // Clear sync state so the next run rescans the full backfill window: with the normal
+    // registeredFrom advanced to the first run's lastSuccessfulAt, a second run would only
+    // look at registrations since then and would never revisit these already-registered (but
+    // detail-less) projects.
+    await prisma.syncState.deleteMany();
+    const r2 = await runTdlrSync({ providers });
+    expect(r2.updated).toBe(3);
+
+    const bella2 = await project("TABS2027000001");
+    expect(bella2.detailFetchedAt).not.toBeNull();
+    expect(bella2.parseError).toBeNull();
   });
 
   it("marks the sync paused when aborted", async () => {

@@ -1,5 +1,6 @@
 import { REQUEST_TIMEOUT_MS, USER_AGENT } from "@/lib/extract/website";
 import { parseTdlrDetail } from "@/lib/extract/tdlrDetail";
+import { TDLR_STATUS_CLOSED as CONFIG_TDLR_STATUS_CLOSED } from "@/lib/config/projects";
 import type { SmbWorkType } from "@/lib/scoring/types";
 import type { ProjectDetail, ProjectRegistryProvider, ProjectSummary } from "./types";
 
@@ -19,7 +20,28 @@ export const TDLR_STATUS_LABELS: Record<number, string> = {
   3009: "Review Complete",
   3010: "Review Pending",
 };
-export const TDLR_STATUS_CLOSED = 3007;
+// Re-exported for compatibility with existing importers; the canonical value
+// now lives in config/projects.ts so scoring/timingWindow.ts doesn't need to
+// depend on the provider layer.
+export const TDLR_STATUS_CLOSED = CONFIG_TDLR_STATUS_CLOSED;
+
+/** Inverse of TDLR_STATUS_LABELS: lowercased label -> code. */
+export const TDLR_STATUS_CODES: Record<string, number> = Object.fromEntries(
+  Object.entries(TDLR_STATUS_LABELS).map(([code, label]) => [label.toLowerCase(), Number(code)]),
+);
+
+/**
+ * Case-insensitive, trimmed reverse lookup of a status label to its TDLR code.
+ * Also accepts "Inspection Complete" (without the trailing "d") since that's
+ * the wording used by the TDLR search dropdown, distinct from the detail
+ * page's "Inspection Completed".
+ */
+export function statusCodeFromLabel(label: string | null | undefined): number | null {
+  if (!label) return null;
+  const l = label.trim().toLowerCase();
+  if (l === "inspection complete") return 3001;
+  return TDLR_STATUS_CODES[l] ?? null;
+}
 
 export const TDLR_WORK_TYPES: Record<number, SmbWorkType> = {
   9001: "new_construction",
@@ -28,6 +50,11 @@ export const TDLR_WORK_TYPES: Record<number, SmbWorkType> = {
   9004: "historic",
   9005: "row",
 };
+
+/** Inverse of TDLR_WORK_TYPES. */
+export const TDLR_WORK_TYPE_CODES: Record<SmbWorkType, number> = Object.fromEntries(
+  Object.entries(TDLR_WORK_TYPES).map(([code, workType]) => [workType, Number(code)]),
+) as Record<SmbWorkType, number>;
 
 export function workTypeFromCode(code: number | null | undefined): SmbWorkType | null {
   return code == null ? null : (TDLR_WORK_TYPES[code] ?? null);
