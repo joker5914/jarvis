@@ -124,11 +124,13 @@ export function extractFromHtml(html: string): PageExtract {
 export async function extractWebsiteContacts(
   websiteUrl: string,
   fetcher: PageFetcher = defaultFetcher,
+  opts?: { beforeFetch?: () => Promise<void> },
 ): Promise<ExtractedContacts> {
   const empty: ExtractedContacts = { reachable: false, pagesFetched: [], emails: [], phones: [], socials: [], providerHint: null };
   const home = normalizeWebsiteUrl(websiteUrl);
   if (!home) return { ...empty, error: "invalid url" };
 
+  await opts?.beforeFetch?.();
   const first = await fetcher(home);
   if (!first.ok) return { ...empty, error: first.error };
 
@@ -137,6 +139,7 @@ export async function extractWebsiteContacts(
   let allText = merged.text;
 
   for (const url of pickCandidatePages(first.finalUrl || home, first.html)) {
+    await opts?.beforeFetch?.();
     const res = await fetcher(url);
     if (!res.ok) continue;
     pagesFetched.push(url);

@@ -200,4 +200,90 @@ describe("runScannerTick", () => {
     expect((await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } })).pauseRequested).toBe(true);
     expect(calls.zip).toHaveLength(1);
   });
+
+  // D3: a zip's `skipUntil` entry doubles as the "already counted" marker for its 6 h skip
+  // window, so a search that keeps getting observed as `failed` across ticks (e.g. retried by
+  // pg-boss and failing again each time) only nudges `consecutiveFailures` once, not once per
+  // observation.
+  it("D3: counts a repeatedly-observed failure for the same zip once, not once per tick", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    await prisma.scanTarget.create({ data: { ownerId: OWNER, zip: "77001", priority: 1 } });
+    await prisma.scannerState.create({ data: { ownerId: OWNER, lastTickAt: new Date(now.getTime() - 300_000) } });
+    const search = await prisma.search.create({ data: { ownerId: OWNER, zip: "77001", origin: "scanner", status: "failed", error: "boom", updatedAt: new Date(now.getTime() - 60_000) } });
+    const { enqueue } = spies();
+
+    const t1 = now;
+    await runScannerTick({ now: () => t1, enqueue });
+    let state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.consecutiveFailures).toBe(1);
+    expect(state.status).not.toBe("paused");
+
+    // Retry #2: the same search row is observed `failed` again since the last tick.
+    const t2 = new Date(t1.getTime() + 300_000);
+    await prisma.search.update({ where: { id: search.id }, data: { updatedAt: new Date(t1.getTime() + 60_000) } });
+    await runScannerTick({ now: () => t2, enqueue });
+    state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.consecutiveFailures).toBe(1);
+    expect(state.status).not.toBe("paused");
+
+    // Retry #3.
+    const t3 = new Date(t2.getTime() + 300_000);
+    await prisma.search.update({ where: { id: search.id }, data: { updatedAt: new Date(t2.getTime() + 60_000) } });
+    await runScannerTick({ now: () => t3, enqueue });
+    state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.consecutiveFailures).toBe(1);
+    expect(state.status).not.toBe("paused");
+  });
+
+  it("D3: three distinct failed zips observed in one tick still auto-pause", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    await prisma.scannerState.create({ data: { ownerId: OWNER, lastTickAt: new Date(now.getTime() - 300_000) } });
+    await prisma.search.createMany({
+      data: [
+        { ownerId: OWNER, zip: "77001", origin: "scanner", status: "failed", error: "a", updatedAt: new Date(now.getTime() - 60_000) },
+        { ownerId: OWNER, zip: "77002", origin: "scanner", status: "failed", error: "b", updatedAt: new Date(now.getTime() - 50_000) },
+        { ownerId: OWNER, zip: "77003", origin: "scanner", status: "failed", error: "c", updatedAt: new Date(now.getTime() - 40_000) },
+      ],
+    });
+    const { enqueue } = spies();
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.status).toBe("paused");
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.pauseRequested).toBe(true);
+    expect(state.consecutiveFailures).toBe(0); // reset to 0 on the pausing tick, same as the existing single-tick path
+  });
+
+  // D4: a fresh `website_recheck:<ISO>` marker on ScannerState.currentJobId counts toward
+  // maxConcurrentJobs the same as a running Search row does; a stale one (older than the
+  // website-recheck queue's expireInSeconds) is ignored.
+  it("D4: a fresh website_recheck marker makes the tick busy; a stale one is ignored", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true, maxConcurrentJobs: 1 } });
+    await prisma.scanTarget.create({ data: { ownerId: OWNER, zip: "77001" } });
+    await prisma.scannerState.create({ data: { ownerId: OWNER, currentJobId: `website_recheck:${new Date(now.getTime() - 5 * 60_000).toISOString()}` } });
+    const { calls, enqueue } = spies();
+
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.status).toBe("running");
+    expect(r.work).toEqual({ kind: "busy" });
+    expect(calls.zip).toHaveLength(0);
+    expect(calls.recheck).toHaveLength(0);
+
+    // A 2 h old marker is well past QUEUE_OPTIONS["website-recheck"].expireInSeconds (1 h) and
+    // must be ignored, letting the tick proceed to enqueue the due zip search instead.
+    await prisma.scannerState.update({ where: { ownerId: OWNER }, data: { currentJobId: `website_recheck:${new Date(now.getTime() - 2 * 60 * 60_000).toISOString()}` } });
+    const r2 = await runScannerTick({ now: () => now, enqueue });
+    expect(r2.work).not.toEqual({ kind: "busy" });
+    expect(calls.zip).toHaveLength(1);
+  });
+
+  it("D4: enqueuing a website recheck stamps currentJobId with an ISO-timestamped marker", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    const b = await prisma.business.create({ data: { name: "Stale Site", websiteUrl: "https://stale.fake.test/", websiteCheckedAt: new Date(now.getTime() - 60 * DAY) } });
+    const { calls, enqueue } = spies();
+    const r = await runScannerTick({ now: () => now, enqueue });
+    expect(r.work).toEqual({ kind: "website_recheck", businessIds: [b.id] });
+    expect(calls.recheck).toEqual([[b.id]]);
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.currentJobId).toBe(`website_recheck:${now.toISOString()}`);
+  });
 });

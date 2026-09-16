@@ -5,9 +5,10 @@ import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { budgetStatus } from "@/lib/providers/budget";
 import { isSyncRunning, readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { enqueueTdlrSync, enqueueWebsiteRecheck, enqueueZipSearch, SCANNER_PRIORITY } from "@/lib/jobs/enqueue";
+import { QUEUE_OPTIONS, QUEUES } from "@/lib/jobs/queues";
 import { isWithinWindow, nextWindowStart } from "./window";
 import { pickNextWork, workKey, type Work } from "./planner";
-import { logScanner, readScanner, setScannerState } from "./state";
+import { logScanner, readScanner, setScannerState, WEBSITE_RECHECK_JOB_PREFIX } from "./state";
 import type { ScannerStatus } from "@prisma/client";
 
 export type TickDeps = {
@@ -61,14 +62,20 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   // that happened to fail while it was off (e.g. a stray manual-origin retry).
   if (!schedule.enabled) return finish("disabled", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures: state.consecutiveFailures });
 
-  // Failure accounting: scanner-origin searches that failed since the last tick.
+  // Failure accounting: scanner-origin searches that failed since the last tick. A zip whose
+  // `zip:<zip>` key is already in `skipUntil` was already counted toward `consecutiveFailures`
+  // (the skip entry doubles as that "already counted" marker for its 6 h window), so a search
+  // that keeps getting observed as `failed` across ticks — e.g. retried and failing again —
+  // only nudges the counter once rather than once per observation.
   const failed = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: "failed", updatedAt: { gt: since } }, select: { zip: true, error: true } });
   const completed = await prisma.search.count({ where: { ownerId, origin: "scanner", status: "complete", updatedAt: { gt: since } } });
   let consecutiveFailures = completed > 0 ? 0 : state.consecutiveFailures;
   let lastError = state.lastError;
+  const alreadyCounted = new Set(Object.keys(skipUntil));
   for (const f of failed) {
-    consecutiveFailures++;
-    skipUntil[`zip:${f.zip}`] = new Date(now.getTime() + SCANNER_CONFIG.failureSkipHours * HOUR).toISOString();
+    const key = `zip:${f.zip}`;
+    if (!alreadyCounted.has(key)) consecutiveFailures++;
+    skipUntil[key] = new Date(now.getTime() + SCANNER_CONFIG.failureSkipHours * HOUR).toISOString();
     lastError = f.error ?? "search failed";
     await logScanner(ownerId, `Zip search ${f.zip} failed: ${lastError}; skipping it for ${SCANNER_CONFIG.failureSkipHours} h`);
   }
@@ -97,14 +104,29 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   const running = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: { in: ["queued", "running"] } }, select: { id: true, zip: true, progress: true } });
   const tdlr = await readSync(SYNC_KEYS.tdlr);
   const tdlrRunning = isSyncRunning(tdlr.cursor, now);
+  // A `website_recheck:<ISO>` marker on currentJobId counts toward concurrency the same as a
+  // running Search row while it's still fresh — "fresh" meaning within the website-recheck
+  // queue's own expireInSeconds, since pg-boss would have expired (and the job would have
+  // cleared) the underlying job by then regardless of whether anything actually cleared the
+  // marker. A stale marker (left behind by a crashed worker, say) is ignored rather than
+  // wedging the scanner "busy" forever.
+  const websiteRecheckMarker = state.currentJobId?.startsWith(WEBSITE_RECHECK_JOB_PREFIX) ? state.currentJobId : null;
+  const websiteRecheckMarkerAt = websiteRecheckMarker ? Date.parse(websiteRecheckMarker.slice(WEBSITE_RECHECK_JOB_PREFIX.length)) : NaN;
+  const websiteRecheckRunning = !Number.isNaN(websiteRecheckMarkerAt) && now.getTime() - websiteRecheckMarkerAt < QUEUE_OPTIONS[QUEUES.websiteRecheck].expireInSeconds * 1000;
   // A running TDLR sync counts against the scanner's concurrency regardless of who started
   // it (conservative and correct) — don't gate this on currentJobId, which only reflects
   // what this tick's own bookkeeping last wrote.
-  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0);
+  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0) + (websiteRecheckRunning ? 1 : 0);
   if (runningScannerJobs >= schedule.maxConcurrentJobs) {
     const cur = running[0];
     const p = (cur?.progress as { step?: string; current?: number; total?: number } | null) ?? null;
-    const activity = cur ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}` : "TDLR sync running";
+    const activity = cur
+      ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}`
+      : tdlrRunning
+        ? "TDLR sync running"
+        : websiteRecheckRunning
+          ? "Re-checking websites"
+          : "Running";
     return finish("running", { currentActivity: activity, currentJobId: cur?.id ?? state.currentJobId, nextPlanned: null, skipUntil, consecutiveFailures }, { kind: "busy" });
   }
 
@@ -172,7 +194,9 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     jobId = search.id;
   } else if (work.kind === "website_recheck") {
     queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
-    jobId = "website_recheck";
+    // Timestamped so a later tick can tell a fresh marker (still counts toward
+    // maxConcurrentJobs) from a stale one (ignored) — see websiteRecheckRunning above.
+    jobId = `${WEBSITE_RECHECK_JOB_PREFIX}${now.toISOString()}`;
   }
   const key = workKey(work);
   if (key === "website_recheck") skipUntil[key] = new Date(now.getTime() + HOUR).toISOString(); // one batch per hour at most

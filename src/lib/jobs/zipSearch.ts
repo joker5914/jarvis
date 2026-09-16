@@ -220,7 +220,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
 export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b?.websiteUrl) return;
-  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher);
+  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) });
   await prisma.business.update({
     where: { id: businessId },
     data: {
