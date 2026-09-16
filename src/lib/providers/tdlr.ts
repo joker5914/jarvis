@@ -91,13 +91,23 @@ export function mapSearchRow(row: TdlrSearchRow): ProjectSummary {
 
 export class TdlrRegistryProvider implements ProjectRegistryProvider {
   private lastRequestAt = 0;
+  private chain: Promise<void> = Promise.resolve();
 
   constructor(private minIntervalMs = TDLR_MIN_INTERVAL_MS) {}
 
-  private async throttle() {
-    const wait = this.lastRequestAt + this.minIntervalMs - Date.now();
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    this.lastRequestAt = Date.now();
+  /**
+   * Promise-chained gate: each call queues behind the previous one so concurrent
+   * callers still serialize at `minIntervalMs` apart, instead of racing on
+   * `lastRequestAt` and computing the same (too-short) wait.
+   */
+  private throttle(): Promise<void> {
+    const run = this.chain.then(async () => {
+      const wait = this.lastRequestAt + this.minIntervalMs - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.chain = run.catch(() => {});
+    return run;
   }
 
   private async request(url: string, init: RequestInit): Promise<Response> {
