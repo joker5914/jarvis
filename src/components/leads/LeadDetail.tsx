@@ -1,0 +1,218 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { Tag } from "@prisma/client";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { categoryLabel } from "@/lib/config/categories";
+import { PRODUCTS, packageLabel } from "@/lib/config/packages";
+import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import { CopyButton } from "./CopyButton";
+import { QualityBadge } from "./QualityBadge";
+import { SourceBadge } from "./SourceBadge";
+
+type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string };
+type Project = { id: string; projectNumber: string; projectName: string; estimatedCost: number | null; startDate: string | null; completionDate: string | null; scopeOfWork: string | null; ownerName: string | null; ownerPhone: string | null; timingWindow: string | null };
+type Detail = {
+  id: string; name: string; formattedAddress: string | null; zip: string | null; phone: string | null; websiteUrl: string | null;
+  primaryCategory: string | null; source: string; exclusion: string; exclusionReasons: string[];
+  contactQualityBand: "green" | "yellow" | "red"; contactQualityScore: number; contactQualityReasons: { code: string; points: number; detail: string }[] | null;
+  suggestedPackage: string | null; currentProviderHint: string | null; currentProviderEvidence: string | null;
+  outreachStatus: string; productsPitched: string[]; notes: string; websiteReachable: boolean | null; websiteError: string | null;
+  contacts: Contact[]; tags: { tag: Tag }[]; activity: { id: string; kind: string; message: string; createdAt: string }[]; projects: Project[];
+};
+
+const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
+// Base UI translation: pass `items` so the trigger shows the matching label
+// immediately, since <Select.Value> otherwise resolves labels only from
+// <Select.Item>s that have already mounted in the (portalled, closed-by-default) popup.
+const STATUS_ITEMS = STATUSES.map((s) => ({ value: s, label: titleCase(s) }));
+const GROUPS: { key: string; label: string; types: string[] }[] = [
+  { key: "email", label: "Emails", types: ["email"] },
+  { key: "phone", label: "Phones", types: ["phone"] },
+  { key: "social", label: "Social & LinkedIn", types: ["linkedin", "facebook", "instagram", "twitter", "yelp", "other"] },
+];
+
+export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => void }) {
+  const [b, setB] = useState<Detail | null>(null);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [newTag, setNewTag] = useState("");
+  const [notes, setNotes] = useState("");
+  const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function load() {
+    const res = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
+    if (!res.ok) return toast.error("Could not load lead");
+    const { business } = await res.json();
+    setB(business);
+    setNotes(business.notes);
+  }
+  useEffect(() => { load(); fetch("/api/tags").then((r) => r.json()).then((d) => setTags(d.items ?? [])); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function patch(body: Record<string, unknown>, quiet = false) {
+    const res = await fetch(`/api/businesses/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) return toast.error("Save failed");
+    const { business } = await res.json();
+    setB(business);
+    onChanged?.();
+    if (!quiet) toast.success("Saved");
+  }
+
+  function onNotes(v: string) {
+    setNotes(v);
+    if (notesTimer.current) clearTimeout(notesTimer.current);
+    notesTimer.current = setTimeout(() => patch({ notes: v }, true), 800);
+  }
+
+  async function createTag() {
+    const name = newTag.trim();
+    if (!name) return;
+    const res = await fetch("/api/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+    if (!res.ok) return toast.error("Could not create tag");
+    const { tag } = await res.json();
+    setTags((prev) => (prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]));
+    setNewTag("");
+    await patch({ tagIds: [...(b?.tags.map((t) => t.tag.id) ?? []), tag.id] });
+  }
+
+  if (!b) return <p className="text-sm text-neutral-500">Loading…</p>;
+
+  const userTagIds = new Set(b.tags.map((t) => t.tag.id));
+  const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
+
+  return (
+    <div className="space-y-5" data-testid="lead-detail">
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-xl font-semibold">{b.name}</h2>
+          <QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} />
+          <SourceBadge source={b.source} />
+        </div>
+        <p className="text-sm text-neutral-500">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+          {b.phone && <span className="inline-flex items-center gap-1"><a href={`tel:${b.phone}`} className="hover:underline">{b.phone}</a><CopyButton value={b.phone} label="Phone" /></span>}
+          {b.websiteUrl && <a href={b.websiteUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Website{b.websiteReachable === false ? " (unreachable)" : ""}</a>}
+          <a href={linkedinSearch} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Search LinkedIn</a>
+        </div>
+        {b.exclusion !== "none" && <p className="mt-2 text-xs text-red-600">Excluded: {b.exclusionReasons.join(", ")}</p>}
+        {b.suggestedPackage && <p className="mt-2 text-sm"><span className="text-neutral-500">Suggested pitch:</span> {packageLabel(b.suggestedPackage)}</p>}
+        {b.currentProviderHint && (
+          <p className="mt-1 text-sm"><span className="text-neutral-500">Current provider (hint):</span> {b.currentProviderHint}
+            {b.currentProviderEvidence && <span className="block text-xs text-neutral-500">“{b.currentProviderEvidence}”</span>}</p>
+        )}
+      </div>
+
+      <Separator />
+
+      <section className="space-y-3">
+        <h3 className="font-medium">Contacts</h3>
+        {GROUPS.map((g) => {
+          const list = b.contacts.filter((c) => g.types.includes(c.type));
+          if (list.length === 0) return null;
+          return (
+            <div key={g.key}>
+              <div className="text-xs font-medium uppercase text-neutral-500">{g.label}</div>
+              <ul className="mt-1 space-y-1">
+                {list.map((c) => (
+                  <li key={c.id} className="flex items-center gap-2 text-sm">
+                    {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
+                      : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
+                      : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
+                    {c.personName && <span className="text-neutral-500">· {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
+                    <span className={`rounded px-1 text-[10px] uppercase ${c.validationStatus === "valid" ? "bg-emerald-100 text-emerald-800" : c.validationStatus === "invalid" ? "bg-red-100 text-red-800" : "bg-neutral-100 text-neutral-600"}`}>{c.validationStatus}</span>
+                    <span className="text-[10px] text-neutral-400">{c.source}</span>
+                    {(c.type === "email" || c.type === "phone") && <CopyButton value={c.value} label={titleCase(c.type)} />}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+        {b.contacts.length === 0 && <p className="text-sm text-neutral-500">No contacts found yet.</p>}
+        {b.contactQualityReasons && b.contactQualityReasons.length > 0 && (
+          <p className="text-xs text-neutral-500">Quality: {b.contactQualityReasons.map((r) => `${r.detail} (+${r.points})`).join(", ")}</p>
+        )}
+      </section>
+
+      <Separator />
+
+      <section className="space-y-3">
+        <h3 className="font-medium">Outreach</h3>
+        <div className="space-y-1">
+          <Label htmlFor="status">Status</Label>
+          <Select value={b.outreachStatus} onValueChange={(v) => { if (v != null) patch({ outreachStatus: v }); }} items={STATUS_ITEMS}>
+            <SelectTrigger id="status" data-testid="status-select"><SelectValue /></SelectTrigger>
+            <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s}>{titleCase(s)}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label>Products pitched</Label>
+          <div className="mt-1 flex flex-wrap gap-3">
+            {PRODUCTS.map((p) => (
+              <label key={p.slug} className="flex items-center gap-1 text-sm">
+                <Checkbox checked={b.productsPitched.includes(p.slug)}
+                  onCheckedChange={(c) => patch({ productsPitched: c ? [...b.productsPitched, p.slug] : b.productsPitched.filter((x) => x !== p.slug) })} />
+                {p.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label>Tags</Label>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {tags.filter((t) => !t.isSystem).map((t) => (
+              <button key={t.id} type="button"
+                className={`rounded-full border px-2 py-0.5 text-xs ${userTagIds.has(t.id) ? "text-white" : "text-neutral-600"}`}
+                style={userTagIds.has(t.id) ? { background: t.color, borderColor: t.color } : undefined}
+                onClick={() => patch({ tagIds: userTagIds.has(t.id) ? [...userTagIds].filter((x) => x !== t.id) : [...userTagIds, t.id] })}>
+                {t.name}
+              </button>
+            ))}
+            <form onSubmit={(e) => { e.preventDefault(); createTag(); }} className="flex gap-1">
+              <Input value={newTag} onChange={(e) => setNewTag(e.target.value)} placeholder="New tag" className="h-7 w-28 text-xs" />
+              <Button type="submit" size="sm" variant="outline" className="h-7">Add</Button>
+            </form>
+          </div>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="notes">Notes</Label>
+          <Textarea id="notes" value={notes} onChange={(e) => onNotes(e.target.value)} rows={4} placeholder="Autosaves as you type" data-testid="notes" />
+        </div>
+      </section>
+
+      {b.projects.length > 0 && (
+        <>
+          <Separator />
+          <section className="space-y-2">
+            <h3 className="font-medium">TDLR project</h3>
+            {b.projects.map((p) => (
+              <div key={p.id} className="rounded-md border p-3 text-sm">
+                <div className="font-medium">{p.projectName} <span className="text-neutral-500">({p.projectNumber})</span></div>
+                <div className="text-neutral-600">{formatDate(p.startDate)} → {formatDate(p.completionDate)}{p.estimatedCost != null ? ` · $${p.estimatedCost.toLocaleString()}` : ""}{p.timingWindow ? ` · ${titleCase(p.timingWindow)}` : ""}</div>
+                {p.scopeOfWork && <div className="mt-1 text-neutral-600">{p.scopeOfWork}</div>}
+                {p.ownerName && <div className="mt-1">Owner: {p.ownerName}{p.ownerPhone ? ` · ${p.ownerPhone}` : ""}</div>}
+              </div>
+            ))}
+          </section>
+        </>
+      )}
+
+      <Separator />
+      <section>
+        <h3 className="font-medium">Activity</h3>
+        <ul className="mt-2 space-y-1 text-sm">
+          {b.activity.map((a) => (
+            <li key={a.id} className="flex gap-2"><span className="w-20 shrink-0 text-xs text-neutral-400">{timeAgo(a.createdAt)}</span><span>{a.message}</span></li>
+          ))}
+          {b.activity.length === 0 && <li className="text-neutral-500">No activity yet.</li>}
+        </ul>
+      </section>
+    </div>
+  );
+}
