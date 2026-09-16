@@ -76,13 +76,29 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
       // partway through, the places already fetched are safe on disk, so a resumed search sees
       // them via `existing`/`fresh` above (as `knownFresh`) instead of re-spending budget on a
       // repeat getPlaceDetails call. Not linked to the search yet (searchBusiness rows are
-      // created below in upsertBusinesses) and no exclusion/scoring here — that also happens
-      // in upsertBusinesses, uniformly for `found` and `knownFresh` rows.
+      // created below in upsertBusinesses), and `primaryCategory` is deliberately left unset:
+      // it doubles as the "never scored" marker upsertBusinesses uses to run exclusion/scoring
+      // exactly once, whether that happens later in this same run (via `found`) or in a
+      // resumed run (via `knownFresh`).
+      //
+      // The nested `activity: { create: ... } }` under `create:` only fires when this upsert
+      // actually inserts the row (Prisma does not run it on the update path), so the
+      // "discovered" ActivityLog entry is written exactly once, right when the business is
+      // first known — including under a concurrent-search race, where `upsertIgnoringConflict`
+      // discards the whole losing call (business fields and nested activity together) on P2002
+      // rather than leaving a partial write.
       await upsertIgnoringConflict(() =>
         prisma.business.upsert({
           where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } },
           update: { ...discoveredToBusinessFields(biz), googleFetchedAt: new Date() },
-          create: { ...discoveredToBusinessFields(biz), ownerId, googlePlaceId: biz.placeId, source: "zip_search", googleFetchedAt: new Date() },
+          create: {
+            ...discoveredToBusinessFields(biz),
+            ownerId,
+            googlePlaceId: biz.placeId,
+            source: "zip_search",
+            googleFetchedAt: new Date(),
+            activity: { create: { ownerId, kind: "discovered", message: `Found via zip search as "${idsByCategory.get(id)}"` } },
+          },
         }),
       );
     }
@@ -126,41 +142,15 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
       exclusionReasons: fit.exclusionReasons,
       smbFitScore: fit.score,
     };
+    // discover() already upserted this Business row (immediately after fetching its Place
+    // Details, including the one-time "discovered" ActivityLog entry — see the comment there),
+    // so `existing` is always found here now; there's nothing left to create.
     const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
-    const updateExisting = (row: { id: string; primaryCategory: string | null; suggestedPackage: string | null }) =>
-      prisma.business.update({
-        where: { id: row.id },
-        data: { ...googleFields, primaryCategory: row.primaryCategory ?? category, suggestedPackage: row.suggestedPackage ?? suggestPackage(category) },
-      });
-    let b;
-    if (existing) {
-      b = await updateExisting(existing);
-    } else {
-      try {
-        b = await prisma.business.create({
-          data: {
-            ...googleFields,
-            ownerId,
-            googlePlaceId: biz.placeId,
-            source: "zip_search",
-            primaryCategory: category,
-            suggestedPackage: suggestPackage(category),
-            activity: { create: { ownerId, kind: "discovered", message: `Found via zip search as "${category}"` } },
-          },
-        });
-      } catch (e) {
-        // Two scanner/search jobs for the same owner can discover the same place concurrently
-        // (e.g. overlapping zips surface the same fake-provider IDs); the loser of the create
-        // race retries as an update against the row the winner just inserted.
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-          const winner = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
-          if (!winner) throw e;
-          b = await updateExisting(winner);
-        } else {
-          throw e;
-        }
-      }
-    }
+    if (!existing) throw new Error(`Business row for place ${biz.placeId} is missing; discover() should have persisted it`);
+    const b = await prisma.business.update({
+      where: { id: existing.id },
+      data: { ...googleFields, primaryCategory: existing.primaryCategory ?? category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category) },
+    });
     ids.push(b.id);
 
     await prisma.searchBusiness.upsert({
@@ -193,9 +183,28 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
   for (const { placeId, category } of knownFresh) {
     const existing = knownFreshByPlaceId.get(placeId);
     if (!existing) continue;
-    const b = existing.primaryCategory
-      ? existing
-      : await prisma.business.update({ where: { id: existing.id }, data: { primaryCategory: category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category) } });
+    let b;
+    if (existing.primaryCategory === null) {
+      // `primaryCategory === null` is the "never scored" marker discover() leaves on a row it
+      // persists (R2): this place was fetched and saved by an earlier, interrupted run of this
+      // search (F4) and became `knownFresh` on resume, but never went through the scoring pass
+      // below because that interrupted run never reached it. Run that scoring pass now, off
+      // the same merged `nameCounts` `found` rows use above, so exclusion/smbFitScore come out
+      // identical whether or not the search was interrupted.
+      const fit = scoreSmbFit({ name: existing.name, sameNameCount: nameCounts.get(normalizeName(existing.name)) });
+      b = await prisma.business.update({
+        where: { id: existing.id },
+        data: {
+          primaryCategory: category,
+          suggestedPackage: existing.suggestedPackage ?? suggestPackage(category),
+          exclusion: fit.excluded ? ("enterprise" as const) : ("none" as const),
+          exclusionReasons: fit.exclusionReasons,
+          smbFitScore: fit.score,
+        },
+      });
+    } else {
+      b = existing;
+    }
     ids.push(b.id);
 
     await prisma.searchBusiness.upsert({
