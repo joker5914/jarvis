@@ -325,4 +325,28 @@ describe("runScannerTick", () => {
       process.env.JOB_MODE = prevMode;
     }
   });
+
+  // Fix round (regression from the marker-before-enqueue ordering): if enqueue.websiteRecheck
+  // itself throws (e.g. boss.send rejects), the marker persisted just before it must not be
+  // left stuck — it's cleared before the tick's promise rejects. Mirrors runScannerTick's
+  // existing behavior for every other enqueue call: nothing here catches a rejecting
+  // enqueue.zipSearch/enqueue.tdlrSync either, so the tick's own promise simply rejects too.
+  it("D4 fix: clears the marker and rejects when enqueue.websiteRecheck itself throws", async () => {
+    await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+    // Makes a business due for website_recheck work; not otherwise referenced.
+    await prisma.business.create({ data: { name: "Stale Site", websiteUrl: "https://stale.fake.test/", websiteCheckedAt: new Date(now.getTime() - 60 * DAY) } });
+    const { enqueue } = spies();
+    const boom = new Error("boss.send rejected");
+    const failingEnqueue: TickDeps["enqueue"] = { ...enqueue, websiteRecheck: async () => { throw boom; } };
+
+    // `boom` is thrown only from the injected websiteRecheck enqueue fn, so rejecting with
+    // this exact error also proves the tick reached the website_recheck branch (and thus
+    // already wrote the marker) before failing, not some unrelated earlier failure.
+    await expect(runScannerTick({ now: () => now, enqueue: failingEnqueue })).rejects.toBe(boom);
+
+    // The marker written just before the throwing enqueue call must be cleared, not left
+    // stuck reporting "busy" for up to QUEUE_OPTIONS[websiteRecheck].expireInSeconds (1 h).
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.currentJobId).toBeNull();
+  });
 });

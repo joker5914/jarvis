@@ -204,7 +204,21 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     // it always finds something to clear rather than racing to clear a marker that isn't there
     // yet. This is also the *only* write of currentJobId for this branch — see below.
     await setScannerState(ownerId, { currentJobId: jobId });
-    queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
+    try {
+      queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
+    } catch (e) {
+      // enqueue.websiteRecheck can itself throw (e.g. boss.send rejects) after the marker
+      // above was already persisted — without this, the marker would be stuck until it
+      // expires (up to QUEUE_OPTIONS[websiteRecheck].expireInSeconds, i.e. up to an hour),
+      // reporting the scanner "busy" the whole time even though no job is actually running.
+      // Clear it (conditioned on it still being the exact marker just written, same
+      // optimistic-concurrency guard as the job's own `finally` in websiteRecheck.ts) before
+      // rethrowing — this mirrors runScannerTick's existing behavior for every other enqueue
+      // call (e.g. a rejecting enqueue.zipSearch), none of which are caught here either: the
+      // tick's promise rejects and propagates to its caller rather than being swallowed.
+      await prisma.scannerState.updateMany({ where: { ownerId, currentJobId: jobId }, data: { currentJobId: null } });
+      throw e;
+    }
   }
   const key = workKey(work);
   if (key === "website_recheck") skipUntil[key] = new Date(now.getTime() + HOUR).toISOString(); // one batch per hour at most
