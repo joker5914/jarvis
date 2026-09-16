@@ -127,6 +127,74 @@ not the dev server: Playwright's `webServer` runs `npm run e2e:server`
 writes to a separate build directory (`next.config.ts` reads it into
 `distDir`) and never clobbers a `.next` build from a running `npm run dev`.
 
+## Deploy to Railway
+
+The app deploys as two Railway services (web + worker) built from the same
+repo and `Dockerfile`, plus a Railway Postgres plugin.
+
+### 1. Create the project
+
+- New Railway project, add the **PostgreSQL** plugin.
+- Add two services from this GitHub repo:
+  - **web** — uses `railway.json` as-is (build via `Dockerfile`, start
+    command `npm run start:web`, health check `/api/health`).
+  - **worker** — same repo/Dockerfile, but override the service's **Start
+    Command** in the Railway dashboard to `npm run start:worker`. (Railway's
+    config-as-code, `railway.json`, applies per-service from the repo root,
+    so it only describes the web service; the worker's start command is set
+    in the dashboard instead.)
+
+### 2. Shared variables
+
+Set these on both services (or as shared/project-level variables):
+
+- `DATABASE_URL` — reference the Postgres plugin's connection string; don't
+  hardcode it.
+- `APP_SECRET` — 32+ random characters (cookie signing + key encryption).
+- `APP_PASSPHRASE` — the single-user login passphrase.
+- `PROVIDER_MODE=real`
+- `JOB_MODE=queue`
+- `TRUST_PROXY=1` — Railway proxies requests, so the passphrase rate limiter
+  needs this to throttle by real client IP instead of collapsing every
+  client onto one bucket.
+- `GOOGLE_MAPS_API_KEY` and `APOLLO_API_KEY` — optional here; both can
+  instead be pasted into the Settings page after first deploy (env wins over
+  a stored key when both are present).
+- Optional: `GOOGLE_DAILY_BUDGET`, `APOLLO_DAILY_BUDGET` (call-per-day caps;
+  default 2000/300).
+
+### 3. Health check and migrations
+
+- Railway's health check hits `/api/health` (excluded from the auth
+  middleware), which returns 200 only after a successful `SELECT 1` against
+  the database.
+- `npm run start:web` runs `prisma migrate deploy` before `next start`, so
+  schema migrations apply automatically on every web deploy. The worker
+  service does not run migrations.
+
+### 4. pg-boss queue policy (one-time note)
+
+The worker reconciles pg-boss queue policies (e.g. `stately`) on startup,
+but it refuses to change an existing queue's policy in place unless
+`NODE_ENV` is `development`/`test` or `PGBOSS_RECREATE_QUEUES=1` — Railway's
+image runs with `NODE_ENV=production`, so this is normally a safe no-op. If
+you point the worker at a database provisioned before a queue-policy change
+(e.g. migrating an existing dev database to Railway), set
+`PGBOSS_RECREATE_QUEUES=1` on the worker service for one deploy so it can
+drop and recreate the mismatched queue (this discards anything currently
+queued for it), then remove the variable.
+
+### 5. Operational notes
+
+- **Run a single web instance.** The passphrase-attempt rate limiter
+  (`src/lib/auth/rateLimit.ts`) is in-process, per instance — horizontally
+  scaling the web service would let an attacker reset their throttle by
+  hitting a different instance.
+- **Scraping egress.** The website scraper and checker (`safeFetch`) make
+  outbound requests from Railway's own egress IPs; if a target site
+  allowlists or geofences traffic, allow Railway's IP ranges (see Railway's
+  docs for the current list) rather than your own.
+
 ## More detail
 
 - `docs/superpowers/specs/` - product spec and design notes

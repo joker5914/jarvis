@@ -3,6 +3,11 @@ import { getActor } from "@/lib/actor";
 import { loadConfig } from "@/lib/config/runtime";
 import { ProjectsView } from "@/components/projects/ProjectsView";
 
+// loadConfig hits the database (AppConfig); without this the page is eligible for static
+// prerendering at build time (like "/" and "/searches" already declare), which fails a
+// `docker build` where DATABASE_URL isn't reachable from the build stage.
+export const dynamic = "force-dynamic";
+
 export default async function ProjectsPage() {
   const actor = await getActor();
   const cfg = await loadConfig(actor.id);

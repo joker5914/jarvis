@@ -2,6 +2,11 @@ import { getActor } from "@/lib/actor";
 import { loadConfig } from "@/lib/config/runtime";
 import { LeadsPageClient } from "@/components/leads/LeadsPageClient";
 
+// loadConfig hits the database (AppConfig); without this the page is eligible for static
+// prerendering at build time (like "/" and "/searches" already declare), which fails a
+// `docker build` where DATABASE_URL isn't reachable from the build stage.
+export const dynamic = "force-dynamic";
+
 export default async function LeadsPage() {
   const actor = await getActor();
   const cfg = await loadConfig(actor.id);
