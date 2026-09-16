@@ -4,6 +4,7 @@ import { ApiError } from "@/lib/api";
 import { PROJECT_CONFIG } from "@/lib/config/projects";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { suggestPackage } from "@/lib/scoring/packageMap";
+import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness, Providers } from "@/lib/providers/types";
 import type { Project } from "@prisma/client";
 import { JobPausedError, normalizeName, recomputeContactQuality, scrapeOne, validateEmails, type ZipSearchDeps } from "./zipSearch";
@@ -27,7 +28,10 @@ async function checkPause(deps: PromoteDeps) {
 }
 
 function tokens(s: string): Set<string> {
-  return new Set(normalizeName(s).split(" ").filter(Boolean));
+  // Normalize "&" to "and" before handing off to normalizeName (which would otherwise just
+  // strip it as punctuation), so "Bella Nails & Spa" and "Bella Nails and Spa" tokenize the
+  // same way instead of differing by one token.
+  return new Set(normalizeName(s.replace(/&/g, " and ")).split(" ").filter(Boolean));
 }
 
 /** Jaccard similarity of name tokens after normalizeName (case, punctuation, LLC/Inc suffixes). */
@@ -196,6 +200,10 @@ export async function runPromoteHighFit(deps: PromoteDeps) {
   } catch (e) {
     if (e instanceof JobPausedError) {
       await writeSync(SYNC_KEYS.promoteBatch, { status: "paused", message: "Paused", counts });
+      return counts;
+    }
+    if (e instanceof BudgetExhaustedError) {
+      await writeSync(SYNC_KEYS.promoteBatch, { status: "paused", message: e.message, counts });
       return counts;
     }
     await writeSync(SYNC_KEYS.promoteBatch, { status: "failed", error: (e as Error).message ?? String(e), counts });

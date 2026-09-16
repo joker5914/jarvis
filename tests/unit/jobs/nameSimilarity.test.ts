@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { nameSimilarity } from "@/lib/jobs/promote";
 
 describe("nameSimilarity", () => {
-  it("is 1 for the same name modulo punctuation and suffixes", () => {
-    expect(nameSimilarity("Bella Nails & Spa", "Bella Nails and Spa LLC")).toBeCloseTo(0.75, 2);
+  it("is 1 for the same name modulo punctuation, suffixes, and '&' vs 'and'", () => {
+    expect(nameSimilarity("Bella Nails & Spa", "Bella Nails and Spa LLC")).toBe(1);
     expect(nameSimilarity("Bella Nails & Spa", "Bella Nails & Spa")).toBe(1);
   });
   it("is low for a padded fake match", () => {

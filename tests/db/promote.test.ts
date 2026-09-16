@@ -4,6 +4,7 @@ import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { createBusinessFromProject, findBusinessCandidates, linkProjectToPlace, runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CATEGORIES } from "@/lib/config/categories";
 
 const providers = {
@@ -137,5 +138,21 @@ describe("promote", () => {
     const s = await readSync(SYNC_KEYS.promoteBatch);
     expect(s.cursor.status).toBe("idle");
     expect(s.cursor.counts?.linked).toBe(1);
+  });
+
+  it("pauses instead of throwing when a provider's daily budget is exhausted mid-batch", async () => {
+    // The fake providers used in these tests don't route through withBudget (see
+    // src/lib/providers/budget.ts), so a providerConfig row with dailyBudget: 0 wouldn't
+    // actually trip anything here. Simulate the real failure mode directly: geocodeZip
+    // throwing BudgetExhaustedError, exactly what withBudget throws once a real provider's
+    // daily quota is used up.
+    const exhaustedProviders = {
+      ...providers,
+      geocode: { geocodeZip: async () => { throw new BudgetExhaustedError("google"); } },
+    };
+    await expect(runPromoteHighFit({ providers: exhaustedProviders })).resolves.toBeDefined();
+    const s = await readSync(SYNC_KEYS.promoteBatch);
+    expect(s.cursor.status).toBe("paused");
+    expect(s.cursor.message).toMatch(/google/i);
   });
 });
