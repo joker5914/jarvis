@@ -81,6 +81,16 @@ describe("runZipSearch", () => {
     expect((s.progress as { step: string }).step).toBe("paused");
   });
 
+  it("treats an already-aborted signal (pg-boss job expiry/shutdown) like a pause", async () => {
+    const search = await prisma.search.create({ data: { zip: "77084" } });
+    const controller = new AbortController();
+    controller.abort();
+    await runZipSearch(search.id, { providers, signal: controller.signal });
+    const s = await prisma.search.findUniqueOrThrow({ where: { id: search.id } });
+    expect(s.status).toBe("paused");
+    expect((s.progress as { step: string }).step).toBe("paused");
+  });
+
   it("fails with a message when the zip cannot be geocoded", async () => {
     const search = await prisma.search.create({ data: { zip: "abcde" } });
     await expect(runZipSearch(search.id, { providers })).rejects.toThrow(/could not be located/);

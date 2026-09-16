@@ -14,6 +14,13 @@ export type ZipSearchDeps = {
   providers: Providers;
   shouldPause?: () => Promise<boolean>;
   log?: (msg: string) => void;
+  /**
+   * Aborted when pg-boss expires or cancels the underlying job (e.g. the job
+   * ran past `expireInSeconds`, or the worker is shutting down). Treated like
+   * a pause: the search is marked `paused` (resumable) rather than left
+   * `running` forever while a retried job also processes the same searchId.
+   */
+  signal?: AbortSignal;
 };
 
 export class JobPausedError extends Error {
@@ -43,6 +50,7 @@ async function setProgress(searchId: string, p: Progress) {
 }
 
 async function checkPause(deps: ZipSearchDeps) {
+  if (deps.signal?.aborted) throw new JobPausedError();
   if (deps.shouldPause && (await deps.shouldPause())) throw new JobPausedError();
 }
 
@@ -98,7 +106,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
       exclusionReasons: fit.exclusionReasons,
       smbFitScore: fit.score,
     };
-    const existing = await prisma.business.findUnique({ where: { googlePlaceId: biz.placeId } });
+    const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } } });
     const b = existing
       ? await prisma.business.update({
           where: { id: existing.id },
