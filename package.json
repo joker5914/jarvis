@@ -14,6 +14,7 @@
     "test:watch": "vitest --config vitest.config.ts",
     "test:db": "vitest run --config vitest.db.config.ts",
     "test:e2e": "playwright test",
+    "e2e:server": "cross-env NEXT_TELEMETRY_DISABLED=1 NEXT_DIST_DIR=.next-e2e next build && cross-env NEXT_TELEMETRY_DISABLED=1 NEXT_DIST_DIR=.next-e2e next start -p 3100",
     "worker": "node --env-file=.env --import=tsx src/worker/index.ts",
     "db:up": "docker compose up -d db",
     "db:migrate": "prisma migrate dev",
