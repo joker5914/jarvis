@@ -20,13 +20,16 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:sdr@localhost:5432/sdr
       TEST_DATABASE_URL: postgresql://postgres:sdr@localhost:5432/sdr_test
-      APP_PASSPHRASE: ci-pass
-      APP_SECRET: ci-secret-ci-secret-ci-secret-1234567890
       PROVIDER_MODE: fake
       JOB_MODE: inline
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
+      # Ephemeral gate credentials for this run only; generated so no secret-like literal lives in the repo.
+      - name: Generate throwaway app credentials
+        run: |
+          echo "APP_PASSPHRASE=ci-$(openssl rand -hex 8)" >> "$GITHUB_ENV"
+          echo "APP_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: 22.22.3
