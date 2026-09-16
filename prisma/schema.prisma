@@ -321,12 +321,15 @@ model ScanTarget {
 }
 
 model ScannerState {
-  ownerId         String        @id @default("local-user")
-  status          ScannerStatus @default(disabled)
-  pauseRequested  Boolean       @default(false)
-  currentJobId    String?
-  currentActivity String?
-  lastTickAt      DateTime?
-  nextPlanned     Json?
-  lastError       String?
+  ownerId             String        @id @default("local-user")
+  status              ScannerStatus @default(disabled)
+  pauseRequested      Boolean       @default(false)
+  currentJobId        String?
+  currentActivity     String?
+  lastTickAt          DateTime?
+  nextPlanned         Json?
+  lastError           String?
+  backoffUntil        DateTime?
+  consecutiveFailures Int           @default(0)
+  skipUntil           Json?
 }

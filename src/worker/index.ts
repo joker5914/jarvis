@@ -1,8 +1,22 @@
 import { PgBoss } from "pg-boss";
-import { QUEUES, QUEUE_OPTIONS, type PromoteBatchJobData, type PromoteJobData, type TdlrSyncJobData, type ZipSearchJobData } from "@/lib/jobs/queues";
+import {
+  QUEUES,
+  QUEUE_OPTIONS,
+  type PromoteBatchJobData,
+  type PromoteJobData,
+  type ScannerTickJobData,
+  type TdlrSyncJobData,
+  type WebsiteRecheckJobData,
+  type ZipSearchJobData,
+} from "@/lib/jobs/queues";
 import { runZipSearch } from "@/lib/jobs/zipSearch";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
+import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
+import { scannerPauseCheck } from "@/lib/jobs/shared";
+import { runScannerTick } from "@/lib/scanner/tick";
+import { REGION } from "@/lib/config/region";
+import { prisma } from "@/lib/db";
 import { getProviders } from "@/lib/providers";
 
 async function main() {
@@ -12,9 +26,12 @@ async function main() {
   for (const q of Object.values(QUEUES)) await boss.createQueue(q, QUEUE_OPTIONS[q]);
 
   await boss.work<ZipSearchJobData>(QUEUES.zipSearch, { batchSize: 1 }, async ([job]) => {
-    console.log(`[zip-search] start ${job.data.searchId}`);
-    await runZipSearch(job.data.searchId, { providers: getProviders(), log: console.log, signal: job.signal });
-    console.log(`[zip-search] done ${job.data.searchId}`);
+    const { searchId, origin } = job.data;
+    console.log(`[zip-search] start ${searchId} (${origin ?? "manual"})`);
+    const search = await prisma.search.findUnique({ where: { id: searchId }, select: { ownerId: true } });
+    const shouldPause = origin === "scanner" && search ? scannerPauseCheck(search.ownerId) : undefined;
+    await runZipSearch(searchId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause });
+    console.log(`[zip-search] done ${searchId}`);
   });
 
   await boss.work<TdlrSyncJobData>(QUEUES.tdlrSync, { batchSize: 1 }, async ([job]) => {
@@ -38,6 +55,21 @@ async function main() {
     const r = await runPromoteHighFit({ providers: getProviders(), log: console.log, signal: job.signal });
     console.log(`[promote-batch] done ${JSON.stringify(r)}`);
   });
+
+  await boss.work<WebsiteRecheckJobData>(QUEUES.websiteRecheck, { batchSize: 1 }, async ([job]) => {
+    console.log(`[website-recheck] start ${job.data.businessIds.length}`);
+    await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
+    console.log(`[website-recheck] done`);
+  });
+
+  await boss.work<ScannerTickJobData>(QUEUES.scannerTick, { batchSize: 1 }, async () => {
+    const r = await runScannerTick();
+    console.log(`[scanner-tick] ${r.status}${r.work ? ` ${r.work.kind}` : ""}`);
+  });
+  // Every 5 minutes; the tick itself decides whether there's anything to do.
+  // singletonKey matches enqueueScannerTick's manual key so a cron fire can never
+  // queue a second tick behind one already in flight.
+  await boss.schedule(QUEUES.scannerTick, "*/5 * * * *", {}, { tz: REGION.timezone, singletonKey: "scanner-tick" });
 
   console.log(`worker ready (PROVIDER_MODE=${process.env.PROVIDER_MODE ?? "fake"})`);
 
