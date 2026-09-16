@@ -1,0 +1,325 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  queued
+  running
+  paused
+  complete
+  failed
+}
+
+enum BusinessSource {
+  zip_search
+  tdlr
+  manual
+}
+
+enum Exclusion {
+  none
+  enterprise
+}
+
+enum QualityBand {
+  green
+  yellow
+  red
+}
+
+enum OutreachStatus {
+  not_contacted
+  contacted
+  interested
+  not_a_fit
+  customer
+}
+
+enum ContactType {
+  email
+  phone
+  linkedin
+  facebook
+  instagram
+  twitter
+  yelp
+  other
+}
+
+enum ContactSource {
+  google
+  website
+  apollo
+  tdlr
+  manual
+}
+
+enum ValidationStatus {
+  unchecked
+  valid
+  invalid
+  unreachable
+}
+
+enum WorkType {
+  new_construction
+  renovation
+  addition
+  historic
+  row
+}
+
+enum TimingWindow {
+  opening_soon
+  under_construction
+  planned
+  just_completed
+  stale
+}
+
+enum ScannerStatus {
+  idle
+  running
+  paused
+  outside_window
+  budget_exhausted
+  disabled
+}
+
+model Search {
+  id             String     @id @default(cuid())
+  ownerId        String     @default("local-user")
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  zip            String
+  city           String?
+  state          String?
+  lat            Float?
+  lng            Float?
+  radiusMeters   Int?
+  status         JobStatus  @default(queued)
+  progress       Json?
+  countsFound    Int        @default(0)
+  countsScraped  Int        @default(0)
+  countsEnriched Int        @default(0)
+  error          String?
+  origin         String     @default("manual")
+  businesses     SearchBusiness[]
+
+  @@index([ownerId, createdAt])
+}
+
+model Business {
+  id                      String          @id @default(cuid())
+  ownerId                 String          @default("local-user")
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  googlePlaceId           String?         @unique
+  name                    String
+  formattedAddress        String?
+  zip                     String?
+  lat                     Float?
+  lng                     Float?
+  phone                   String?
+  websiteUrl              String?
+  googleRating            Float?
+  googleReviewCount       Int?
+  googleTypes             String[]        @default([])
+  primaryCategory         String?
+  source                  BusinessSource  @default(zip_search)
+  exclusion               Exclusion       @default(none)
+  exclusionReasons        String[]        @default([])
+  smbFitScore             Int             @default(0)
+  contactQualityScore     Int             @default(0)
+  contactQualityBand      QualityBand     @default(red)
+  contactQualityReasons   Json?
+  suggestedPackage        String?
+  currentProviderHint     String?
+  currentProviderEvidence String?
+  outreachStatus          OutreachStatus  @default(not_contacted)
+  productsPitched         String[]        @default([])
+  notes                   String          @default("")
+  websiteReachable        Boolean?
+  websiteCheckedAt        DateTime?
+  websiteError            String?
+  lastEnrichedAt          DateTime?
+  searches                SearchBusiness[]
+  contacts                Contact[]
+  tags                    BusinessTag[]
+  projects                Project[]
+  activity                ActivityLog[]
+
+  @@index([ownerId, zip])
+  @@index([ownerId, outreachStatus])
+  @@index([ownerId, contactQualityBand])
+}
+
+model SearchBusiness {
+  searchId           String
+  businessId         String
+  surfacedByCategory String
+  search             Search   @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@id([searchId, businessId])
+  @@index([businessId])
+}
+
+model Contact {
+  id               String           @id @default(cuid())
+  ownerId          String           @default("local-user")
+  createdAt        DateTime         @default(now())
+  businessId       String
+  type             ContactType
+  value            String
+  personName       String?
+  personTitle      String?
+  source           ContactSource
+  validationStatus ValidationStatus @default(unchecked)
+  validatedAt      DateTime?
+  business         Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, type, value])
+}
+
+model Tag {
+  id         String        @id @default(cuid())
+  ownerId    String        @default("local-user")
+  name       String
+  color      String        @default("#64748b")
+  isSystem   Boolean       @default(false)
+  businesses BusinessTag[]
+
+  @@unique([ownerId, name])
+}
+
+model BusinessTag {
+  businessId String
+  tagId      String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([businessId, tagId])
+}
+
+model Project {
+  id               String        @id @default(cuid())
+  ownerId          String        @default("local-user")
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  tdlrProjectId    String?
+  projectNumber    String        @unique
+  projectName      String
+  facilityName     String?
+  locationAddress  String?
+  city             String?
+  zip              String?
+  county           String?
+  statusCode       Int?
+  statusLabel      String?
+  workType         WorkType?
+  estimatedCost    Float?
+  squareFootage    Int?
+  tenantFunded     Boolean?
+  fundsType        String?
+  scopeOfWork      String?
+  startDate        DateTime?
+  completionDate   DateTime?
+  registrationDate DateTime?
+  ownerName        String?
+  ownerAddress     String?
+  ownerPhone       String?
+  contactName      String?
+  tenantName       String?
+  designFirmName   String?
+  rasName          String?
+  rasPhone         String?
+  smbFitScore      Int           @default(0)
+  smbFitReasons    Json?
+  exclusion        Exclusion     @default(none)
+  exclusionReasons String[]      @default([])
+  timingWindow     TimingWindow?
+  businessId       String?
+  detailFetchedAt  DateTime?
+  lastCheckedAt    DateTime?
+  parseError       String?
+  business         Business?     @relation(fields: [businessId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, completionDate])
+  @@index([ownerId, smbFitScore])
+}
+
+model ProviderConfig {
+  provider     String    @id
+  encryptedKey String?
+  enabled      Boolean   @default(true)
+  dailyBudget  Int       @default(1000)
+  usedToday    Int       @default(0)
+  usageDate    String?
+}
+
+model SyncState {
+  key              String    @id
+  lastSuccessfulAt DateTime?
+  cursor           Json?
+}
+
+model ActivityLog {
+  id         String    @id @default(cuid())
+  ownerId    String    @default("local-user")
+  createdAt  DateTime  @default(now())
+  businessId String?
+  projectId  String?
+  kind       String
+  message    String
+  business   Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, createdAt])
+}
+
+model ScanSchedule {
+  id                 String   @id @default(cuid())
+  ownerId            String   @unique @default("local-user")
+  updatedAt          DateTime @updatedAt
+  enabled            Boolean  @default(false)
+  windowStart        DateTime?
+  windowEnd          DateTime?
+  dailyStartTime     String?
+  dailyEndTime       String?
+  daysOfWeek         Int[]    @default([])
+  timezone           String   @default("America/Chicago")
+  zipRefreshDays     Int      @default(7)
+  tdlrSyncHours      Int      @default(6)
+  websiteRecheckDays Int      @default(30)
+  autoAddHotZips     Boolean  @default(true)
+  maxConcurrentJobs  Int      @default(1)
+}
+
+model ScanTarget {
+  id             String    @id @default(cuid())
+  ownerId        String    @default("local-user")
+  zip            String
+  priority       Int       @default(0)
+  addedBy        String    @default("user")
+  lastSearchedAt DateTime?
+  lastSearchId   String?
+  paused         Boolean   @default(false)
+
+  @@unique([ownerId, zip])
+}
+
+model ScannerState {
+  ownerId         String        @id @default("local-user")
+  status          ScannerStatus @default(disabled)
+  pauseRequested  Boolean       @default(false)
+  currentJobId    String?
+  currentActivity String?
+  lastTickAt      DateTime?
+  nextPlanned     Json?
+  lastError       String?
+}
