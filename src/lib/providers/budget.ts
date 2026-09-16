@@ -25,18 +25,26 @@ function defaultBudgetFor(provider: string): number {
 /** Counts one call against the provider's daily budget, then runs fn. */
 export async function withBudget<T>(provider: string, fn: () => Promise<T>): Promise<T> {
   const today = todayKey();
-  const cfg = await prisma.providerConfig.upsert({
+  // Ensure the row exists (idempotent).
+  await prisma.providerConfig.upsert({
     where: { provider },
     update: {},
     create: { provider, dailyBudget: defaultBudgetFor(provider) },
   });
-  if (!cfg.enabled) throw new Error(`Provider ${provider} is disabled`);
-  const used = cfg.usageDate === today ? cfg.usedToday : 0;
-  if (used >= cfg.dailyBudget) throw new BudgetExhaustedError(provider);
-  await prisma.providerConfig.update({
-    where: { provider },
-    data: { usageDate: today, usedToday: used + 1 },
+  // Roll the date forward when needed (no-op otherwise).
+  // Match null or non-today dates to reset the counter.
+  await prisma.providerConfig.updateMany({
+    where: { provider, OR: [{ usageDate: null }, { usageDate: { not: today } }] },
+    data: { usageDate: today, usedToday: 0 },
   });
+  // Atomically reserve one unit with SQL condition (Prisma where cannot compare columns).
+  const reserved = await prisma.$executeRaw`UPDATE "ProviderConfig" SET "usedToday" = "usedToday" + 1 WHERE "provider" = ${provider} AND "enabled" = true AND "usageDate" = ${today} AND "usedToday" < "dailyBudget"`;
+  if (reserved === 0) {
+    // Re-read to determine the error reason.
+    const cfg = await prisma.providerConfig.findUnique({ where: { provider } });
+    if (!cfg?.enabled) throw new Error(`Provider ${provider} is disabled`);
+    throw new BudgetExhaustedError(provider);
+  }
   return fn();
 }
 

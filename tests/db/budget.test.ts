@@ -22,4 +22,17 @@ describe("withBudget", () => {
     expect(cfg?.dailyBudget).toBe(77);
     expect(cfg?.usedToday).toBe(1);
   });
+
+  it("never overspends under concurrent calls", async () => {
+    await prisma.providerConfig.create({ data: { provider: "google", dailyBudget: 3 } });
+    const results = await Promise.allSettled(Array.from({ length: 8 }, () => withBudget("google", async () => "ok")));
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(3);
+    expect(results.filter((r) => r.status === "rejected" && r.reason instanceof BudgetExhaustedError)).toHaveLength(5);
+    expect((await budgetStatus("google")).used).toBe(3);
+  });
+
+  it("throws when provider is disabled", async () => {
+    await prisma.providerConfig.create({ data: { provider: "google", dailyBudget: 10, enabled: false } });
+    await expect(withBudget("google", async () => "ok")).rejects.toThrow(/disabled/);
+  });
 });
