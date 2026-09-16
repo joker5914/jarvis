@@ -1,5 +1,7 @@
 import * as cheerio from "cheerio";
 import { detectProvider } from "@/lib/scoring/providerDetect";
+import { safeFetch, readCapped } from "@/lib/net/safeFetch";
+import { UnsafeUrlError } from "@/lib/net/ssrf";
 import {
   classifySocialUrl,
   normalizeEmail,
@@ -20,26 +22,21 @@ export type FetchResult =
 export type PageFetcher = (url: string) => Promise<FetchResult>;
 
 export const defaultFetcher: PageFetcher = async (url) => {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
-      headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" },
-      redirect: "follow",
-      signal: ctrl.signal,
-    });
+    const res = await safeFetch(
+      url,
+      { headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" } },
+      { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
     if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
     const ct = res.headers.get("content-type") ?? "";
-    if (!/text\/html|application\/xhtml/i.test(ct)) {
-      return { ok: true, status: res.status, html: "", finalUrl: res.url };
-    }
-    const html = (await res.text()).slice(0, MAX_HTML_BYTES);
+    if (!/text\/html|application\/xhtml/i.test(ct)) return { ok: true, status: res.status, html: "", finalUrl: res.url };
+    const html = await readCapped(res, MAX_HTML_BYTES);
     return { ok: true, status: res.status, html, finalUrl: res.url };
   } catch (e) {
     const err = e as Error;
+    if (err instanceof UnsafeUrlError) return { ok: false, error: err.message };
     return { ok: false, error: err?.name === "AbortError" ? "timeout" : err?.message ?? String(e) };
-  } finally {
-    clearTimeout(timer);
   }
 };
 
