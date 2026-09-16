@@ -29,6 +29,7 @@ function NavLinks({ onNavigate, vertical }: { onNavigate?: () => void; vertical?
             key={l.href}
             href={l.href}
             onClick={onNavigate}
+            aria-current={active ? "page" : undefined}
             className={cn(
               "rounded-md px-3 py-2 text-sm font-medium transition-colors",
               active
