@@ -39,7 +39,20 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
           </TableHeader>
           <TableBody>
             {rows.map((b) => (
-              <TableRow key={b.id} className="cursor-pointer" onClick={() => onOpen(b.id)} data-testid="lead-row">
+              <TableRow
+                key={b.id}
+                className="cursor-pointer"
+                onClick={() => onOpen(b.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpen(b.id);
+                  }
+                }}
+                data-testid="lead-row"
+              >
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <Checkbox checked={selectedIds.has(b.id)} onCheckedChange={(c) => onToggle(b.id, !!c)} aria-label={`Select ${b.name}`} />
                 </TableCell>
@@ -63,10 +76,25 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
       {/* Mobile cards */}
       <ul className="space-y-2 md:hidden" data-testid="leads-cards">
         {rows.map((b) => (
-          <li key={b.id} className="rounded-lg border bg-white p-3 dark:bg-neutral-900" onClick={() => onOpen(b.id)}>
+          <li
+            key={b.id}
+            className="rounded-lg border bg-white p-3 dark:bg-neutral-900"
+            onClick={() => onOpen(b.id)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpen(b.id);
+              }
+            }}
+          >
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="font-medium">{b.name}</div>
+                <div className="font-medium">
+                  {b.name}
+                  {b.exclusion !== "none" && <span className="ml-2 text-xs text-neutral-500">(excluded)</span>}
+                </div>
                 <div className="text-xs text-neutral-500">{categoryLabel(b.primaryCategory)} · {b.zip}</div>
               </div>
               <QualityBadge band={b.contactQualityBand} />

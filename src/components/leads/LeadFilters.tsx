@@ -38,6 +38,7 @@ function Choice({
 export function LeadFilters() {
   const { params, set, reset } = useLeadFilters();
   const [q, setQ] = useState(params.get("q") ?? "");
+  const [zip, setZip] = useState(params.get("zip") ?? "");
   const [tags, setTags] = useState<Tag[]>([]);
 
   useEffect(() => {
@@ -61,8 +62,12 @@ export function LeadFilters() {
       </div>
       <div className="space-y-1">
         <Label htmlFor="f-zip">Zip</Label>
-        <Input id="f-zip" defaultValue={params.get("zip") ?? ""} inputMode="numeric" maxLength={5}
-          onBlur={(e) => set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null)} />
+        <Input id="f-zip" value={zip} inputMode="numeric" maxLength={5}
+          onChange={(e) => setZip(e.target.value.replace(/\D/g, "").slice(0, 5))}
+          onBlur={(e) => set("zip", /^\d{5}$/.test(e.target.value) ? e.target.value : null)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") set("zip", /^\d{5}$/.test(zip) ? zip : null);
+          }} />
       </div>
       <Choice id="f-category" label="Category" value={params.get("category") ?? ""} onChange={(v) => set("category", v)}
         options={CATEGORIES.map((c) => ({ value: c.slug, label: c.label }))} />
@@ -83,7 +88,7 @@ export function LeadFilters() {
           onCheckedChange={(c) => set("showExcluded", c ? "true" : null)} />
         <Label htmlFor="f-excluded">Show excluded (enterprise)</Label>
       </div>
-      <Button variant="outline" size="sm" onClick={() => { setQ(""); reset(); }}>Clear filters</Button>
+      <Button variant="outline" size="sm" onClick={() => { setQ(""); setZip(""); reset(); }}>Clear filters</Button>
     </div>
   );
 }

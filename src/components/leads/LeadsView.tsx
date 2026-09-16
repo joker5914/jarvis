@@ -86,8 +86,24 @@ export function LeadsView({
           <LeadsTable
             rows={data.items}
             selectedIds={selected}
-            onToggle={(id, c) => setSelected((prev) => { const n = new Set(prev); c ? n.add(id) : n.delete(id); return n; })}
-            onToggleAll={(c) => setSelected(c ? new Set(data.items.map((r) => r.id)) : new Set())}
+            onToggle={(id, c) => setSelected((prev) => {
+              const n = new Set(prev);
+              if (c) {
+                n.add(id);
+              } else {
+                n.delete(id);
+              }
+              return n;
+            })}
+            onToggleAll={(c) => setSelected((prev) => {
+              const n = new Set(prev);
+              if (c) {
+                data.items.forEach((r) => n.add(r.id));
+              } else {
+                data.items.forEach((r) => n.delete(r.id));
+              }
+              return n;
+            })}
             onOpen={setOpenId}
           />
         )}
