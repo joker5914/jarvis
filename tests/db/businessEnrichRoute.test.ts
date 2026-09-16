@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { NextRequest } from "next/server";
+import type { ProviderConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
@@ -63,5 +64,49 @@ describe("enrich routes: excluded businesses (M2)", () => {
     expect(body.enrichQueued).toBe(1);
     expect(body.enrichFailed).toBe(0);
     expect(body.enrichSkipped).toBe(1);
+  });
+});
+
+describe("enrich routes: disabled provider (M3)", () => {
+  let prevJobMode: string | undefined;
+  let apolloSnapshot: ProviderConfig | null;
+
+  beforeAll(async () => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+    apolloSnapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { enabled: false },
+      create: { provider: "apollo", enabled: false },
+    });
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    if (apolloSnapshot) {
+      await prisma.providerConfig.update({ where: { provider: "apollo" }, data: apolloSnapshot });
+    } else {
+      await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/:id/enrich returns 409 with settingsHref when Apollo is disabled", async () => {
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Apollo is disabled in Settings");
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("POST /businesses/bulk enrich returns 409 with settingsHref when Apollo is disabled", async () => {
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Apollo is disabled in Settings");
+    expect(body.settingsHref).toBe("/settings");
   });
 });

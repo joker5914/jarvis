@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json } from "@/lib/api";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
-import { isProviderConfigured } from "@/lib/providers/keys";
+import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
 
 export const POST = handle(async (req, ctx) => {
   const { id } = await ctx.params;
@@ -14,6 +14,9 @@ export const POST = handle(async (req, ctx) => {
   }
   if (!(await isProviderConfigured("apollo"))) {
     return json({ error: "Apollo API key is not configured", settingsHref: "/settings" }, 409);
+  }
+  if (!(await isProviderEnabled("apollo"))) {
+    return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
   }
   // Body is optional (a plain "Enrich" click sends no body at all); force defaults to false.
   let force = false;

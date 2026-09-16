@@ -17,3 +17,11 @@ export async function isProviderConfigured(provider: keyof typeof ENV_NAMES): Pr
   if ((process.env.PROVIDER_MODE ?? "fake") === "fake") return true;
   return (await getProviderKey(provider)) !== null;
 }
+
+/** Reads ProviderConfig.enabled directly (unlike isProviderConfigured, this is NOT short-circuited
+ * by PROVIDER_MODE=fake — an operator can disable a provider in Settings regardless of mode).
+ * Defaults to true when no row exists yet (mirrors withBudget's upsert default). */
+export async function isProviderEnabled(provider: keyof typeof ENV_NAMES): Promise<boolean> {
+  const cfg = await prisma.providerConfig.findUnique({ where: { provider } });
+  return cfg?.enabled ?? true;
+}

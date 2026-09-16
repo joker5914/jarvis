@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json, parseJson } from "@/lib/api";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
-import { isProviderConfigured } from "@/lib/providers/keys";
+import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
 
 const schema = z.object({
   ids: z.array(z.string()).min(1).max(500),
@@ -27,6 +27,9 @@ export const POST = handle(async (req) => {
   if (body.enrich) {
     if (ids.length > 200) throw new ApiError(400, "Enrich at most 200 leads per action");
     if (!(await isProviderConfigured("apollo"))) throw new ApiError(409, "Apollo API key is not configured");
+    if (!(await isProviderEnabled("apollo"))) {
+      return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
+    }
   }
 
   if (body.outreachStatus) {
