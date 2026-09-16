@@ -12,3 +12,8 @@ export async function getProviderKey(provider: keyof typeof ENV_NAMES): Promise<
   if (!cfg?.encryptedKey) return null;
   return decryptString(cfg.encryptedKey, secret);
 }
+
+export async function isProviderConfigured(provider: keyof typeof ENV_NAMES): Promise<boolean> {
+  if ((process.env.PROVIDER_MODE ?? "fake") === "fake") return true;
+  return (await getProviderKey(provider)) !== null;
+}

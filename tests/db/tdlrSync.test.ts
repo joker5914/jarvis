@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher, FAKE_PROJECTS } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher, FAKE_PROJECTS } from "@/lib/providers/fake";
 import type { ProjectRegistryProvider } from "@/lib/providers/types";
 
 const OWNER = "local-user";
@@ -14,6 +14,7 @@ const providers = {
   validation: new FakeValidationProvider(),
   registry: new FakeRegistryProvider(),
   fetcher: fakeFetcher,
+  enrichment: new FakeEnrichmentProvider(),
 };
 
 async function project(number: string) {
@@ -148,7 +149,7 @@ describe("runTdlrSync", () => {
   });
 
   it("tolerates two concurrent syncs for the same owner racing project.create for the same projectNumber (R4)", async () => {
-    const providersB = { geocode: new FakeGeocodeProvider(), discovery: new FakeDiscoveryProvider(), validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher };
+    const providersB = { geocode: new FakeGeocodeProvider(), discovery: new FakeDiscoveryProvider(), validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher, enrichment: new FakeEnrichmentProvider() };
     const [r1, r2] = await Promise.all([runTdlrSync({ providers }), runTdlrSync({ providers: providersB })]);
     // Neither call throws (the P2002-tolerant create means the race loser just skips its own
     // create instead of failing the whole sync), and no projects are duplicated.

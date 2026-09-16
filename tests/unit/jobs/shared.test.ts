@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { checkPause, JobPausedError, normalizeName, discoveredToBusinessFields } from "@/lib/jobs/shared";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 
 const providers = {
   geocode: new FakeGeocodeProvider(),
@@ -8,6 +8,7 @@ const providers = {
   validation: new FakeValidationProvider(),
   registry: new FakeRegistryProvider(),
   fetcher: fakeFetcher,
+  enrichment: new FakeEnrichmentProvider(),
 };
 
 describe("checkPause", () => {

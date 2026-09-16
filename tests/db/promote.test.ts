@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { createBusinessFromProject, findBusinessCandidates, linkProjectToPlace, runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CATEGORIES } from "@/lib/config/categories";
 
@@ -13,6 +13,7 @@ const providers = {
   validation: new FakeValidationProvider(),
   registry: new FakeRegistryProvider(),
   fetcher: fakeFetcher,
+  enrichment: new FakeEnrichmentProvider(),
 };
 const OWNER = "local-user";
 
