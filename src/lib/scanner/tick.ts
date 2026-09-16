@@ -193,10 +193,18 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     queued = await enqueue.zipSearch(search.id, { priority: SCANNER_PRIORITY, origin: "scanner" });
     jobId = search.id;
   } else if (work.kind === "website_recheck") {
-    queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
     // Timestamped so a later tick can tell a fresh marker (still counts toward
     // maxConcurrentJobs) from a stale one (ignored) — see websiteRecheckRunning above.
     jobId = `${WEBSITE_RECHECK_JOB_PREFIX}${now.toISOString()}`;
+    // Persisted BEFORE enqueueing, not after: in JOB_MODE=inline, enqueue.websiteRecheck starts
+    // runWebsiteRecheck fire-and-forget and returns immediately, so the job can run to
+    // completion — including its own `finally` reading and clearing currentJobId — before this
+    // function would otherwise get around to writing the marker via `finish()` below. Writing
+    // it here first means the job's `finally` always finds its own marker already in place, so
+    // it always finds something to clear rather than racing to clear a marker that isn't there
+    // yet.
+    await setScannerState(ownerId, { currentJobId: jobId });
+    queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
   }
   const key = workKey(work);
   if (key === "website_recheck") skipUntil[key] = new Date(now.getTime() + HOUR).toISOString(); // one batch per hour at most

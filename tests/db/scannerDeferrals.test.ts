@@ -3,6 +3,10 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { readScanner } from "@/lib/scanner/state";
 import { applyScheduleUpdate } from "@/lib/scanner/schedule";
+import { runZipSearch } from "@/lib/jobs/zipSearch";
+import { CATEGORIES } from "@/lib/config/categories";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import type { PageFetcher } from "@/lib/extract/website";
 
 // TEST_DATABASE_URL is required and wired to DATABASE_URL by tests/db/setup.ts (a global
 // setupFile for this suite), which throws before any test runs if it's missing.
@@ -55,6 +59,58 @@ describe("D2: applyScheduleUpdate atomicity", () => {
     const row = await prisma.scanSchedule.findUniqueOrThrow({ where: { ownerId: OWNER_D2 } });
     if (row.windowStart && row.windowEnd) {
       expect(row.windowEnd.getTime()).toBeGreaterThanOrEqual(row.windowStart.getTime());
+    }
+  });
+});
+
+// Fix round: the pLimit(4) concurrent scrape loop's per-business catch used to swallow
+// JobPausedError from the D6 mid-scrape hook the same as any other scrape error, recording the
+// interrupted businesses as unreachable ("websiteError: 'paused'") instead of letting the pause
+// reach runZipSearch's outer catch (which sets `status: "paused"` and leaves the businesses
+// alone). It must now rethrow, and Promise.allSettled (replacing Promise.all) must surface
+// exactly one of those rejections without leaving any concurrent sibling's rejection unhandled.
+describe("fix: a mid-scrape pause during a scanner zip search propagates through the concurrent scrape step", () => {
+  const OWNER = "local-user"; // Search/Business default ownerId
+
+  beforeEach(async () => {
+    await prisma.activityLog.deleteMany();
+    await prisma.contact.deleteMany();
+    await prisma.businessTag.deleteMany();
+    await prisma.searchBusiness.deleteMany();
+    await prisma.business.deleteMany();
+    await prisma.search.deleteMany();
+    await prisma.tag.deleteMany();
+    await prisma.tag.createMany({ data: CATEGORIES.map((c) => ({ ownerId: OWNER, name: c.slug, isSystem: true })) });
+  });
+
+  it("ends the search as paused, with no business's websiteError mentioning the pause", async () => {
+    const search = await prisma.search.create({ data: { zip: "77084", origin: "scanner" } });
+    let fetchCalls = 0;
+    const countingFetcher: PageFetcher = async (url) => {
+      fetchCalls++;
+      return fakeFetcher(url);
+    };
+    const providers = {
+      geocode: new FakeGeocodeProvider(),
+      discovery: new FakeDiscoveryProvider(),
+      validation: new FakeValidationProvider(),
+      registry: new FakeRegistryProvider(),
+      fetcher: countingFetcher,
+      enrichment: new FakeEnrichmentProvider(),
+    };
+    // Flips true only once the scrape step's first fetch happens — discover() never calls the
+    // fetcher, so the pause lands squarely inside the concurrent scrape loop, not earlier.
+    const shouldPause = async () => fetchCalls >= 1;
+
+    await runZipSearch(search.id, { providers, shouldPause });
+
+    const done = await prisma.search.findUniqueOrThrow({ where: { id: search.id } });
+    expect(done.status).toBe("paused");
+
+    const businesses = await prisma.business.findMany();
+    expect(businesses.length).toBeGreaterThan(0); // discover() ran to completion before the pause
+    for (const b of businesses) {
+      expect(b.websiteError ?? "").not.toMatch(/pause/i);
     }
   });
 });

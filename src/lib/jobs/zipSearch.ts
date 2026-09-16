@@ -335,13 +335,22 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     let scraped = 0;
     const limit = pLimit(SCRAPE_CONCURRENCY);
     await setProgress(searchId, { step: "scrape", current: 0, total: toScrape.length, doneSteps: done });
-    await Promise.all(
+    // Promise.allSettled (not Promise.all): with SCRAPE_CONCURRENCY(4) tasks in flight, a
+    // JobPausedError from one (rethrown below rather than swallowed, so the outer catch at the
+    // bottom of this function can still record `status: "paused"`) must not leave its still-
+    // running siblings as promises nobody is watching for a second rejection — Promise.all
+    // would settle the whole `await` on the first rejection while up to 3 more scrapes kept
+    // running in the background. allSettled waits for every task, then the first rejection
+    // (they're all JobPausedError — scrapeOne's own errors are already caught below and never
+    // reach here) found among the results is thrown to reach that same outer catch.
+    const results = await Promise.allSettled(
       toScrape.map((b) =>
         limit(async () => {
           await checkPause(deps);
           try {
             await scrapeOne(b.id, ownerId, deps);
           } catch (e) {
+            if (e instanceof JobPausedError) throw e;
             await prisma.business.update({
               where: { id: b.id },
               data: { websiteReachable: false, websiteError: (e as Error).message, websiteCheckedAt: new Date() },
@@ -355,6 +364,8 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
         }),
       ),
     );
+    const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (rejected) throw rejected.reason;
 
     // 6. MX validation
     await checkPause(deps);

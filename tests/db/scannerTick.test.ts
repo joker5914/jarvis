@@ -286,4 +286,43 @@ describe("runScannerTick", () => {
     const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
     expect(state.currentJobId).toBe(`website_recheck:${now.toISOString()}`);
   });
+
+  // Fix round (Important): JOB_MODE=inline runs enqueueWebsiteRecheck's job fire-and-forget —
+  // it can finish (and its own `finally` read/clear ScannerState.currentJobId) before the tick
+  // would otherwise get around to writing the marker via `finish()`. The tick must persist the
+  // marker BEFORE calling enqueue.websiteRecheck so the job's finally always finds it already
+  // in place. Uses the real enqueueWebsiteRecheck (no `enqueue` override) so the fire-and-forget
+  // ordering is exercised for real, not through the test's own synchronous spy.
+  it("D4 fix: the inline job's finally clears the marker the tick persisted before enqueueing", async () => {
+    const prevMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+    try {
+      await prisma.scanSchedule.create({ data: { ownerId: OWNER, enabled: true } });
+      const b = await prisma.business.create({ data: { name: "Stale Site", websiteUrl: "https://stale.fake.test/", websiteCheckedAt: new Date(now.getTime() - 60 * DAY) } });
+
+      const r = await runScannerTick({ now: () => now }); // no enqueue override: real enqueueWebsiteRecheck
+      expect(r.work).toEqual({ kind: "website_recheck", businessIds: [b.id] });
+
+      // The marker must already be persisted by the time the tick itself returns — proves the
+      // write happened before (or at latest, atomically with) handing off to the inline job,
+      // not racing it.
+      const stateAfterTick = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+      expect(stateAfterTick.currentJobId).toBe(`website_recheck:${now.toISOString()}`);
+
+      // The inline job runs fire-and-forget; poll for its `finally` to clear the marker.
+      const deadline = Date.now() + 5000;
+      let cleared = false;
+      while (Date.now() < deadline) {
+        const s = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+        if (s.currentJobId === null) {
+          cleared = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(cleared).toBe(true);
+    } finally {
+      process.env.JOB_MODE = prevMode;
+    }
+  });
 });

@@ -1,9 +1,18 @@
 import { prisma } from "@/lib/db";
 import { WEBSITE_RECHECK_JOB_PREFIX } from "@/lib/scanner/state";
-import { checkPause, type JobDeps } from "./shared";
+import { checkPause, JobPausedError, type JobDeps } from "./shared";
 import { recomputeContactQuality, scrapeOne, validateEmails } from "./zipSearch";
 
-/** Re-scrape and re-validate a batch of businesses whose website check is stale. */
+/**
+ * Re-scrape and re-validate a batch of businesses whose website check is stale.
+ *
+ * Unlike `runZipSearch`/`runTdlrSync`/`runPromoteHighFit`, this function has no outer
+ * `catch (JobPausedError)` of its own: it deliberately lets a pause reject the returned
+ * promise (the `finally` below still clears this job's own `currentJobId` marker either way).
+ * The caller decides what "paused" means for a batch with no single stateful row to mark —
+ * `enqueueWebsiteRecheck`'s `JOB_MODE=inline` branch and the worker's pg-boss handler both
+ * treat a `JobPausedError` here as an expected pause rather than a job failure.
+ */
 export async function runWebsiteRecheck(businessIds: string[], ownerId: string, deps: JobDeps): Promise<{ rechecked: number }> {
   try {
     let rechecked = 0;
@@ -15,6 +24,10 @@ export async function runWebsiteRecheck(businessIds: string[], ownerId: string, 
         try {
           await scrapeOne(id, ownerId, deps);
         } catch (e) {
+          // A pause mid-scrape (via the D6 `beforeFetch` hook in extractWebsiteContacts) must
+          // propagate rather than be recorded as a scrape failure on the business that
+          // happened to be in flight when the pause landed.
+          if (e instanceof JobPausedError) throw e;
           await prisma.business.update({ where: { id }, data: { websiteReachable: false, websiteError: (e as Error).message, websiteCheckedAt: new Date() } });
         }
       } else {

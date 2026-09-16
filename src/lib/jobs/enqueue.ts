@@ -15,7 +15,7 @@ import { runZipSearch } from "./zipSearch";
 import { runTdlrSync } from "./tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "./promote";
 import { runWebsiteRecheck } from "./websiteRecheck";
-import { scannerPauseCheck } from "./shared";
+import { JobPausedError, scannerPauseCheck } from "./shared";
 import { getProviders } from "@/lib/providers";
 import { getActor } from "@/lib/actor";
 
@@ -109,7 +109,12 @@ export async function enqueueEnrich(businessId: string, ownerId: string, opts: {
 
 export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: string): Promise<boolean> {
   if (process.env.JOB_MODE === "inline") {
-    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => console.error("[inline website-recheck]", e));
+    // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc comment);
+    // a pause is expected/normal here, not a bug, so it's logged quietly rather than as an error.
+    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => {
+      if (e instanceof JobPausedError) console.log("[inline website-recheck] paused");
+      else console.error("[inline website-recheck]", e);
+    });
     return true;
   }
   const boss = await getBoss();

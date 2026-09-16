@@ -16,7 +16,7 @@ import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
 import { runEnrich } from "@/lib/jobs/enrich";
-import { scannerPauseCheck } from "@/lib/jobs/shared";
+import { JobPausedError, scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
@@ -69,8 +69,20 @@ async function main() {
 
   await boss.work<WebsiteRecheckJobData>(QUEUES.websiteRecheck, { batchSize: 1 }, async ([job]) => {
     console.log(`[website-recheck] start ${job.data.businessIds.length}`);
-    await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
-    console.log(`[website-recheck] done`);
+    try {
+      await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
+      console.log(`[website-recheck] done`);
+    } catch (e) {
+      // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc
+      // comment) — unlike zip-search/tdlr-sync/promote-batch, which each swallow their own
+      // pause and record it on a stateful row. Swallow it here instead, consistent with those:
+      // a pause is not a job failure, so it shouldn't retry or surface as a pg-boss failure.
+      if (e instanceof JobPausedError) {
+        console.log(`[website-recheck] paused`);
+        return;
+      }
+      throw e;
+    }
   });
 
   await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {

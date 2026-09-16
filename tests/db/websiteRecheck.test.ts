@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
 import { scrapeOne } from "@/lib/jobs/zipSearch";
+import { JobPausedError } from "@/lib/jobs/shared";
 import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 import type { PageFetcher } from "@/lib/extract/website";
 
@@ -100,5 +101,33 @@ describe("runWebsiteRecheck", () => {
     const manualProviders = { ...providers, fetcher: countingFetcher };
     await scrapeOne(b.id, OWNER, { providers: manualProviders }); // no shouldPause, like a manual job
     expect(fetchCalls).toBe(2); // home + the one /contact candidate page
+  });
+
+  // Fix round: the per-business catch inside runWebsiteRecheck's own loop used to swallow
+  // JobPausedError (from the D6 mid-scrape hook) the same as any other scrape error, recording
+  // the interrupted business as unreachable and continuing to the next one instead of stopping
+  // the batch. It must instead rethrow, propagating out of runWebsiteRecheck entirely (it has
+  // no outer JobPausedError catch of its own — see its doc comment) and leaving the interrupted
+  // business exactly as it was before the run.
+  it("fix: rejects with JobPausedError when paused mid-scrape, leaving the interrupted business unchanged", async () => {
+    const b = await prisma.business.create({ data: { name: "Multi", websiteUrl: "https://multi.fake.test/" } });
+    const before = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(before.websiteReachable).toBeNull();
+    expect(before.websiteError).toBeNull();
+
+    let fetchCalls = 0;
+    const countingFetcher: PageFetcher = async (url) => {
+      fetchCalls++;
+      return fakeFetcher(url);
+    };
+    const throttledProviders = { ...providers, fetcher: countingFetcher };
+    const shouldPause = async () => fetchCalls >= 1;
+
+    await expect(runWebsiteRecheck([b.id], OWNER, { providers: throttledProviders, shouldPause })).rejects.toBeInstanceOf(JobPausedError);
+
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.websiteReachable).toBeNull();
+    expect(after.websiteError).toBeNull();
+    expect(after.websiteCheckedAt).toBeNull();
   });
 });
