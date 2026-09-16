@@ -1,6 +1,8 @@
 import { getBoss } from "./boss";
 import {
   QUEUES,
+  QUEUE_OPTIONS,
+  type EnrichJobData,
   type JobOrigin,
   type PromoteBatchJobData,
   type PromoteJobData,
@@ -13,7 +15,7 @@ import { runZipSearch } from "./zipSearch";
 import { runTdlrSync } from "./tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "./promote";
 import { runWebsiteRecheck } from "./websiteRecheck";
-import { scannerPauseCheck } from "./shared";
+import { JobPausedError, scannerPauseCheck } from "./shared";
 import { getProviders } from "@/lib/providers";
 import { getActor } from "@/lib/actor";
 
@@ -82,9 +84,37 @@ export async function enqueuePromoteBatch(): Promise<boolean> {
   return id !== null;
 }
 
+/**
+ * Unlike the other inline branches (which fire-and-forget with `void run…().catch(...)`),
+ * this one awaits `runEnrich` so a `JOB_MODE=inline` caller's 202 response comes back only
+ * after enrichment has actually finished (the Task 5 e2e relies on this).
+ */
+export async function enqueueEnrich(businessId: string, ownerId: string, opts: { force?: boolean } = {}): Promise<boolean> {
+  if (process.env.JOB_MODE === "inline") {
+    const { runEnrich } = await import("./enrich");
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log }, { force: opts.force });
+    return true;
+  }
+  const boss = await getBoss();
+  const data: EnrichJobData = { businessId, ownerId, force: opts.force };
+  const id = await boss.send(QUEUES.enrich, data, {
+    singletonKey: businessId,
+    priority: MANUAL_PRIORITY,
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: QUEUE_OPTIONS.enrich.expireInSeconds,
+  });
+  return id !== null;
+}
+
 export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: string): Promise<boolean> {
   if (process.env.JOB_MODE === "inline") {
-    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => console.error("[inline website-recheck]", e));
+    // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc comment);
+    // a pause is expected/normal here, not a bug, so it's logged quietly rather than as an error.
+    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => {
+      if (e instanceof JobPausedError) console.log("[inline website-recheck] paused");
+      else console.error("[inline website-recheck]", e);
+    });
     return true;
   }
   const boss = await getBoss();

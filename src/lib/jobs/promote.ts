@@ -3,6 +3,7 @@ import { getActor } from "@/lib/actor";
 import { ApiError } from "@/lib/api";
 import { REGION } from "@/lib/config/region";
 import { PROJECT_CONFIG } from "@/lib/config/projects";
+import { loadConfig } from "@/lib/config/runtime";
 import { normalizePhone } from "@/lib/extract/normalize";
 import { suggestPackage } from "@/lib/scoring/packageMap";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
@@ -154,9 +155,10 @@ export async function runPromoteBusiness(businessId: string, ownerId: string, de
 
 export async function runPromoteHighFit(deps: PromoteDeps) {
   const { id: ownerId } = await getActor();
+  const cfg = await loadConfig(ownerId);
   const counts = { considered: 0, linked: 0, skipped: 0 };
   const projects = await prisma.project.findMany({
-    where: { ownerId, businessId: null, exclusion: "none", smbFitScore: { gte: PROJECT_CONFIG.highFitThreshold } },
+    where: { ownerId, businessId: null, exclusion: "none", smbFitScore: { gte: cfg.projects.highFitThreshold } },
     orderBy: [{ completionDate: { sort: "asc", nulls: "last" } }],
     select: { id: true, projectNumber: true },
   });

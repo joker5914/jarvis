@@ -25,7 +25,7 @@ export function ScannerView() {
     return () => clearInterval(t);
   }, [load, data?.state.status]);
 
-  if (!data) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>;
   return (
     <div className="space-y-4">
       <StatusCard data={data} onChanged={load} />

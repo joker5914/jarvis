@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import type { ProjectRow } from "@/lib/projects/queries";
+import type { SmbFitThresholds } from "@/lib/scoring/smbFit";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useLeadFilters } from "@/components/leads/useLeadFilters";
@@ -14,7 +15,7 @@ import { SyncBar } from "./SyncBar";
 
 type ListResponse = { items: ProjectRow[]; total: number; page: number; pageSize: number; syncRunning: boolean };
 
-export function ProjectsView() {
+export function ProjectsView({ thresholds }: { thresholds?: SmbFitThresholds } = {}) {
   const { params, set } = useLeadFilters();
   const [data, setData] = useState<ListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +57,7 @@ export function ProjectsView() {
         </aside>
         <div className="min-w-0 flex-1 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-neutral-500" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : error ? "" : "Loading…"}</div>
+            <div className="text-sm text-muted-foreground" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : error ? "" : "Loading…"}</div>
             <Sheet>
               <SheetTrigger render={<Button variant="outline" size="sm" className="md:hidden" />}><SlidersHorizontal className="mr-1 h-4 w-4" />Filters</SheetTrigger>
               <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto p-4">
@@ -66,8 +67,8 @@ export function ProjectsView() {
             </Sheet>
           </div>
           {error && <p className="text-sm text-red-600" data-testid="projects-error">{error}</p>}
-          {data && data.items.length === 0 && <p className="text-sm text-neutral-500">No projects match. Run a sync to pull Houston projects from TDLR.</p>}
-          {data && data.items.length > 0 && <ProjectsTable rows={data.items} onOpen={setOpenId} onFind={setFindId} />}
+          {data && data.items.length === 0 && <p className="text-sm text-muted-foreground">No projects match. Run a sync to pull Houston projects from TDLR.</p>}
+          {data && data.items.length > 0 && <ProjectsTable rows={data.items} onOpen={setOpenId} onFind={setFindId} thresholds={thresholds} />}
           {pages > 1 && (
             <div className="flex items-center justify-end gap-2 text-sm">
               <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => set("page", String(page - 1))}>Previous</Button>
@@ -77,7 +78,7 @@ export function ProjectsView() {
           )}
         </div>
       </div>
-      <ProjectDrawer id={openId} onClose={() => setOpenId(null)} onFind={(id) => { setOpenId(null); setFindId(id); }} />
+      <ProjectDrawer id={openId} onClose={() => setOpenId(null)} onFind={(id) => { setOpenId(null); setFindId(id); }} thresholds={thresholds} />
       <FindBusinessDialog projectId={findId} open={!!findId} onOpenChange={(o) => { if (!o) setFindId(null); }} onDone={() => load()} />
     </div>
   );

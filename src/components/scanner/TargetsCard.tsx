@@ -43,15 +43,15 @@ export function TargetsCard({ targets, onChanged }: { targets: T[]; onChanged: (
         </form>
       </CardHeader>
       <CardContent>
-        {targets.length === 0 ? <p className="text-sm text-neutral-500">No targets yet. Add a zip, or let hot TDLR projects add theirs.</p> : (
+        {targets.length === 0 ? <p className="text-sm text-muted-foreground">No targets yet. Add a zip, or let hot TDLR projects add theirs.</p> : (
           <ul className="divide-y" data-testid="targets">
             {targets.map((t, i) => (
               <li key={t.id} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="target-row">
                 <span className="w-16 font-medium">{t.zip}</span>
                 <Badge variant="outline">{t.addedBy === "auto_tdlr" ? "TDLR" : "You"}</Badge>
-                <span className="text-xs text-neutral-500">priority {t.priority}</span>
-                <span className="text-xs text-neutral-500">{t.lastSearchedAt ? `searched ${timeAgo(t.lastSearchedAt)}` : "never searched"}</span>
-                {t.paused && <Badge className="border-0 bg-amber-100 text-amber-800">paused</Badge>}
+                <span className="text-xs text-muted-foreground">priority {t.priority}</span>
+                <span className="text-xs text-muted-foreground">{t.lastSearchedAt ? `searched ${timeAgo(t.lastSearchedAt)}` : "never searched"}</span>
+                {t.paused && <Badge className="border-0 bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">paused</Badge>}
                 <span className="ml-auto flex gap-1">
                   <Button size="sm" variant="ghost" aria-label="Move up" disabled={i === 0} onClick={() => patch(t, { priority: (targets[i - 1]?.priority ?? t.priority) + 1 }, "Moved up")}>↑</Button>
                   <Button size="sm" variant="ghost" aria-label="Move down" disabled={i === targets.length - 1} onClick={() => patch(t, { priority: Math.max(0, (targets[i + 1]?.priority ?? t.priority) - 1) }, "Moved down")}>↓</Button>

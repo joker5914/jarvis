@@ -14,7 +14,7 @@ export function ProgressBar({ current, total, label }: { current?: number; total
         />
       </div>
       {label && (
-        <div className="mt-1 text-xs text-neutral-500">
+        <div className="mt-1 text-xs text-muted-foreground">
           {label}
           {pct != null && ` · ${current}/${total}`}
         </div>

@@ -1,5 +1,6 @@
 import { defaultFetcher } from "@/lib/extract/website";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "./fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "./fake";
+import { ApolloEnrichmentProvider } from "./apollo";
 import { GoogleGeocodeProvider, GooglePlacesProvider } from "./google";
 import { TdlrRegistryProvider } from "./tdlr";
 import { BuiltinValidationProvider } from "./validation";
@@ -14,6 +15,7 @@ export function getProviders(): Providers {
       validation: new FakeValidationProvider(),
       registry: new FakeRegistryProvider(),
       fetcher: fakeFetcher,
+      enrichment: new FakeEnrichmentProvider(),
     };
   }
   return {
@@ -23,6 +25,7 @@ export function getProviders(): Providers {
     // TDLR is public records; it is real even when PROVIDER_MODE=real, and fake only in fake mode.
     registry: new TdlrRegistryProvider(),
     fetcher: defaultFetcher,
+    enrichment: new ApolloEnrichmentProvider(),
   };
 }
 

@@ -1,13 +1,14 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
-import { PROJECT_CONFIG } from "@/lib/config/projects";
+import { loadConfig } from "@/lib/config/runtime";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { budgetStatus } from "@/lib/providers/budget";
 import { isSyncRunning, readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
 import { enqueueTdlrSync, enqueueWebsiteRecheck, enqueueZipSearch, SCANNER_PRIORITY } from "@/lib/jobs/enqueue";
+import { QUEUE_OPTIONS, QUEUES } from "@/lib/jobs/queues";
 import { isWithinWindow, nextWindowStart } from "./window";
 import { pickNextWork, workKey, type Work } from "./planner";
-import { logScanner, readScanner, setScannerState } from "./state";
+import { logScanner, readScanner, setScannerState, WEBSITE_RECHECK_JOB_PREFIX } from "./state";
 import type { ScannerStatus } from "@prisma/client";
 
 export type TickDeps = {
@@ -61,14 +62,20 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   // that happened to fail while it was off (e.g. a stray manual-origin retry).
   if (!schedule.enabled) return finish("disabled", { currentActivity: null, nextPlanned: null, skipUntil, consecutiveFailures: state.consecutiveFailures });
 
-  // Failure accounting: scanner-origin searches that failed since the last tick.
+  // Failure accounting: scanner-origin searches that failed since the last tick. A zip whose
+  // `zip:<zip>` key is already in `skipUntil` was already counted toward `consecutiveFailures`
+  // (the skip entry doubles as that "already counted" marker for its 6 h window), so a search
+  // that keeps getting observed as `failed` across ticks — e.g. retried and failing again —
+  // only nudges the counter once rather than once per observation.
   const failed = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: "failed", updatedAt: { gt: since } }, select: { zip: true, error: true } });
   const completed = await prisma.search.count({ where: { ownerId, origin: "scanner", status: "complete", updatedAt: { gt: since } } });
   let consecutiveFailures = completed > 0 ? 0 : state.consecutiveFailures;
   let lastError = state.lastError;
+  const alreadyCounted = new Set(Object.keys(skipUntil));
   for (const f of failed) {
-    consecutiveFailures++;
-    skipUntil[`zip:${f.zip}`] = new Date(now.getTime() + SCANNER_CONFIG.failureSkipHours * HOUR).toISOString();
+    const key = `zip:${f.zip}`;
+    if (!alreadyCounted.has(key)) consecutiveFailures++;
+    skipUntil[key] = new Date(now.getTime() + SCANNER_CONFIG.failureSkipHours * HOUR).toISOString();
     lastError = f.error ?? "search failed";
     await logScanner(ownerId, `Zip search ${f.zip} failed: ${lastError}; skipping it for ${SCANNER_CONFIG.failureSkipHours} h`);
   }
@@ -97,14 +104,29 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
   const running = await prisma.search.findMany({ where: { ownerId, origin: "scanner", status: { in: ["queued", "running"] } }, select: { id: true, zip: true, progress: true } });
   const tdlr = await readSync(SYNC_KEYS.tdlr);
   const tdlrRunning = isSyncRunning(tdlr.cursor, now);
+  // A `website_recheck:<ISO>` marker on currentJobId counts toward concurrency the same as a
+  // running Search row while it's still fresh — "fresh" meaning within the website-recheck
+  // queue's own expireInSeconds, since pg-boss would have expired (and the job would have
+  // cleared) the underlying job by then regardless of whether anything actually cleared the
+  // marker. A stale marker (left behind by a crashed worker, say) is ignored rather than
+  // wedging the scanner "busy" forever.
+  const websiteRecheckMarker = state.currentJobId?.startsWith(WEBSITE_RECHECK_JOB_PREFIX) ? state.currentJobId : null;
+  const websiteRecheckMarkerAt = websiteRecheckMarker ? Date.parse(websiteRecheckMarker.slice(WEBSITE_RECHECK_JOB_PREFIX.length)) : NaN;
+  const websiteRecheckRunning = !Number.isNaN(websiteRecheckMarkerAt) && now.getTime() - websiteRecheckMarkerAt < QUEUE_OPTIONS[QUEUES.websiteRecheck].expireInSeconds * 1000;
   // A running TDLR sync counts against the scanner's concurrency regardless of who started
   // it (conservative and correct) — don't gate this on currentJobId, which only reflects
   // what this tick's own bookkeeping last wrote.
-  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0);
+  const runningScannerJobs = running.length + (tdlrRunning ? 1 : 0) + (websiteRecheckRunning ? 1 : 0);
   if (runningScannerJobs >= schedule.maxConcurrentJobs) {
     const cur = running[0];
     const p = (cur?.progress as { step?: string; current?: number; total?: number } | null) ?? null;
-    const activity = cur ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}` : "TDLR sync running";
+    const activity = cur
+      ? `Zip search ${cur.zip}${p?.step ? `: ${p.step}` : ""}${p?.total ? ` ${p.current ?? 0}/${p.total}` : ""}`
+      : tdlrRunning
+        ? "TDLR sync running"
+        : websiteRecheckRunning
+          ? "Re-checking websites"
+          : "Running";
     return finish("running", { currentActivity: activity, currentJobId: cur?.id ?? state.currentJobId, nextPlanned: null, skipUntil, consecutiveFailures }, { kind: "busy" });
   }
 
@@ -113,8 +135,9 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
 
   // Hot zips from TDLR projects
   if (schedule.autoAddHotZips) {
+    const cfg = await loadConfig(ownerId);
     const hot = await prisma.project.findMany({
-      where: { ownerId, exclusion: "none", smbFitScore: { gte: PROJECT_CONFIG.highFitThreshold }, timingWindow: { in: ["opening_soon", "under_construction"] }, zip: { not: null } },
+      where: { ownerId, exclusion: "none", smbFitScore: { gte: cfg.projects.highFitThreshold }, timingWindow: { in: ["opening_soon", "under_construction"] }, zip: { not: null } },
       select: { zip: true },
       distinct: ["zip"],
     });
@@ -170,11 +193,44 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
     queued = await enqueue.zipSearch(search.id, { priority: SCANNER_PRIORITY, origin: "scanner" });
     jobId = search.id;
   } else if (work.kind === "website_recheck") {
-    queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
-    jobId = "website_recheck";
+    // Timestamped so a later tick can tell a fresh marker (still counts toward
+    // maxConcurrentJobs) from a stale one (ignored) — see websiteRecheckRunning above.
+    jobId = `${WEBSITE_RECHECK_JOB_PREFIX}${now.toISOString()}`;
+    // Persisted BEFORE enqueueing, not after: in JOB_MODE=inline, enqueue.websiteRecheck starts
+    // runWebsiteRecheck fire-and-forget and returns immediately, so the job can run to
+    // completion — including its own `finally` reading and clearing currentJobId — before this
+    // function would otherwise get around to writing the marker via `finish()` below. Writing
+    // it here first means the job's `finally` always finds its own marker already in place, so
+    // it always finds something to clear rather than racing to clear a marker that isn't there
+    // yet. This is also the *only* write of currentJobId for this branch — see below.
+    await setScannerState(ownerId, { currentJobId: jobId });
+    try {
+      queued = await enqueue.websiteRecheck(work.businessIds, ownerId);
+    } catch (e) {
+      // enqueue.websiteRecheck can itself throw (e.g. boss.send rejects) after the marker
+      // above was already persisted — without this, the marker would be stuck until it
+      // expires (up to QUEUE_OPTIONS[websiteRecheck].expireInSeconds, i.e. up to an hour),
+      // reporting the scanner "busy" the whole time even though no job is actually running.
+      // Clear it (conditioned on it still being the exact marker just written, same
+      // optimistic-concurrency guard as the job's own `finally` in websiteRecheck.ts) before
+      // rethrowing — this mirrors runScannerTick's existing behavior for every other enqueue
+      // call (e.g. a rejecting enqueue.zipSearch), none of which are caught here either: the
+      // tick's promise rejects and propagates to its caller rather than being swallowed.
+      await prisma.scannerState.updateMany({ where: { ownerId, currentJobId: jobId }, data: { currentJobId: null } });
+      throw e;
+    }
   }
   const key = workKey(work);
   if (key === "website_recheck") skipUntil[key] = new Date(now.getTime() + HOUR).toISOString(); // one batch per hour at most
   await logScanner(ownerId, `${describe(work)}${queued ? "" : " (already queued)"}`);
-  return finish("running", { currentActivity: describe(work), currentJobId: jobId, nextPlanned: null, skipUntil, consecutiveFailures }, work);
+  // website_recheck's marker was already persisted above, before enqueueing; omitting
+  // currentJobId from this patch (rather than redundantly re-writing the identical value)
+  // means this write can never race a fast inline job's own `finally` and clobber it back in
+  // after the job has already cleared it — setScannerState leaves a field untouched whenever
+  // the caller's patch doesn't include that key at all.
+  const extra: Parameters<typeof setScannerState>[1] =
+    work.kind === "website_recheck"
+      ? { currentActivity: describe(work), nextPlanned: null, skipUntil, consecutiveFailures }
+      : { currentActivity: describe(work), currentJobId: jobId, nextPlanned: null, skipUntil, consecutiveFailures };
+  return finish("running", extra, work);
 }

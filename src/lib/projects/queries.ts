@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
-import { buildProjectOrderBy, buildProjectWhere, type ProjectFilters } from "./filters";
+import { buildProjectOrderBy, buildProjectWhere, type ProjectFilters, type ProjectFitThresholds } from "./filters";
 
 export const projectInclude = {
   business: { select: { id: true, name: true, contactQualityBand: true, outreachStatus: true } },
@@ -8,8 +8,8 @@ export const projectInclude = {
 
 export type ProjectRow = Prisma.ProjectGetPayload<{ include: typeof projectInclude }>;
 
-export async function listProjects(f: ProjectFilters, ownerId: string) {
-  const where = buildProjectWhere(f, ownerId);
+export async function listProjects(f: ProjectFilters, ownerId: string, thresholds?: ProjectFitThresholds) {
+  const where = buildProjectWhere(f, ownerId, thresholds);
   const [items, total] = await Promise.all([
     prisma.project.findMany({ where, include: projectInclude, orderBy: buildProjectOrderBy(f), skip: (f.page - 1) * f.pageSize, take: f.pageSize }),
     prisma.project.count({ where }),

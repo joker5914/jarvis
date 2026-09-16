@@ -5,6 +5,7 @@ export const QUEUES = {
   promoteBatch: "promote-batch",
   websiteRecheck: "website-recheck",
   scannerTick: "scanner-tick",
+  enrich: "enrich",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -28,6 +29,7 @@ export const QUEUE_OPTIONS: Record<QueueName, { expireInSeconds: number; policy:
   [QUEUES.promoteBatch]: { expireInSeconds: 6 * 3600, policy: "exclusive" },
   [QUEUES.websiteRecheck]: { expireInSeconds: 3600, policy: "exclusive" },
   [QUEUES.scannerTick]: { expireInSeconds: 300, policy: "exclusive" },
+  [QUEUES.enrich]: { expireInSeconds: 600, policy: "stately" },
 };
 
 export type JobOrigin = "manual" | "scanner";
@@ -37,6 +39,7 @@ export type PromoteJobData = { businessId: string; ownerId: string };
 export type PromoteBatchJobData = Record<string, never>;
 export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string };
 export type ScannerTickJobData = Record<string, never>;
+export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean };
 
 // Minimal structural type for the pg-boss instance this helper needs: avoids importing the
 // `pg-boss` package (and its types) into every caller just to type one parameter.

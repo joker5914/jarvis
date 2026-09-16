@@ -3,6 +3,8 @@ import type { PageFetcher } from "@/lib/extract/website";
 import type {
   DiscoveredBusiness,
   DiscoveryProvider,
+  EnrichPerson,
+  EnrichmentProvider,
   GeocodeProvider,
   GeocodeResult,
   ProjectDetail,
@@ -26,6 +28,8 @@ export class FakeGeocodeProvider implements GeocodeProvider {
 /** Two SMBs per query plus one chain for coffee-shop queries so exclusion is exercised. */
 export class FakeDiscoveryProvider implements DiscoveryProvider {
   calls = { searchCategory: 0, searchCategoryIds: 0, getPlaceDetails: 0 };
+  /** Raw queries passed to searchCategoryIds, in order — lets tests assert which categories were searched. */
+  queries: string[] = [];
   private known = new Map<string, DiscoveredBusiness>();
 
   private generate(rawQuery: string): DiscoveredBusiness[] {
@@ -79,6 +83,7 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
 
   async searchCategoryIds(rawQuery: string): Promise<string[]> {
     this.calls.searchCategoryIds++;
+    this.queries.push(rawQuery);
     const list = this.generate(rawQuery);
     for (const biz of list) this.known.set(biz.placeId, biz);
     return list.map((b) => b.placeId);
@@ -96,6 +101,27 @@ export class FakeValidationProvider implements ValidationProvider {
   }
   async domainHasMx(domain: string) {
     return !domain.includes("nomx");
+  }
+}
+
+export class FakeEnrichmentProvider implements EnrichmentProvider {
+  calls = { search: 0, enrich: 0 };
+  async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
+    this.calls.search++;
+    const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;
+    const people: EnrichPerson[] = [
+      { apolloId: `fake-${domain}-owner`, firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true },
+      { apolloId: `fake-${domain}-gm`, firstName: "Lee", lastName: null, name: "Lee", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false },
+    ];
+    return people.slice(0, max);
+  }
+  async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
+    this.calls.enrich++;
+    const m = apolloId.match(/^fake-(.+)-(owner|gm)$/);
+    if (!m) return null;
+    const [, domain, role] = m;
+    if (role === "gm") return { apolloId, firstName: "Lee", lastName: "Tran", name: "Lee Tran", title: "General Manager", email: null, emailStatus: null, linkedinUrl: "https://www.linkedin.com/in/lee-tran-fake", hasEmail: false };
+    return { apolloId, firstName: "Maria", lastName: "Lopez", name: "Maria Lopez", title: "Owner", email: `owner@${domain}`, emailStatus: "verified", linkedinUrl: "https://www.linkedin.com/in/maria-lopez-fake", hasEmail: true };
   }
 }
 

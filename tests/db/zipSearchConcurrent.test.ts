@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runZipSearch } from "@/lib/jobs/zipSearch";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 import { CATEGORIES } from "@/lib/config/categories";
 
 function makeProviders() {
   const discovery = new FakeDiscoveryProvider();
-  return { discovery, providers: { geocode: new FakeGeocodeProvider(), discovery, validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher } };
+  return { discovery, providers: { geocode: new FakeGeocodeProvider(), discovery, validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher, enrichment: new FakeEnrichmentProvider() } };
 }
 
 beforeEach(async () => {

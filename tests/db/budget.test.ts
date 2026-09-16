@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { withBudget, BudgetExhaustedError, budgetStatus } from "@/lib/providers/budget";
+import { ProviderDisabledError } from "@/lib/providers/errors";
 
 beforeEach(async () => {
   await prisma.providerConfig.deleteMany();
@@ -31,8 +32,9 @@ describe("withBudget", () => {
     expect((await budgetStatus("google")).used).toBe(3);
   });
 
-  it("throws when provider is disabled", async () => {
+  it("throws ProviderDisabledError when provider is disabled", async () => {
     await prisma.providerConfig.create({ data: { provider: "google", dailyBudget: 10, enabled: false } });
+    await expect(withBudget("google", async () => "ok")).rejects.toBeInstanceOf(ProviderDisabledError);
     await expect(withBudget("google", async () => "ok")).rejects.toThrow(/disabled/);
   });
 });

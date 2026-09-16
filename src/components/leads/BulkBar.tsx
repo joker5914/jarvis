@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Tag } from "@prisma/client";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ import { titleCase } from "@/lib/format";
 const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
 
 export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => void; refresh: () => void }) {
+  const router = useRouter();
   const [tags, setTags] = useState<Tag[]>([]);
 
   useEffect(() => {
@@ -23,6 +25,24 @@ export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => v
     if (!res.ok) return toast.error("Bulk update failed");
     const { updated } = await res.json();
     toast.success(`Updated ${updated} lead${updated === 1 ? "" : "s"}`);
+    clear();
+    refresh();
+  }
+
+  async function enrichSelected() {
+    const res = await fetch("/api/businesses/bulk", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids, enrich: true }) });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      toast.error(data.error ?? "Apollo is not configured", {
+        action: { label: "Settings", onClick: () => router.push(data.settingsHref ?? "/settings") },
+      });
+      return;
+    }
+    if (!res.ok) { toast.error(data.error ?? "Bulk enrich failed"); return; }
+    const { enrichQueued, enrichFailed, enrichSkipped } = data;
+    toast.success(
+      `Queued ${enrichQueued} for enrichment${enrichSkipped ? `, ${enrichSkipped} excluded (skipped)` : ""}${enrichFailed ? `, ${enrichFailed} failed` : ""}`,
+    );
     clear();
     refresh();
   }
@@ -45,6 +65,7 @@ export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => v
           {tags.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
         </SelectContent>
       </Select>
+      <Button variant="outline" size="sm" data-testid="bulk-enrich" onClick={enrichSelected}>Enrich</Button>
       <Button variant="ghost" size="sm" onClick={clear}>Clear</Button>
     </div>
   );

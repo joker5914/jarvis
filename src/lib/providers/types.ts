@@ -104,10 +104,30 @@ export interface ProjectRegistryProvider {
   getProjectDetail(projectNumber: string): Promise<ProjectDetail | null>;
 }
 
+export type EnrichPerson = {
+  apolloId: string;
+  firstName: string | null;
+  lastName: string | null;
+  name: string | null;
+  title: string | null;
+  email: string | null;
+  emailStatus: string | null;
+  linkedinUrl: string | null;
+  hasEmail: boolean;
+};
+
+export interface EnrichmentProvider {
+  /** Cheap people lookup by employer domain (fallback: org name + city). Never returns emails. */
+  searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]>;
+  /** Paid reveal for one person (email, LinkedIn). Null when Apollo has no match. */
+  enrichPerson(apolloId: string): Promise<EnrichPerson | null>;
+}
+
 export type Providers = {
   geocode: GeocodeProvider;
   discovery: DiscoveryProvider;
   validation: ValidationProvider;
   registry: ProjectRegistryProvider;
   fetcher: PageFetcher;
+  enrichment: EnrichmentProvider;
 };

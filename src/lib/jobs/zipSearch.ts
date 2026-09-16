@@ -1,7 +1,8 @@
 import pLimit from "p-limit";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { CATEGORIES } from "@/lib/config/categories";
+import type { Category } from "@/lib/config/categories";
+import { loadConfig, type RuntimeConfig } from "@/lib/config/runtime";
 import { scoreSmbFit } from "@/lib/scoring/smbFit";
 import { scoreContactQuality } from "@/lib/scoring/contactQuality";
 import { suggestPackage } from "@/lib/scoring/packageMap";
@@ -43,12 +44,12 @@ type Found = { biz: DiscoveredBusiness; category: string };
 type KnownFresh = { placeId: string; category: string };
 
 /** Per category: IDs-only search; details only for places we don't have or haven't refreshed recently. */
-async function discover(searchId: string, ownerId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[]) {
+async function discover(searchId: string, ownerId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[], categories: Category[]) {
   const idsByCategory = new Map<string, string>(); // placeId -> first surfacing category
-  for (let i = 0; i < CATEGORIES.length; i++) {
+  for (let i = 0; i < categories.length; i++) {
     await checkPause(deps);
-    const c = CATEGORIES[i];
-    await setProgress(searchId, { step: "discover", current: i + 1, total: CATEGORIES.length, message: c.label, doneSteps: done });
+    const c = categories[i];
+    await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
     const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius);
     for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
   }
@@ -106,7 +107,7 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
   return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
 }
 
-async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[]) {
+async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[], cfg: RuntimeConfig) {
   // Fetch the knownFresh rows once, up front: they're needed both for the chain-name count
   // below and for the knownFresh linking loop further down, replacing what used to be a
   // second findUnique per place there.
@@ -134,7 +135,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
 
   const ids: string[] = [];
   for (const { biz, category } of found.values()) {
-    const fit = scoreSmbFit({ name: biz.name, sameNameCount: nameCounts.get(normalizeName(biz.name)) });
+    const fit = scoreSmbFit({ name: biz.name, sameNameCount: nameCounts.get(normalizeName(biz.name)) }, cfg.exclusion, cfg.projects);
     const googleFields = {
       ...discoveredToBusinessFields(biz),
       googleFetchedAt: new Date(),
@@ -149,7 +150,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
     if (!existing) throw new Error(`Business row for place ${biz.placeId} is missing; discover() should have persisted it`);
     const b = await prisma.business.update({
       where: { id: existing.id },
-      data: { ...googleFields, primaryCategory: existing.primaryCategory ?? category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category) },
+      data: { ...googleFields, primaryCategory: existing.primaryCategory ?? category, suggestedPackage: existing.suggestedPackage ?? suggestPackage(category, undefined, cfg.categories) },
     });
     ids.push(b.id);
 
@@ -191,12 +192,12 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
       // below because that interrupted run never reached it. Run that scoring pass now, off
       // the same merged `nameCounts` `found` rows use above, so exclusion/smbFitScore come out
       // identical whether or not the search was interrupted.
-      const fit = scoreSmbFit({ name: existing.name, sameNameCount: nameCounts.get(normalizeName(existing.name)) });
+      const fit = scoreSmbFit({ name: existing.name, sameNameCount: nameCounts.get(normalizeName(existing.name)) }, cfg.exclusion, cfg.projects);
       b = await prisma.business.update({
         where: { id: existing.id },
         data: {
           primaryCategory: category,
-          suggestedPackage: existing.suggestedPackage ?? suggestPackage(category),
+          suggestedPackage: existing.suggestedPackage ?? suggestPackage(category, undefined, cfg.categories),
           exclusion: fit.excluded ? ("enterprise" as const) : ("none" as const),
           exclusionReasons: fit.exclusionReasons,
           smbFitScore: fit.score,
@@ -219,7 +220,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
 export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b?.websiteUrl) return;
-  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher);
+  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) });
   await prisma.business.update({
     where: { id: businessId },
     data: {
@@ -290,6 +291,7 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
 
   try {
     await prisma.search.update({ where: { id: searchId }, data: { status: "running", error: null } });
+    const cfg = await loadConfig(ownerId);
 
     // 1. geocode
     let center = search.lat != null && search.lng != null ? { lat: search.lat, lng: search.lng } : null;
@@ -309,9 +311,9 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
     if (!done.includes("discover")) {
-      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done);
+      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories);
       await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
-      businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh);
+      businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh, cfg);
       done.push("discover");
       await prisma.search.update({ where: { id: searchId }, data: { countsFound: businessIds.length } });
       log(`search ${searchId}: ${businessIds.length} businesses`);
@@ -333,13 +335,22 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     let scraped = 0;
     const limit = pLimit(SCRAPE_CONCURRENCY);
     await setProgress(searchId, { step: "scrape", current: 0, total: toScrape.length, doneSteps: done });
-    await Promise.all(
+    // Promise.allSettled (not Promise.all): with SCRAPE_CONCURRENCY(4) tasks in flight, a
+    // JobPausedError from one (rethrown below rather than swallowed, so the outer catch at the
+    // bottom of this function can still record `status: "paused"`) must not leave its still-
+    // running siblings as promises nobody is watching for a second rejection — Promise.all
+    // would settle the whole `await` on the first rejection while up to 3 more scrapes kept
+    // running in the background. allSettled waits for every task, then the first rejection
+    // (they're all JobPausedError — scrapeOne's own errors are already caught below and never
+    // reach here) found among the results is thrown to reach that same outer catch.
+    const results = await Promise.allSettled(
       toScrape.map((b) =>
         limit(async () => {
           await checkPause(deps);
           try {
             await scrapeOne(b.id, ownerId, deps);
           } catch (e) {
+            if (e instanceof JobPausedError) throw e;
             await prisma.business.update({
               where: { id: b.id },
               data: { websiteReachable: false, websiteError: (e as Error).message, websiteCheckedAt: new Date() },
@@ -353,6 +364,8 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
         }),
       ),
     );
+    const rejected = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (rejected) throw rejected.reason;
 
     // 6. MX validation
     await checkPause(deps);

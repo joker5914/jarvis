@@ -13,7 +13,7 @@ export async function ScannerCard({ ownerId }: { ownerId: string }) {
       </CardHeader>
       <CardContent className="text-sm">
         <div className="font-medium">{titleCase(state.status)}</div>
-        <div className="text-neutral-500">{state.currentActivity ?? (schedule.enabled ? `${targets.length} target zip${targets.length === 1 ? "" : "s"}` : "Not enabled")}{state.lastTickAt ? ` · last tick ${timeAgo(state.lastTickAt)}` : ""}</div>
+        <div className="text-muted-foreground">{state.currentActivity ?? (schedule.enabled ? `${targets.length} target zip${targets.length === 1 ? "" : "s"}` : "Not enabled")}{state.lastTickAt ? ` · last tick ${timeAgo(state.lastTickAt)}` : ""}</div>
       </CardContent>
     </Card>
   );

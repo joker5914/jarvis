@@ -3,6 +3,7 @@ import {
   ensureQueue,
   QUEUES,
   QUEUE_OPTIONS,
+  type EnrichJobData,
   type PromoteBatchJobData,
   type PromoteJobData,
   type ScannerTickJobData,
@@ -14,13 +15,16 @@ import { runZipSearch } from "@/lib/jobs/zipSearch";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
-import { scannerPauseCheck } from "@/lib/jobs/shared";
+import { runEnrich } from "@/lib/jobs/enrich";
+import { JobPausedError, scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { prisma } from "@/lib/db";
 import { getProviders } from "@/lib/providers";
 import { getActor } from "@/lib/actor";
+import { BudgetExhaustedError } from "@/lib/providers/budget";
+import { ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 
 async function main() {
   const boss = new PgBoss({ connectionString: process.env.DATABASE_URL! });
@@ -67,8 +71,39 @@ async function main() {
 
   await boss.work<WebsiteRecheckJobData>(QUEUES.websiteRecheck, { batchSize: 1 }, async ([job]) => {
     console.log(`[website-recheck] start ${job.data.businessIds.length}`);
-    await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
-    console.log(`[website-recheck] done`);
+    try {
+      await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
+      console.log(`[website-recheck] done`);
+    } catch (e) {
+      // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc
+      // comment) — unlike zip-search/tdlr-sync/promote-batch, which each swallow their own
+      // pause and record it on a stateful row. Swallow it here instead, consistent with those:
+      // a pause is not a job failure, so it shouldn't retry or surface as a pg-boss failure.
+      if (e instanceof JobPausedError) {
+        console.log(`[website-recheck] paused`);
+        return;
+      }
+      throw e;
+    }
+  });
+
+  await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {
+    const { businessId, ownerId, force } = job.data;
+    console.log(`[enrich] start ${businessId}`);
+    try {
+      await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log, signal: job.signal }, { force });
+      console.log(`[enrich] done ${businessId}`);
+    } catch (e) {
+      // These are unrecoverable by retrying: runEnrich already recorded exactly one activity
+      // row explaining why. Log and return (pg-boss records success) rather than rethrow, so
+      // the job isn't retried into a duplicate activity row. Any other error still propagates
+      // to pg-boss's retry policy.
+      if (e instanceof BudgetExhaustedError || e instanceof ProviderNotConfiguredError || e instanceof ProviderDisabledError) {
+        console.log(`[enrich] skipped ${businessId}: ${e.message}`);
+        return;
+      }
+      throw e;
+    }
   });
 
   await boss.work<ScannerTickJobData>(QUEUES.scannerTick, { batchSize: 1 }, async () => {

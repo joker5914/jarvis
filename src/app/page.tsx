@@ -28,7 +28,7 @@ export default async function DashboardPage() {
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-neutral-500">Find SMB leads by zip code and track outreach.</p>
+          <p className="text-sm text-muted-foreground">Find SMB leads by zip code and track outreach.</p>
         </div>
         <ZipSearchForm />
       </div>
@@ -48,7 +48,7 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent>
             {recent.length === 0 ? (
-              <p className="text-sm text-neutral-500">No searches yet. Enter a zip code above.</p>
+              <p className="text-sm text-muted-foreground">No searches yet. Enter a zip code above.</p>
             ) : (
               <ul className="divide-y">
                 {recent.map((s) => (
@@ -57,7 +57,7 @@ export default async function DashboardPage() {
                       <Link href={`/leads?searchId=${s.id}`} className="font-medium hover:underline">
                         {s.zip}{s.city ? ` · ${s.city}` : ""}
                       </Link>
-                      <div className="text-xs text-neutral-500">{timeAgo(s.createdAt)} · {s.countsFound} found</div>
+                      <div className="text-xs text-muted-foreground">{timeAgo(s.createdAt)} · {s.countsFound} found</div>
                     </div>
                     <SearchStatusBadge status={s.status} />
                   </li>
@@ -74,13 +74,13 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent>
             {hot.length === 0 ? (
-              <p className="text-sm text-neutral-500">No projects yet. Run a sync from the Projects page.</p>
+              <p className="text-sm text-muted-foreground">No projects yet. Run a sync from the Projects page.</p>
             ) : (
               <ul className="divide-y">
                 {hot.map((p) => (
                   <li key={p.id} className="py-2 text-sm">
                     <div className="font-medium">{p.projectName}</div>
-                    <div className="text-xs text-neutral-500">{p.zip} · completes {formatDate(p.completionDate)}</div>
+                    <div className="text-xs text-muted-foreground">{p.zip} · completes {formatDate(p.completionDate)}</div>
                   </li>
                 ))}
               </ul>

@@ -33,6 +33,7 @@ export default async function globalSetup() {
     await prisma.scanSchedule.deleteMany();
     await prisma.scannerState.deleteMany();
     await prisma.providerConfig.deleteMany();
+    await prisma.appConfig.deleteMany();
     await prisma.syncState.deleteMany();
   } finally {
     await prisma.$disconnect();

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "@/lib/db";
 import { runZipSearch } from "@/lib/jobs/zipSearch";
-import { FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
+import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CATEGORIES } from "@/lib/config/categories";
 import type { DiscoveredBusiness } from "@/lib/providers/types";
@@ -25,7 +25,7 @@ class BudgetLimitedDiscoveryProvider extends FakeDiscoveryProvider {
 }
 
 function makeProviders(discovery: FakeDiscoveryProvider) {
-  return { geocode: new FakeGeocodeProvider(), discovery, validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher };
+  return { geocode: new FakeGeocodeProvider(), discovery, validation: new FakeValidationProvider(), registry: new FakeRegistryProvider(), fetcher: fakeFetcher, enrichment: new FakeEnrichmentProvider() };
 }
 
 async function resetData() {

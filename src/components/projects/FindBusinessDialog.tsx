@@ -55,16 +55,16 @@ export function FindBusinessDialog({ projectId, open, onOpenChange, onDone }: { 
           <DialogTitle>Find this business on Google</DialogTitle>
           <DialogDescription>Match the project to a Google listing so contacts can be gathered, or create a lead from the project details.</DialogDescription>
         </DialogHeader>
-        {state.phase === "searching" && <p className="text-sm text-neutral-500">Searching…</p>}
+        {state.phase === "searching" && <p className="text-sm text-muted-foreground">Searching…</p>}
         {state.phase === "error" && <p className="text-sm text-red-600">{state.message}</p>}
         {state.phase === "choose" && (
           <ul className="space-y-2">
-            {state.candidates.length === 0 && <li className="text-sm text-neutral-500">No Google listing found yet. Businesses that have not opened often have none.</li>}
+            {state.candidates.length === 0 && <li className="text-sm text-muted-foreground">No Google listing found yet. Businesses that have not opened often have none.</li>}
             {state.candidates.map((c) => (
               <li key={c.placeId} className="flex items-center justify-between gap-3 rounded-md border p-2 text-sm">
                 <div>
-                  <div className="font-medium">{c.name}{c.rating != null ? <span className="ml-1 text-xs text-neutral-500">★ {c.rating}</span> : null}</div>
-                  <div className="text-xs text-neutral-500">{c.formattedAddress}</div>
+                  <div className="font-medium">{c.name}{c.rating != null ? <span className="ml-1 text-xs text-muted-foreground">★ {c.rating}</span> : null}</div>
+                  <div className="text-xs text-muted-foreground">{c.formattedAddress}</div>
                 </div>
                 <Button size="sm" disabled={busy} onClick={() => promote({ placeId: c.placeId })}>Link</Button>
               </li>

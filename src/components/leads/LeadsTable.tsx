@@ -60,7 +60,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                 </TableCell>
                 <TableCell className="font-medium">
                   {b.name}
-                  {b.exclusion !== "none" && <span className="ml-2 text-xs text-neutral-500">(excluded)</span>}
+                  {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </TableCell>
                 <TableCell>{categoryLabel(b.primaryCategory)}</TableCell>
                 <TableCell>{b.zip}</TableCell>
@@ -68,8 +68,8 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                 <TableCell><SourceBadge source={b.source} /></TableCell>
                 <TableCell><TimingBadge window={b.projects?.[0]?.timingWindow} /></TableCell>
                 <TableCell><StatusBadge status={b.outreachStatus} /></TableCell>
-                <TableCell className="text-sm text-neutral-600">{packageLabel(b.suggestedPackage)}</TableCell>
-                <TableCell className="text-sm text-neutral-600">{b.currentProviderHint ? `${b.currentProviderHint} (hint)` : ""}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{packageLabel(b.suggestedPackage)}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">{b.currentProviderHint ? `${b.currentProviderHint} (hint)` : ""}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -96,9 +96,9 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
               <div>
                 <div className="font-medium">
                   {b.name}
-                  {b.exclusion !== "none" && <span className="ml-2 text-xs text-neutral-500">(excluded)</span>}
+                  {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </div>
-                <div className="text-xs text-neutral-500">{categoryLabel(b.primaryCategory)} · {b.zip}</div>
+                <div className="text-xs text-muted-foreground">{categoryLabel(b.primaryCategory)} · {b.zip}</div>
               </div>
               <QualityBadge band={b.contactQualityBand} />
             </div>
