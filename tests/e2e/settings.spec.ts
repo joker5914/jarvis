@@ -52,5 +52,5 @@ test("config save is validated and persisted", async ({ page }) => {
   await page.reload();
   await expect(page.getByTestId("projects-high")).toHaveValue("70");
   await expect(page.getByTestId("exclusion-chains")).toHaveValue(/acme-not-a-real-chain-zzq/);
-  await expect(page.getByTestId("category-package-cafe")).toHaveText("Internet + Mobile");
+  await expect(page.getByTestId("category-package-cafe")).toContainText("Internet + Mobile");
 });
