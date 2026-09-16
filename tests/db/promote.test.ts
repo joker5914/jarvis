@@ -89,6 +89,26 @@ describe("promote", () => {
     expect(await prisma.business.count({ where: { googlePlaceId: "fake-bella-nails" } })).toBe(1);
   });
 
+  it("links to a pre-existing Google-sourced business without rewriting its origin, and fixes the phone contact's source", async () => {
+    const preexisting = await prisma.business.create({
+      data: { ownerId: OWNER, name: "Bella Nails & Spa", googlePlaceId: "fake-bella-nails", source: "zip_search", phone: "(713) 555-0142" },
+    });
+    await prisma.contact.create({
+      data: { ownerId: OWNER, businessId: preexisting.id, type: "phone", value: "+17135550142", source: "google", validationStatus: "valid" },
+    });
+
+    const bella = await project("TABS2027000001");
+    const found = await findBusinessCandidates(bella.id, OWNER, { providers });
+    const businessId = await linkProjectToPlace(bella.id, OWNER, found.auto!);
+
+    expect(await prisma.business.count({ where: { googlePlaceId: "fake-bella-nails" } })).toBe(1);
+    const b = await prisma.business.findUniqueOrThrow({ where: { id: businessId }, include: { contacts: true } });
+    expect(b.source).toBe("zip_search");
+    const phoneContact = b.contacts.find((c) => c.type === "phone" && c.value === "+17135550142");
+    expect(phoneContact?.source).toBe("tdlr");
+    expect(phoneContact?.personName).toBe("Ana Ruiz");
+  });
+
   it("batch-promotes high-fit projects, linking confident matches and skipping the rest", async () => {
     const r = await runPromoteHighFit({ providers });
     expect(r.considered).toBe(2);

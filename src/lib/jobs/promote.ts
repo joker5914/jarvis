@@ -6,7 +6,7 @@ import { suggestPackage } from "@/lib/scoring/packageMap";
 import type { DiscoveredBusiness, Providers } from "@/lib/providers/types";
 import type { Project } from "@prisma/client";
 import { JobPausedError, normalizeName, recomputeContactQuality, scrapeOne, validateEmails, type ZipSearchDeps } from "./zipSearch";
-import { readSync, SYNC_KEYS, writeSync } from "./syncStatus";
+import { SYNC_KEYS, writeSync } from "./syncStatus";
 
 export type PromoteDeps = {
   providers: Providers;
@@ -67,7 +67,7 @@ async function attachOwnerPhone(businessId: string, ownerId: string, p: Project)
   if (!phone) return;
   await prisma.contact.upsert({
     where: { businessId_type_value: { businessId, type: "phone", value: phone } },
-    update: { personName: p.contactName ?? p.ownerName ?? undefined },
+    update: { source: "tdlr", personName: p.contactName ?? p.ownerName ?? undefined },
     create: {
       ownerId,
       businessId,
@@ -113,6 +113,8 @@ export async function linkProjectToPlace(projectId: string, ownerId: string, biz
           ownerId,
           googlePlaceId: biz.placeId,
           source: "tdlr",
+          exclusion: p.exclusion,
+          exclusionReasons: p.exclusionReasons,
           smbFitScore: p.smbFitScore,
           suggestedPackage: suggestPackage(null, p.workType),
         },
@@ -185,5 +187,3 @@ export async function runPromoteHighFit(deps: PromoteDeps) {
     throw e;
   }
 }
-
-export { readSync as readPromoteBatchStatus };
