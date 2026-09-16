@@ -320,6 +320,12 @@ model ScanTarget {
   @@unique([ownerId, zip])
 }
 
+model AppConfig {
+  ownerId   String   @id
+  overrides Json
+  updatedAt DateTime @updatedAt
+}
+
 model ScannerState {
   ownerId             String        @id @default("local-user")
   status              ScannerStatus @default(disabled)

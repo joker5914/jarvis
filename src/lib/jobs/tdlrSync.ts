@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { REGION } from "@/lib/config/region";
 import { PROJECT_CONFIG, TDLR_STATUS_CLOSED } from "@/lib/config/projects";
+import { loadConfig, type RuntimeConfig } from "@/lib/config/runtime";
 import { statusCodeFromLabel, TDLR_STATUS_LABELS, TDLR_WORK_TYPE_CODES, workTypeFromCode, workTypeFromLabel } from "@/lib/providers/tdlr";
 import type { ProjectDetail, ProjectSummary } from "@/lib/providers/types";
 import { scoreProjectFields } from "@/lib/scoring/projectScoring";
@@ -15,7 +16,7 @@ export type TdlrSyncDeps = JobDeps & { now?: () => Date };
 const PAGE = 100;
 const DAY = 86_400_000;
 
-function projectData(s: ProjectSummary, d: ProjectDetail | null, now: Date): Prisma.ProjectUncheckedCreateInput {
+function projectData(s: ProjectSummary, d: ProjectDetail | null, now: Date, cfg: RuntimeConfig): Prisma.ProjectUncheckedCreateInput {
   const workType = workTypeFromCode(s.workTypeCode) ?? workTypeFromLabel(d?.workTypeLabel);
   const startDate = d?.startDate ?? s.startDate;
   const completionDate = d?.completionDate ?? s.completionDate;
@@ -33,6 +34,8 @@ function projectData(s: ProjectSummary, d: ProjectDetail | null, now: Date): Pri
       statusCode: s.statusCode,
     },
     now,
+    cfg.exclusion,
+    cfg.projects,
   );
   return {
     tdlrProjectId: s.tdlrProjectId,
@@ -78,13 +81,14 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
   const log = deps.log ?? (() => {});
   const now = deps.now ? deps.now() : new Date();
   const { id: ownerId } = await getActor();
+  const cfg = await loadConfig(ownerId);
   const counts = { scanned: 0, skippedStale: 0, created: 0, updated: 0, refreshed: 0, retimed: 0 };
   const state = await readSync(SYNC_KEYS.tdlr);
   const registeredFrom =
     state.lastSuccessfulAt ??
     (() => {
       const from = new Date(now);
-      from.setUTCMonth(from.getUTCMonth() - PROJECT_CONFIG.backfillMonths);
+      from.setUTCMonth(from.getUTCMonth() - cfg.projects.backfillMonths);
       return from;
     })();
   const registeredTo = now;
@@ -128,7 +132,7 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
         if (existing?.detailFetchedAt) continue;
         await cursor({ message: `Fetching ${s.projectNumber}`, current: counts.scanned, total });
         const detail = await deps.providers.registry.getProjectDetail(s.projectNumber);
-        const data = projectData(s, detail, now);
+        const data = projectData(s, detail, now, cfg);
         if (existing) {
           // projectData builds a create-shaped object (all scalar fields, no
           // relation connect/disconnect wrappers), which is structurally
@@ -199,7 +203,7 @@ export async function runTdlrSync(deps: TdlrSyncDeps) {
       // to it, hence the cast.
       await prisma.project.update({
         where: { id: p.id },
-        data: projectData(summary, detail, now) as unknown as Prisma.ProjectUncheckedUpdateInput,
+        data: projectData(summary, detail, now, cfg) as unknown as Prisma.ProjectUncheckedUpdateInput,
       });
       counts.refreshed++;
     }

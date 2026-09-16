@@ -30,15 +30,18 @@ function hasWord(text: string, kw: string) {
   return new RegExp(`\\b${escapeRe(kw)}\\b`, "i").test(text);
 }
 
-export function bandFor(score: number): SmbFitBand {
-  if (score >= PROJECT_CONFIG.highFitThreshold) return "high";
-  if (score >= PROJECT_CONFIG.mediumFitThreshold) return "medium";
+export type SmbFitThresholds = { highFitThreshold: number; mediumFitThreshold: number };
+
+export function bandFor(score: number, t: SmbFitThresholds = PROJECT_CONFIG): SmbFitBand {
+  if (score >= t.highFitThreshold) return "high";
+  if (score >= t.mediumFitThreshold) return "medium";
   return "low";
 }
 
 export function scoreSmbFit(
   input: SmbFitInput,
   config: ExclusionConfig = DEFAULT_EXCLUSION_CONFIG,
+  thresholds?: SmbFitThresholds,
 ): SmbFitResult {
   const text = [input.name, input.facilityName ?? ""].join(" ").toLowerCase();
   const exclusionReasons: string[] = [];
@@ -83,5 +86,5 @@ export function scoreSmbFit(
   }
 
   score = Math.max(0, Math.min(100, score));
-  return { excluded: false, exclusionReasons: [], score, band: bandFor(score), reasons };
+  return { excluded: false, exclusionReasons: [], score, band: bandFor(score, thresholds), reasons };
 }

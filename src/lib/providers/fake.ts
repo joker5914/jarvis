@@ -28,6 +28,8 @@ export class FakeGeocodeProvider implements GeocodeProvider {
 /** Two SMBs per query plus one chain for coffee-shop queries so exclusion is exercised. */
 export class FakeDiscoveryProvider implements DiscoveryProvider {
   calls = { searchCategory: 0, searchCategoryIds: 0, getPlaceDetails: 0 };
+  /** Raw queries passed to searchCategoryIds, in order — lets tests assert which categories were searched. */
+  queries: string[] = [];
   private known = new Map<string, DiscoveredBusiness>();
 
   private generate(rawQuery: string): DiscoveredBusiness[] {
@@ -81,6 +83,7 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
 
   async searchCategoryIds(rawQuery: string): Promise<string[]> {
     this.calls.searchCategoryIds++;
+    this.queries.push(rawQuery);
     const list = this.generate(rawQuery);
     for (const biz of list) this.known.set(biz.placeId, biz);
     return list.map((b) => b.placeId);

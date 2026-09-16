@@ -28,7 +28,13 @@ export function parseProjectFilters(sp: URLSearchParams): ProjectFilters {
   return projectFiltersSchema.parse(raw);
 }
 
-export function buildProjectWhere(f: ProjectFilters, ownerId: string): Prisma.ProjectWhereInput {
+export type ProjectFitThresholds = { highFitThreshold: number; mediumFitThreshold: number };
+
+export function buildProjectWhere(
+  f: ProjectFilters,
+  ownerId: string,
+  thresholds: ProjectFitThresholds = PROJECT_CONFIG,
+): Prisma.ProjectWhereInput {
   const where: Prisma.ProjectWhereInput = { ownerId };
   if (!f.showExcluded) where.exclusion = "none";
   if (f.q) {
@@ -40,10 +46,10 @@ export function buildProjectWhere(f: ProjectFilters, ownerId: string): Prisma.Pr
   if (f.zip) where.zip = f.zip;
   if (f.workType) where.workType = f.workType;
   if (f.timing) where.timingWindow = f.timing;
-  if (f.fit === "high") where.smbFitScore = { gte: PROJECT_CONFIG.highFitThreshold };
+  if (f.fit === "high") where.smbFitScore = { gte: thresholds.highFitThreshold };
   if (f.fit === "medium")
-    where.smbFitScore = { gte: PROJECT_CONFIG.mediumFitThreshold, lt: PROJECT_CONFIG.highFitThreshold };
-  if (f.fit === "low") where.smbFitScore = { lt: PROJECT_CONFIG.mediumFitThreshold };
+    where.smbFitScore = { gte: thresholds.mediumFitThreshold, lt: thresholds.highFitThreshold };
+  if (f.fit === "low") where.smbFitScore = { lt: thresholds.mediumFitThreshold };
   if (f.linked === true) where.businessId = { not: null };
   if (f.linked === false) where.businessId = null;
   return where;

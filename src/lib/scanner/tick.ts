@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
-import { PROJECT_CONFIG } from "@/lib/config/projects";
+import { loadConfig } from "@/lib/config/runtime";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
 import { budgetStatus } from "@/lib/providers/budget";
 import { isSyncRunning, readSync, SYNC_KEYS } from "@/lib/jobs/syncStatus";
@@ -113,8 +113,9 @@ export async function runScannerTick(deps: TickDeps = {}): Promise<{ status: Sca
 
   // Hot zips from TDLR projects
   if (schedule.autoAddHotZips) {
+    const cfg = await loadConfig(ownerId);
     const hot = await prisma.project.findMany({
-      where: { ownerId, exclusion: "none", smbFitScore: { gte: PROJECT_CONFIG.highFitThreshold }, timingWindow: { in: ["opening_soon", "under_construction"] }, zip: { not: null } },
+      where: { ownerId, exclusion: "none", smbFitScore: { gte: cfg.projects.highFitThreshold }, timingWindow: { in: ["opening_soon", "under_construction"] }, zip: { not: null } },
       select: { zip: true },
       distinct: ["zip"],
     });
