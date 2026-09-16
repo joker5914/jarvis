@@ -44,5 +44,12 @@ describe("zip search concurrency", () => {
     const businesses = await prisma.business.findMany({ where: { ownerId: "local-user", googlePlaceId: { not: null } } });
     const placeIds = businesses.map((biz) => biz.googlePlaceId);
     expect(new Set(placeIds).size).toBe(placeIds.length);
+
+    // scrapeOne's contact upserts race the same way for the loser of a concurrent
+    // business.contacts insert; without the P2002-tolerant wrapper (F5), that loser's
+    // per-business catch in runZipSearch would record a false "websiteReachable: false" with
+    // a unique-constraint message even though the scrape itself succeeded.
+    const withUniqueConstraintError = await prisma.business.findMany({ where: { websiteError: { contains: "Unique constraint" } } });
+    expect(withUniqueConstraintError).toHaveLength(0);
   });
 });

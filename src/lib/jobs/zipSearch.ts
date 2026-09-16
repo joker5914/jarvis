@@ -10,7 +10,7 @@ import { normalizePhone } from "@/lib/extract/normalize";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness } from "@/lib/providers/types";
 import { DISCOVERY_CONFIG } from "@/lib/config/discovery";
-import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, type JobDeps } from "./shared";
+import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, upsertIgnoringConflict, type JobDeps } from "./shared";
 
 /**
  * `signal` is aborted when pg-boss expires or cancels the underlying job (e.g. the job
@@ -69,28 +69,50 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
     n++;
     await setProgress(searchId, { step: "details", current: n, total: toFetch.length, doneSteps: done });
     const biz = await deps.providers.discovery.getPlaceDetails(id);
-    if (biz && biz.name) found.set(id, { biz, category: idsByCategory.get(id)! });
+    if (biz && biz.name) {
+      found.set(id, { biz, category: idsByCategory.get(id)! });
+      // Persist the Business row as soon as its details are fetched, not just after the whole
+      // discover() batch finishes: if a BudgetExhaustedError (or a pause) interrupts the loop
+      // partway through, the places already fetched are safe on disk, so a resumed search sees
+      // them via `existing`/`fresh` above (as `knownFresh`) instead of re-spending budget on a
+      // repeat getPlaceDetails call. Not linked to the search yet (searchBusiness rows are
+      // created below in upsertBusinesses) and no exclusion/scoring here — that also happens
+      // in upsertBusinesses, uniformly for `found` and `knownFresh` rows.
+      await upsertIgnoringConflict(() =>
+        prisma.business.upsert({
+          where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: biz.placeId } },
+          update: { ...discoveredToBusinessFields(biz), googleFetchedAt: new Date() },
+          create: { ...discoveredToBusinessFields(biz), ownerId, googlePlaceId: biz.placeId, source: "zip_search", googleFetchedAt: new Date() },
+        }),
+      );
+    }
   }
   return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
 }
 
-/**
- * `upsert()` with `update: {}` is a no-op once the row exists, so a P2002 from a concurrent
- * writer racing the same upsert means the desired row is already there — safe to ignore rather
- * than fail the whole search.
- */
-async function upsertIgnoringConflict<T>(fn: () => Promise<T>): Promise<void> {
-  try {
-    await fn();
-  } catch (e) {
-    if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
-  }
-}
-
 async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[]) {
+  // Fetch the knownFresh rows once, up front: they're needed both for the chain-name count
+  // below and for the knownFresh linking loop further down, replacing what used to be a
+  // second findUnique per place there.
+  const knownFreshExisting = knownFresh.length
+    ? await prisma.business.findMany({
+        where: { ownerId, googlePlaceId: { in: knownFresh.map((k) => k.placeId) } },
+        select: { id: true, googlePlaceId: true, name: true, primaryCategory: true, suggestedPackage: true },
+      })
+    : [];
+  const knownFreshByPlaceId = new Map(knownFreshExisting.map((b) => [b.googlePlaceId!, b]));
+
   const nameCounts = new Map<string, number>();
   for (const { biz } of found.values()) {
     const n = normalizeName(biz.name);
+    nameCounts.set(n, (nameCounts.get(n) ?? 0) + 1);
+  }
+  // A search that was interrupted mid-discover() (F4: budget-pause resume) now persists
+  // Business rows for places as they're fetched, so on resume some places that would have
+  // been in `found` in one uninterrupted run instead show up as `knownFresh` here. Counting
+  // their names too keeps the same-name (chain) exclusion identical either way.
+  for (const b of knownFreshExisting) {
+    const n = normalizeName(b.name);
     nameCounts.set(n, (nameCounts.get(n) ?? 0) + 1);
   }
 
@@ -169,7 +191,7 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
   }
 
   for (const { placeId, category } of knownFresh) {
-    const existing = await prisma.business.findUnique({ where: { ownerId_googlePlaceId: { ownerId, googlePlaceId: placeId } } });
+    const existing = knownFreshByPlaceId.get(placeId);
     if (!existing) continue;
     const b = existing.primaryCategory
       ? existing
@@ -205,11 +227,18 @@ export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSe
     ...r.socials.map((s) => ({ type: s.type, value: s.url })),
   ];
   for (const row of rows) {
-    await prisma.contact.upsert({
-      where: { businessId_type_value: { businessId, type: row.type, value: row.value } },
-      update: {},
-      create: { ownerId, businessId, type: row.type, value: row.value, source: "website" },
-    });
+    // Two concurrent scrapes of the same business (e.g. a scanner search and a manual rerun)
+    // can race this upsert on the same (businessId, type, value) key; without tolerating the
+    // loser's P2002 here, that race would bubble up through runZipSearch's per-business catch
+    // in the caller and get recorded as `websiteReachable: false` with a unique-constraint
+    // message even though the scrape itself succeeded.
+    await upsertIgnoringConflict(() =>
+      prisma.contact.upsert({
+        where: { businessId_type_value: { businessId, type: row.type, value: row.value } },
+        update: {},
+        create: { ownerId, businessId, type: row.type, value: row.value, source: "website" },
+      }),
+    );
   }
   await prisma.activityLog.create({
     data: {
