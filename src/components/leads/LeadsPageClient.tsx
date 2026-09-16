@@ -16,7 +16,7 @@ import type { CategoryOption } from "@/components/leads/LeadFilters";
  */
 export function LeadsPageClient({ categories }: { categories?: CategoryOption[] }) {
   return (
-    <Suspense fallback={<p className="text-sm text-neutral-500">Loading…</p>}>
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading…</p>}>
       <LeadsView
         categories={categories}
         renderDrawer={(id, close, refresh) => <LeadDrawer id={id} onClose={close} onChanged={refresh} />}

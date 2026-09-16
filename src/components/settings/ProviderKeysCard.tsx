@@ -73,7 +73,7 @@ function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void
         <Badge variant="outline" data-testid={`provider-${p.provider}-status`}>
           {STATUS_LABEL[p.source]}
         </Badge>
-        <span className="text-xs text-neutral-500">
+        <span className="text-xs text-muted-foreground">
           {p.usedToday} / {p.dailyBudget} used today
         </span>
       </div>

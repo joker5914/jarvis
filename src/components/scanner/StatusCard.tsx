@@ -42,7 +42,7 @@ export function StatusCard({ data, onChanged }: { data: ScannerPayload; onChange
           <p className="text-sm text-neutral-600 dark:text-neutral-300">
             {state.currentActivity ?? (status === "outside_window" ? `Outside the operating window (${window.reason ?? "closed"})` : status === "disabled" ? "Enable the schedule below to start scanning." : status === "paused" ? (state.lastError ? `Paused: ${state.lastError}` : "Paused; resume when ready.") : "Nothing running.")}
           </p>
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs text-muted-foreground">
             {next ? `Next: ${state.nextPlanned?.detail ?? state.nextPlanned?.kind} at ${formatDate(next)} ${next.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : state.nextPlanned?.detail ?? ""}
             {state.lastTickAt ? ` · last tick ${timeAgo(state.lastTickAt)}` : ""}
             {` · Google budget ${budget.used}/${budget.limit}`}

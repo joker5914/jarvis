@@ -64,7 +64,7 @@ export function SearchList({ initial }: { initial: Search[] }) {
   }
 
   if (items.length === 0) {
-    return <p className="text-sm text-neutral-500">No searches yet. Start one from the dashboard.</p>;
+    return <p className="text-sm text-muted-foreground">No searches yet. Start one from the dashboard.</p>;
   }
 
   return (
@@ -77,7 +77,7 @@ export function SearchList({ initial }: { initial: Search[] }) {
             <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center">
               <div className="min-w-40">
                 <div className="text-lg font-semibold">{s.zip}</div>
-                <div className="text-xs text-neutral-500">
+                <div className="text-xs text-muted-foreground">
                   {s.city ? `${s.city}, ${s.state} · ` : ""}{timeAgo(s.createdAt)}
                 </div>
               </div>

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { ScannerPill } from "./ScannerPill";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
 
 const LINKS = [
   { href: "/", label: "Dashboard" },
@@ -58,6 +59,7 @@ export function Navbar() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           <ScannerPill />
+          <ThemeToggle />
           {/* user-menu slot: real auth adds a menu here */}
           <div data-testid="user-menu-slot" />
           <Sheet open={open} onOpenChange={setOpen}>

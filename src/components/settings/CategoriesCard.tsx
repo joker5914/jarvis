@@ -52,7 +52,7 @@ export function CategoriesCard({
                 </SelectContent>
               </Select>
               {c.packageSlug !== c.defaultPackageSlug && (
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs text-muted-foreground">
                   default: {packages.find((p) => p.slug === c.defaultPackageSlug)?.label ?? c.defaultPackageSlug}
                 </span>
               )}

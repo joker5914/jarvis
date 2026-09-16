@@ -97,7 +97,7 @@ export function SettingsView() {
     putConfig({});
   }
 
-  if (!data || !exclusion || !projects) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (!data || !exclusion || !projects) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   return (
     <div className="space-y-4">

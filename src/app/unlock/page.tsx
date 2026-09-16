@@ -12,7 +12,7 @@ export default async function UnlockPage({
         className="w-full max-w-sm space-y-4 rounded-xl border bg-white p-6 shadow-sm dark:bg-neutral-900"
       >
         <h1 className="text-xl font-semibold">Unlock SDR Lead Gen</h1>
-        <p className="text-sm text-neutral-500">Enter the passphrase to continue.</p>
+        <p className="text-sm text-muted-foreground">Enter the passphrase to continue.</p>
         <input type="hidden" name="next" value={next} />
         <input
           name="passphrase"

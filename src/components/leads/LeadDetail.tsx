@@ -133,7 +133,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     await patch({ tagIds: [...(b?.tags.map((t) => t.tag.id) ?? []), tag.id] });
   }
 
-  if (!b) return <p className="text-sm text-neutral-500">Loading…</p>;
+  if (!b) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
@@ -150,17 +150,17 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
           </Button>
         </div>
-        <p className="text-sm text-neutral-500">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
+        <p className="text-sm text-muted-foreground">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
         <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
           {b.phone && <span className="inline-flex items-center gap-1"><a href={`tel:${b.phone}`} className="hover:underline">{b.phone}</a><CopyButton value={b.phone} label="Phone" /></span>}
           {b.websiteUrl && <a href={b.websiteUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Website{b.websiteReachable === false ? " (unreachable)" : ""}</a>}
           <a href={linkedinSearch} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Search LinkedIn</a>
         </div>
         {b.exclusion !== "none" && <p className="mt-2 text-xs text-red-600">Excluded: {b.exclusionReasons.join(", ")}</p>}
-        {b.suggestedPackage && <p className="mt-2 text-sm"><span className="text-neutral-500">Suggested pitch:</span> {packageLabel(b.suggestedPackage)}</p>}
+        {b.suggestedPackage && <p className="mt-2 text-sm"><span className="text-muted-foreground">Suggested pitch:</span> {packageLabel(b.suggestedPackage)}</p>}
         {b.currentProviderHint && (
-          <p className="mt-1 text-sm"><span className="text-neutral-500">Current provider (hint):</span> {b.currentProviderHint}
-            {b.currentProviderEvidence && <span className="block text-xs text-neutral-500">“{b.currentProviderEvidence}”</span>}</p>
+          <p className="mt-1 text-sm"><span className="text-muted-foreground">Current provider (hint):</span> {b.currentProviderHint}
+            {b.currentProviderEvidence && <span className="block text-xs text-muted-foreground">“{b.currentProviderEvidence}”</span>}</p>
         )}
       </div>
 
@@ -173,16 +173,16 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           if (list.length === 0) return null;
           return (
             <div key={g.key}>
-              <div className="text-xs font-medium uppercase text-neutral-500">{g.label}</div>
+              <div className="text-xs font-medium uppercase text-muted-foreground">{g.label}</div>
               <ul className="mt-1 space-y-1">
                 {list.map((c) => (
                   <li key={c.id} className="flex items-center gap-2 text-sm">
                     {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
                       : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
                       : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
-                    {c.personName && <span className="text-neutral-500">· {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
-                    <span className={`rounded px-1 text-[10px] uppercase ${c.validationStatus === "valid" ? "bg-emerald-100 text-emerald-800" : c.validationStatus === "invalid" ? "bg-red-100 text-red-800" : "bg-neutral-100 text-neutral-600"}`}>{c.validationStatus}</span>
-                    <span className="text-[10px] text-neutral-400">{c.source}</span>
+                    {c.personName && <span className="text-muted-foreground">· {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
+                    <span className={`rounded px-1 text-[10px] uppercase ${c.validationStatus === "valid" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" : c.validationStatus === "invalid" ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}>{c.validationStatus}</span>
+                    <span className="text-[10px] text-muted-foreground">{c.source}</span>
                     {(c.type === "email" || c.type === "phone") && <CopyButton value={c.value} label={titleCase(c.type)} />}
                   </li>
                 ))}
@@ -190,9 +190,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             </div>
           );
         })}
-        {b.contacts.length === 0 && <p className="text-sm text-neutral-500">No contacts found yet.</p>}
+        {b.contacts.length === 0 && <p className="text-sm text-muted-foreground">No contacts found yet.</p>}
         {b.contactQualityReasons && b.contactQualityReasons.length > 0 && (
-          <p className="text-xs text-neutral-500">Quality: {b.contactQualityReasons.map((r) => `${r.detail} (+${r.points})`).join(", ")}</p>
+          <p className="text-xs text-muted-foreground">Quality: {b.contactQualityReasons.map((r) => `${r.detail} (+${r.points})`).join(", ")}</p>
         )}
       </section>
 
@@ -201,13 +201,13 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       <section className="space-y-2" data-testid="people-section">
         <h3 className="font-medium">People</h3>
         {people.length === 0 ? (
-          <p className="text-sm text-neutral-500">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
+          <p className="text-sm text-muted-foreground">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
         ) : (
           <ul className="space-y-1">
             {people.map((p) => (
               <li key={p.key} data-testid="people-row" className="flex flex-wrap items-center gap-2 text-sm">
                 <span className="font-medium">{p.name}</span>
-                {p.title && <span className="text-neutral-500">{p.title}</span>}
+                {p.title && <span className="text-muted-foreground">{p.title}</span>}
                 {p.email && <CopyButton value={p.email} label={p.email} />}
                 {p.linkedin && <a className="underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
                 <SourceBadge source={p.source} />
@@ -215,7 +215,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             ))}
           </ul>
         )}
-        {b.lastEnrichedAt && <p className="text-xs text-neutral-500">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
+        {b.lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
       </section>
 
       <Separator />
@@ -247,7 +247,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             {tags.filter((t) => !t.isSystem).map((t) => (
               <button key={t.id} type="button"
                 aria-pressed={userTagIds.has(t.id)}
-                className={`rounded-full border px-2 py-0.5 text-xs ${userTagIds.has(t.id) ? "text-white" : "text-neutral-600"}`}
+                className={`rounded-full border px-2 py-0.5 text-xs ${userTagIds.has(t.id) ? "text-white" : "text-muted-foreground"}`}
                 style={userTagIds.has(t.id) ? { background: t.color, borderColor: t.color } : undefined}
                 onClick={() => patch({ tagIds: userTagIds.has(t.id) ? [...userTagIds].filter((x) => x !== t.id) : [...userTagIds, t.id] })}>
                 {t.name}
@@ -272,9 +272,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             <h3 className="font-medium">TDLR project</h3>
             {b.projects.map((p) => (
               <div key={p.id} className="rounded-md border p-3 text-sm">
-                <div className="font-medium">{p.projectName} <span className="text-neutral-500">({p.projectNumber})</span></div>
-                <div className="text-neutral-600">{formatDate(p.startDate)} → {formatDate(p.completionDate)}{p.estimatedCost != null ? ` · $${p.estimatedCost.toLocaleString()}` : ""}{p.timingWindow ? ` · ${titleCase(p.timingWindow)}` : ""}</div>
-                {p.scopeOfWork && <div className="mt-1 text-neutral-600">{p.scopeOfWork}</div>}
+                <div className="font-medium">{p.projectName} <span className="text-muted-foreground">({p.projectNumber})</span></div>
+                <div className="text-muted-foreground">{formatDate(p.startDate)} → {formatDate(p.completionDate)}{p.estimatedCost != null ? ` · $${p.estimatedCost.toLocaleString()}` : ""}{p.timingWindow ? ` · ${titleCase(p.timingWindow)}` : ""}</div>
+                {p.scopeOfWork && <div className="mt-1 text-muted-foreground">{p.scopeOfWork}</div>}
                 {p.ownerName && <div className="mt-1">Owner: {p.ownerName}{p.ownerPhone ? ` · ${p.ownerPhone}` : ""}</div>}
               </div>
             ))}
@@ -287,9 +287,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         <h3 className="font-medium">Activity</h3>
         <ul className="mt-2 space-y-1 text-sm">
           {b.activity.map((a) => (
-            <li key={a.id} className="flex gap-2"><span className="w-20 shrink-0 text-xs text-neutral-400">{timeAgo(a.createdAt)}</span><span>{a.message}</span></li>
+            <li key={a.id} className="flex gap-2"><span className="w-20 shrink-0 text-xs text-muted-foreground">{timeAgo(a.createdAt)}</span><span>{a.message}</span></li>
           ))}
-          {b.activity.length === 0 && <li className="text-neutral-500">No activity yet.</li>}
+          {b.activity.length === 0 && <li className="text-muted-foreground">No activity yet.</li>}
         </ul>
       </section>
     </div>

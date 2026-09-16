@@ -95,7 +95,7 @@ export function ExclusionCard({ value, onChange }: { value: ExclusionConfig; onC
             />
           </div>
         </div>
-        <p className="text-xs text-neutral-500">Government/education/health-system patterns are fixed in code.</p>
+        <p className="text-xs text-muted-foreground">Government/education/health-system patterns are fixed in code.</p>
       </CardContent>
     </Card>
   );

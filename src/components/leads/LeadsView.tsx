@@ -52,7 +52,7 @@ export function LeadsView({
 
       <div className="min-w-0 flex-1 space-y-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-sm text-neutral-500" data-testid="leads-count">
+          <div className="text-sm text-muted-foreground" data-testid="leads-count">
             {data ? `${data.total} lead${data.total === 1 ? "" : "s"}` : "Loading…"}
             {data?.runningSearches ? " · search running, updating live" : ""}
           </div>
@@ -83,7 +83,7 @@ export function LeadsView({
         {renderBulkBar?.([...selected], () => setSelected(new Set()), load)}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
-        {data && data.items.length === 0 && <p className="text-sm text-neutral-500">No leads match these filters.</p>}
+        {data && data.items.length === 0 && <p className="text-sm text-muted-foreground">No leads match these filters.</p>}
         {data && data.items.length > 0 && (
           <LeadsTable
             rows={data.items}

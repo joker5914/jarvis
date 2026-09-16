@@ -57,7 +57,7 @@ export function ProjectsView({ thresholds }: { thresholds?: SmbFitThresholds } =
         </aside>
         <div className="min-w-0 flex-1 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm text-neutral-500" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : error ? "" : "Loading…"}</div>
+            <div className="text-sm text-muted-foreground" data-testid="projects-count">{data ? `${data.total} project${data.total === 1 ? "" : "s"}` : error ? "" : "Loading…"}</div>
             <Sheet>
               <SheetTrigger render={<Button variant="outline" size="sm" className="md:hidden" />}><SlidersHorizontal className="mr-1 h-4 w-4" />Filters</SheetTrigger>
               <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto p-4">
@@ -67,7 +67,7 @@ export function ProjectsView({ thresholds }: { thresholds?: SmbFitThresholds } =
             </Sheet>
           </div>
           {error && <p className="text-sm text-red-600" data-testid="projects-error">{error}</p>}
-          {data && data.items.length === 0 && <p className="text-sm text-neutral-500">No projects match. Run a sync to pull Houston projects from TDLR.</p>}
+          {data && data.items.length === 0 && <p className="text-sm text-muted-foreground">No projects match. Run a sync to pull Houston projects from TDLR.</p>}
           {data && data.items.length > 0 && <ProjectsTable rows={data.items} onOpen={setOpenId} onFind={setFindId} thresholds={thresholds} />}
           {pages > 1 && (
             <div className="flex items-center justify-end gap-2 text-sm">
