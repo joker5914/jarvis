@@ -15,6 +15,18 @@ export type SyncCursor = {
   counts?: Record<string, number>;
 };
 
+export const RUNNING_STALE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * A cursor stuck at "running" older than RUNNING_STALE_MS is treated as abandoned (e.g. a
+ * hard worker crash never wrote a terminal status), so callers don't block on it forever.
+ */
+export function isSyncRunning(cursor: SyncCursor, now: Date = new Date()): boolean {
+  if (cursor.status !== "running") return false;
+  if (!cursor.startedAt) return true;
+  return now.getTime() - Date.parse(cursor.startedAt) < RUNNING_STALE_MS;
+}
+
 export async function readSync(key: SyncKey): Promise<{ lastSuccessfulAt: Date | null; cursor: SyncCursor }> {
   const row = await prisma.syncState.findUnique({ where: { key } });
   return { lastSuccessfulAt: row?.lastSuccessfulAt ?? null, cursor: ((row?.cursor as SyncCursor | null) ?? { status: "idle" }) };
