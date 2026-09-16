@@ -1,3 +1,4 @@
+import { REGION } from "@/lib/config/region";
 import type { PageFetcher } from "@/lib/extract/website";
 import type {
   DiscoveredBusiness,
@@ -129,7 +130,7 @@ function fakeProject(
     facilityName: p.facilityName ?? null,
     registeredAt: p.registeredAt ?? daysFromNow(-5),
     statusCode: p.statusCode ?? 3008,
-    cityCode: 785,
+    cityCode: REGION.tdlrCityCode,
     countyCode: 2101,
     workTypeCode: p.workTypeCode ?? 9002,
     estimatedCost: p.estimatedCost ?? null,

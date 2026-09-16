@@ -5,6 +5,7 @@ export const PROJECT_CONFIG = {
   recheckAfterDays: 30,
   refreshBatchSize: 500,
   highFitThreshold: 60,
+  mediumFitThreshold: 30,
   autoLinkSimilarity: 0.8,
   justCompletedDays: 60,
   openingSoonDays: 45,

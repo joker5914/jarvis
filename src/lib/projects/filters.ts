@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
+import { PROJECT_CONFIG } from "@/lib/config/projects";
 
 const bool = z.enum(["true", "false"]).default("false").transform((v) => v === "true");
 const optBool = z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true"));
@@ -39,9 +40,10 @@ export function buildProjectWhere(f: ProjectFilters, ownerId: string): Prisma.Pr
   if (f.zip) where.zip = f.zip;
   if (f.workType) where.workType = f.workType;
   if (f.timing) where.timingWindow = f.timing;
-  if (f.fit === "high") where.smbFitScore = { gte: 60 };
-  if (f.fit === "medium") where.smbFitScore = { gte: 30, lt: 60 };
-  if (f.fit === "low") where.smbFitScore = { lt: 30 };
+  if (f.fit === "high") where.smbFitScore = { gte: PROJECT_CONFIG.highFitThreshold };
+  if (f.fit === "medium")
+    where.smbFitScore = { gte: PROJECT_CONFIG.mediumFitThreshold, lt: PROJECT_CONFIG.highFitThreshold };
+  if (f.fit === "low") where.smbFitScore = { lt: PROJECT_CONFIG.mediumFitThreshold };
   if (f.linked === true) where.businessId = { not: null };
   if (f.linked === false) where.businessId = null;
   return where;

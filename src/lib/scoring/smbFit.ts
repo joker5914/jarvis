@@ -1,4 +1,5 @@
 import { DEFAULT_EXCLUSION_CONFIG, type ExclusionConfig } from "@/lib/config/exclusion";
+import { PROJECT_CONFIG } from "@/lib/config/projects";
 import type { ScoreReason, SmbWorkType } from "./types";
 
 export type SmbFitInput = {
@@ -30,8 +31,8 @@ function hasWord(text: string, kw: string) {
 }
 
 export function bandFor(score: number): SmbFitBand {
-  if (score >= 60) return "high";
-  if (score >= 30) return "medium";
+  if (score >= PROJECT_CONFIG.highFitThreshold) return "high";
+  if (score >= PROJECT_CONFIG.mediumFitThreshold) return "medium";
   return "low";
 }
 
