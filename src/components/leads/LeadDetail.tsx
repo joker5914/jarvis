@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Tag } from "@prisma/client";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,28 @@ type Detail = {
   suggestedPackage: string | null; currentProviderHint: string | null; currentProviderEvidence: string | null;
   outreachStatus: string; productsPitched: string[]; notes: string; websiteReachable: boolean | null; websiteError: string | null;
   contacts: Contact[]; tags: { tag: Tag }[]; activity: { id: string; kind: string; message: string; createdAt: string }[]; projects: Project[];
+  lastEnrichedAt: string | null;
 };
+
+type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
+
+/** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
+ * pairing that person's email and LinkedIn contact rows together. */
+function groupPeople(contacts: Contact[]): Person[] {
+  const byName = new Map<string, Person>();
+  for (const c of contacts) {
+    if (!c.personName) continue;
+    let p = byName.get(c.personName);
+    if (!p) {
+      p = { key: c.personName, name: c.personName, title: c.personTitle, email: null, linkedin: null, source: c.source };
+      byName.set(c.personName, p);
+    }
+    if (!p.title && c.personTitle) p.title = c.personTitle;
+    if (c.type === "email" && !p.email) p.email = c.value;
+    if (c.type === "linkedin" && !p.linkedin) p.linkedin = c.value;
+  }
+  return [...byName.values()];
+}
 
 const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
 // Base UI translation: pass `items` so the trigger shows the matching label
@@ -40,10 +62,12 @@ const GROUPS: { key: string; label: string; types: string[] }[] = [
 ];
 
 export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => void }) {
+  const router = useRouter();
   const [b, setB] = useState<Detail | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [newTag, setNewTag] = useState("");
   const [notes, setNotes] = useState("");
+  const [enriching, setEnriching] = useState(false);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function load() {
@@ -68,6 +92,30 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     if (!quiet) toast.success("Saved");
   }
 
+  async function enrich() {
+    setEnriching(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}/enrich`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: b?.lastEnrichedAt != null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        toast.error(data.error ?? "Apollo is not configured", {
+          action: { label: "Settings", onClick: () => router.push(data.settingsHref ?? "/settings") },
+        });
+        return;
+      }
+      if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
+      toast.success("Enrichment queued");
+      await load();
+      onChanged?.();
+    } finally {
+      setEnriching(false);
+    }
+  }
+
   function onNotes(v: string) {
     setNotes(v);
     if (notesTimer.current) clearTimeout(notesTimer.current);
@@ -89,6 +137,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
+  const people = groupPeople(b.contacts);
 
   return (
     <div className="space-y-5" data-testid="lead-detail">
@@ -97,6 +146,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           <h2 className="text-xl font-semibold">{b.name}</h2>
           <QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} />
           <SourceBadge source={b.source} />
+          <Button size="sm" variant="outline" className="ml-auto" data-testid="enrich-button" disabled={enriching} onClick={enrich}>
+            {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+          </Button>
         </div>
         <p className="text-sm text-neutral-500">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
         <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
@@ -142,6 +194,28 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         {b.contactQualityReasons && b.contactQualityReasons.length > 0 && (
           <p className="text-xs text-neutral-500">Quality: {b.contactQualityReasons.map((r) => `${r.detail} (+${r.points})`).join(", ")}</p>
         )}
+      </section>
+
+      <Separator />
+
+      <section className="space-y-2" data-testid="people-section">
+        <h3 className="font-medium">People</h3>
+        {people.length === 0 ? (
+          <p className="text-sm text-neutral-500">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
+        ) : (
+          <ul className="space-y-1">
+            {people.map((p) => (
+              <li key={p.key} data-testid="people-row" className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="font-medium">{p.name}</span>
+                {p.title && <span className="text-neutral-500">{p.title}</span>}
+                {p.email && <CopyButton value={p.email} label={p.email} />}
+                {p.linkedin && <a className="underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
+                <SourceBadge source={p.source} />
+              </li>
+            ))}
+          </ul>
+        )}
+        {b.lastEnrichedAt && <p className="text-xs text-neutral-500">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
       </section>
 
       <Separator />
