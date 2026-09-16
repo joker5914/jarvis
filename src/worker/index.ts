@@ -1,7 +1,8 @@
 import { PgBoss } from "pg-boss";
-import { QUEUES, type TdlrSyncJobData, type ZipSearchJobData } from "@/lib/jobs/queues";
+import { QUEUES, type PromoteBatchJobData, type PromoteJobData, type TdlrSyncJobData, type ZipSearchJobData } from "@/lib/jobs/queues";
 import { runZipSearch } from "@/lib/jobs/zipSearch";
 import { runTdlrSync } from "@/lib/jobs/tdlrSync";
+import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { getProviders } from "@/lib/providers";
 
 // A real-mode zip search can run well past pg-boss's default 900s job
@@ -27,6 +28,18 @@ async function main() {
   });
   // Nightly at 03:00 Central; pg-boss dedupes the schedule by queue name.
   await boss.schedule(QUEUES.tdlrSync, "0 3 * * *", {}, { tz: "America/Chicago" });
+
+  await boss.work<PromoteJobData>(QUEUES.promote, { batchSize: 1 }, async ([job]) => {
+    console.log(`[promote] start ${job.data.businessId}`);
+    await runPromoteBusiness(job.data.businessId, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal });
+    console.log(`[promote] done ${job.data.businessId}`);
+  });
+
+  await boss.work<PromoteBatchJobData>(QUEUES.promoteBatch, { batchSize: 1 }, async ([job]) => {
+    console.log(`[promote-batch] start`);
+    const r = await runPromoteHighFit({ providers: getProviders(), log: console.log, signal: job.signal });
+    console.log(`[promote-batch] done ${JSON.stringify(r)}`);
+  });
 
   console.log(`worker ready (PROVIDER_MODE=${process.env.PROVIDER_MODE ?? "fake"})`);
 

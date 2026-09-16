@@ -7,5 +7,5 @@ export const QUEUES = {
 
 export type ZipSearchJobData = { searchId: string };
 export type TdlrSyncJobData = Record<string, never>;
-export type PromoteJobData = { businessId: string };
+export type PromoteJobData = { businessId: string; ownerId: string };
 export type PromoteBatchJobData = Record<string, never>;

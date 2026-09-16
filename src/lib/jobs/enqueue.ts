@@ -1,7 +1,8 @@
 import { getBoss } from "./boss";
-import { QUEUES, type TdlrSyncJobData, type ZipSearchJobData } from "./queues";
+import { QUEUES, type PromoteBatchJobData, type PromoteJobData, type TdlrSyncJobData, type ZipSearchJobData } from "./queues";
 import { runZipSearch } from "./zipSearch";
 import { runTdlrSync } from "./tdlrSync";
+import { runPromoteBusiness, runPromoteHighFit } from "./promote";
 import { getProviders } from "@/lib/providers";
 
 export const MANUAL_PRIORITY = 10;
@@ -36,4 +37,26 @@ export async function enqueueTdlrSync(): Promise<void> {
   const boss = await getBoss();
   const data: TdlrSyncJobData = {};
   await boss.send(QUEUES.tdlrSync, data, { retryLimit: 3, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "tdlr" });
+}
+
+export async function enqueuePromote(businessId: string, ownerId: string): Promise<void> {
+  if (process.env.JOB_MODE === "inline") {
+    void runPromoteBusiness(businessId, ownerId, { providers: getProviders(), log: console.log }).catch((e) =>
+      console.error("[inline promote]", e),
+    );
+    return;
+  }
+  const boss = await getBoss();
+  const data: PromoteJobData = { businessId, ownerId };
+  await boss.send(QUEUES.promote, data, { retryLimit: 3, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: `promote:${businessId}` });
+}
+
+export async function enqueuePromoteBatch(): Promise<void> {
+  if (process.env.JOB_MODE === "inline") {
+    void runPromoteHighFit({ providers: getProviders(), log: console.log }).catch((e) => console.error("[inline promote-batch]", e));
+    return;
+  }
+  const boss = await getBoss();
+  const data: PromoteBatchJobData = {};
+  await boss.send(QUEUES.promoteBatch, data, { retryLimit: 1, retryDelay: 60, priority: MANUAL_PRIORITY, singletonKey: "promote-batch" });
 }
