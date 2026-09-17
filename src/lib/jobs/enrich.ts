@@ -108,8 +108,13 @@ export async function runEnrich(
       await checkPause(deps);
       // Apollo's obfuscated search rows carry `organization.name` but no domain, so a name check
       // is the only guard available here — reject before spending a credit on a wrong-company hit.
-      if (p.orgName && !orgNameMatches(p.orgName.toLowerCase(), b.name.toLowerCase())) {
-        skippedOrg = p.orgName;
+      // Only on the no-domain branch: when the search was filtered by the lead's own website
+      // domain, Apollo already matched on a stronger signal than the name, and the org that owns
+      // a domain often trades under a different name ("Dr. Jane Smith DDS" → Pearland Family
+      // Dentistry). The wrong-company sink this guards against (shared booking/ordering platforms)
+      // has domain === null by construction (see SHARED_HOSTS).
+      if (!domain && p.orgName && !orgNameMatches(p.orgName, b.name)) {
+        skippedOrg ??= p.orgName;
         continue;
       }
       // Apollo's search never returns emails (see EnrichmentProvider.searchPeople); a hit it

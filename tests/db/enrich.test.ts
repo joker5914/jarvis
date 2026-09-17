@@ -136,6 +136,30 @@ describe("runEnrich", () => {
       expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
     });
 
+    it("normalizes punctuation and connectors before comparing (\"Bella Nails & Spa\" vs \"Bella Nails and Spa\" is the same company)", async () => {
+      const b = await biz({ name: "Bella Nails & Spa" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => [
+        { apolloId: "fake-bella-owner", firstName: "Linh", lastName: null, name: "Linh", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails and Spa" },
+      ];
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).not.toMatchObject({ skipped: "org_mismatch" });
+      expect(d.enrichment.calls.enrich).toBe(1);
+    });
+
+    it("does not apply the name guard when the search was filtered by the lead's own domain (a domain owner often trades under another name)", async () => {
+      const b = await biz({ name: "Dr. Jane Smith DDS", websiteUrl: "https://www.pearlandfamilydentistry.com/" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => [
+        { apolloId: "fake-pfd-owner", firstName: "Jane", lastName: null, name: "Jane", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Pearland Family Dentistry" },
+      ];
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).not.toMatchObject({ skipped: "org_mismatch" });
+      expect(d.enrichment.calls.enrich).toBe(1);
+    });
+
     it("proceeds when the candidate's orgName loosely matches the lead's name (case-insensitive, tolerant of a trailing legal suffix)", async () => {
       const b = await biz({ name: "ZERO Training Center" });
       const fake = new FakeEnrichmentProvider();

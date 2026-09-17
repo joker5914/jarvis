@@ -67,12 +67,21 @@ async function markPlanBlocked(path: string, detail: string): Promise<void> {
 async function checkPlanBlocked(path: string): Promise<void> {
   const until = planBlockedUntil.get(path);
   if (until === undefined || until <= Date.now()) return;
-  const cfg = await prisma.providerConfig.findUnique({ where: { provider: "apollo" }, select: { planBlockedUntil: true } });
+  const detail = planBlockedDetail.get(path) ?? "API_INACCESSIBLE";
+  let cfg: { planBlockedUntil: Date | null } | null;
+  try {
+    cfg = await prisma.providerConfig.findUnique({ where: { provider: "apollo" }, select: { planBlockedUntil: true } });
+  } catch (e) {
+    // Fail closed: the memo already says blocked, and classification must not depend on the DB in
+    // either direction (a Prisma error here would otherwise become a retried job failure).
+    console.error("[apollo] plan-block revalidation read failed; keeping the memoized block", e);
+    throw new ProviderPlanError("apollo", path, detail);
+  }
   if (!cfg?.planBlockedUntil || cfg.planBlockedUntil.getTime() <= Date.now()) {
     clearPlanBlockMemo();
     return;
   }
-  throw new ProviderPlanError("apollo", path, planBlockedDetail.get(path) ?? "API_INACCESSIBLE");
+  throw new ProviderPlanError("apollo", path, detail);
 }
 
 /** Clears a plan block, in this process's memo and on the persisted ProviderConfig row, for the
@@ -206,7 +215,11 @@ function normalizeForOrgCompare(name: string): string {
  * only an exact match, or a containment where the shorter side has at least two words — a
  * single-word request must match exactly.
  */
-export function orgNameMatches(requested: string, found: string): boolean {
+export function orgNameMatches(requestedRaw: string, foundRaw: string): boolean {
+  // Normalize here (idempotent) so every caller can pass raw names: legal suffixes, punctuation
+  // and "&"/"and" differences ("Bella Nails & Spa" vs "Bella Nails and Spa") must not count.
+  const requested = normalizeForOrgCompare(requestedRaw);
+  const found = normalizeForOrgCompare(foundRaw);
   if (!requested || !found) return false;
   if (requested === found) return true;
   const [shorter, longer] = requested.length <= found.length ? [requested, found] : [found, requested];
