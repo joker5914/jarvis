@@ -69,6 +69,19 @@ describe("extractFromHtml email boundary fix", () => {
     expect([...r.emails]).toEqual([]);
   });
 
+  // H1: KNOWN_TLDS now comes from the `tlds` npm package (the IANA list) instead of a
+  // hand-picked set, so these real gTLDs are scanned and kept unchanged rather than being
+  // mis-rewritten to a shorter look-alike TLD or dropped outright.
+  it("keeps real IANA gTLDs unchanged when scanned from page text", () => {
+    const r = extractFromHtml("<p>Email info@smithco.technology or jane@smithlaw.attorney.</p>");
+    expect([...r.emails]).toEqual(["info@smithco.technology", "jane@smithlaw.attorney"]);
+  });
+
+  it("still recovers a glued .com when the trailing junk is not itself an IANA TLD", () => {
+    const r = extractFromHtml("<p>a@gmail.comsubmitthanks</p>");
+    expect([...r.emails]).toEqual(["a@gmail.com"]);
+  });
+
   it("recovers a genuine .style address glued to trailing text", () => {
     const r = extractFromHtml("<p>info@rawlife.stylestore</p>");
     expect([...r.emails]).toEqual(["info@rawlife.style"]);

@@ -42,6 +42,15 @@ describe("normalizeEmail", () => {
     expect(normalizeEmail("jane@smith.realtor")).toBe("jane@smith.realtor");
   });
 
+  // H1: KNOWN_TLDS now comes from the `tlds` npm package (the IANA list) instead of a
+  // hand-picked set, so real gTLDs that used to be mis-rewritten or dropped are accepted as-is.
+  it("accepts real IANA gTLDs that a hand-picked allow-list previously mishandled", () => {
+    expect(normalizeEmail("info@smithco.technology")).toBe("info@smithco.technology");
+    expect(normalizeEmail("info@acmeconstruction.contractors")).toBe("info@acmeconstruction.contractors");
+    expect(normalizeEmail("jane@smithlaw.attorney")).toBe("jane@smithlaw.attorney");
+    expect(normalizeEmail("info@smilecare.dentist")).toBe("info@smilecare.dentist");
+  });
+
   // Task 5: platform/support addresses pass syntax, TLD, and placeholder checks but are never
   // the business's own contact — normalizeEmail rejects them directly (see its doc comment).
   it("rejects a booking/site-builder platform support address", () => {

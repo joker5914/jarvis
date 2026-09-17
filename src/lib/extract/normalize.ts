@@ -1,4 +1,5 @@
 import { parsePhoneNumberFromString } from "libphonenumber-js";
+import ianaTlds from "tlds";
 import { isPlatformEmail } from "./platformDomains";
 
 export type SocialType = "linkedin" | "facebook" | "instagram" | "twitter" | "yelp";
@@ -8,23 +9,18 @@ export type SocialType = "linkedin" | "facebook" | "instagram" | "twitter" | "ye
 const EMAIL_RE = /^([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})$/;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|svg|webp|ico)$/;
 
-// Country-code TLDs (always 2 letters) are covered by the length check in `isPlausibleTld`; this
-// set is the generic/gTLD allow-list for everything else, including small-business-relevant gTLDs
-// (a real address can legitimately end in ".style", ".shop", etc.).
+// The full IANA TLD list (via the `tlds` npm package, pinned in package.json), lowercased. A
+// hand-picked allow-list previously lived here and silently mis-rewrote or dropped real gTLD
+// addresses it didn't happen to include (e.g. ".technology", ".contractors", ".attorney",
+// ".dentist" were either glued down to a shorter look-alike prefix or rejected outright). The
+// IANA list is the actual ground truth for "is this a real TLD" and needs no manual curation.
 export const KNOWN_TLDS = new Set(
-  (
-    "com net org edu gov mil biz info io co us name pro mobi asia " +
-    "app dev tech online site store shop xyz me tv cc style studio salon dental clinic cafe pizza " +
-    "restaurant bar beer coffee fitness yoga photography design law legal realty homes house auto cars " +
-    "repair services solutions group llc inc ltd health care vet pet dog kids school academy church farm " +
-    "garden florist boutique fashion hair beauty spa nails tattoo ink art gallery music events wedding " +
-    "photo media news blog live life world city agency company center email cloud digital global network " +
-    "systems software team tools works zone club fun games plus one today now best top new realtor " +
+  ianaTlds.map((t) => t.toLowerCase()).concat(
     // ".test" is IANA/RFC 2606 reserved for testing and can never be a real business's TLD; it's
     // included so the existing test-fixture convention (e.g. "*.fake.test" in
     // src/lib/providers/fake.ts and tests/db/*.test.ts) keeps validating as before.
-    "test"
-  ).split(" "),
+    "test",
+  ),
 );
 
 export function isPlausibleTld(tld: string): boolean {
@@ -35,13 +31,26 @@ export function isPlausibleTld(tld: string): boolean {
 /**
  * Given a TLD that already failed `isPlausibleTld` (i.e. it's neither a 2-letter code nor in
  * `KNOWN_TLDS` as-is), find the longest leading prefix that IS in `KNOWN_TLDS` — e.g.
- * "comsubmitthanks" -> "com", "stylestore" -> "style". Deliberately does not fall back to the
- * 2-letter shortcut here: that shortcut exists for genuine ccTLDs, not for chopping arbitrary
- * junk down to a fake 2-letter code ("notatld" must not resolve to "no").
+ * "comsubmitthanks" -> "com", "stylestore" -> "style". Only ever runs for a captured TLD that is
+ * NOT itself an IANA TLD (that's what makes it "the glued case" rather than a real TLD we should
+ * have accepted as-is via `isPlausibleTld`).
+ *
+ * The minimum prefix length is 3, not 2: `KNOWN_TLDS` now comes from the full IANA list (see its
+ * doc comment), which includes every 2-letter ccTLD ("no", "la", "me", ...). If this loop allowed
+ * length-2 matches, junk like "notatld" or "com.last" would spuriously recover as ".no" / ".la"
+ * — a real ccTLD by coincidence of spelling, not because the address actually uses it. Genuine
+ * 2-letter ccTLDs are already accepted directly by `isPlausibleTld`'s length check, so this
+ * function never needs to manufacture one out of a longer junk string.
+ *
+ * Because glued TLDs can themselves be IANA TLDs by accident (e.g. "company", "center", "codes"
+ * are real gTLDs), a glued suffix can occasionally recover to the wrong-but-real TLD instead of
+ * the correct short one — e.g. "x.com" glued to trailing text that happens to spell out
+ * "company" recovers as ".company" rather than ".com". That misattribution is accepted as a rare,
+ * low-stakes false-normalization limited to this glued-junk-recovery path.
  */
 export function longestPlausibleTldPrefix(tld: string): string | null {
   const t = tld.toLowerCase();
-  for (let len = Math.min(t.length, 24) - 1; len >= 2; len--) {
+  for (let len = Math.min(t.length, 24) - 1; len >= 3; len--) {
     const prefix = t.slice(0, len);
     if (KNOWN_TLDS.has(prefix)) return prefix;
   }

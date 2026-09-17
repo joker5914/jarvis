@@ -33,20 +33,28 @@ repeats the category searches.
 
 **Apollo's free and trial plans do not include the People Search or People
 Enrichment API** — every plan tier can call Organization Enrichment, but
-People Search and People Match return HTTP 403 (`API_INACCESSIBLE`) even
-with a valid key on both the Free plan and the Basic 14-day trial,
-regardless of the monthly credit balance above. The app detects this the
-first time it happens, records an `Enrichment unavailable: …` row (with the
-raw Apollo error code) on the lead's activity log so a failed Enrich click
-stays visible after a refresh, and persists the block (on the `ProviderConfig`
+People Search and People Match return HTTP 403 (`API_INACCESSIBLE`, or on a
+Basic-Trial plan `AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED`) even with a
+valid key on both the Free plan and the Basic 14-day trial, regardless of
+the monthly credit balance above. The app detects this the first time it
+happens, records an `Enrichment unavailable: …` row (with the raw Apollo
+error code) on the lead's activity log so a failed Enrich click stays
+visible after a refresh, and persists the block (on the `ProviderConfig`
 row, not just in the worker's memory) for 6 hours so both the background
 job and the single/bulk Enrich routes — including the Next.js web process,
 which never calls Apollo directly — refuse up front with a 409 during that
 window instead of wasting retries or budget. Saving a new key or
-re-enabling Apollo in Settings clears the block immediately. A paid Apollo
-plan is required for API-based people enrichment; without one, use Apollo's
-web app to find and paste in contacts manually, then save your API key
-again in Settings once you upgrade.
+re-enabling Apollo in Settings clears the block immediately, in every web
+process/replica: each 409 check revalidates its own remembered block
+against that `ProviderConfig` row rather than trusting it outright, so a
+stale in-memory block never outlives the database row that backs it. A
+paid Apollo plan is required for API-based people enrichment; without one,
+use Apollo's web app to find and paste in contacts manually, then save
+your API key again in Settings once you upgrade. Any other enrichment
+failure (rate limits, 5xx, network errors) also now leaves an
+`Enrichment failed: …` row on the lead instead of failing silently, so a
+lead that hit a transient error is easy to tell apart from one that was
+never attempted.
 
 ## Running the app day to day
 

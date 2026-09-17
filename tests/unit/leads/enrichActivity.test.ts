@@ -7,6 +7,12 @@ describe("isEnrichIssueMessage", () => {
     expect(isEnrichIssueMessage("Enrichment paused: Apollo daily budget exhausted")).toBe(true);
   });
 
+  // M3: runEnrich's generic catch-all now logs "Enrichment failed: <message>" for anything not
+  // already a typed provider error (429s, 5xxs, network errors); LeadDetail must surface it too.
+  it("matches the failed prefix", () => {
+    expect(isEnrichIssueMessage("Enrichment failed: Apollo /x HTTP 503")).toBe(true);
+  });
+
   it("does not match skipped messages (the benign recency skip, or the disabled-provider skip)", () => {
     expect(isEnrichIssueMessage("Enrichment skipped: enriched 2 day(s) ago (use Re-enrich to refresh)")).toBe(false);
     expect(isEnrichIssueMessage("Enrichment skipped: Apollo is disabled in Settings")).toBe(false);

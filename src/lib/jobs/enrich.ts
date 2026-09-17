@@ -7,20 +7,23 @@ import { creditStatus } from "@/lib/enrichment/credits";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
+import { PLATFORM_EMAIL_DOMAINS } from "@/lib/extract/platformDomains";
 import type { EnrichPerson } from "@/lib/providers/types";
 
 // Hosts that never identify a business's own domain: social/review profile pages (the original
 // set) plus, per live zero-credit probes, booking/scheduling/ordering platforms whose page for a
 // lead (e.g. a Booksy or Clover storefront) makes Apollo's People Search return the *platform's*
 // executives instead of the lead's — see orgNameMatches below for the second half of that guard.
-const SHARED_HOSTS = [
-  "facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com",
-  "sites.google.com", "business.site", "wixsite.com", "squarespace.com", "godaddysites.com",
-  "booksy.com", "clover.com", "square.site", "squareup.com", "weebly.com", "linktr.ee",
-  "toasttab.com", "vagaro.com", "fresha.com", "styleseat.com", "mindbodyonline.com",
-  "schedulicity.com", "zocdoc.com", "doordash.com", "ubereats.com", "grubhub.com",
-  "myshopify.com", "wix.com", "jimdosite.com", "webnode.page", "carrd.co", "bio.site",
-];
+//
+// The platform half used to be its own hand-maintained list here, which diverged from
+// `PLATFORM_EMAIL_DOMAINS` in src/lib/extract/platformDomains.ts (same category of domain, just
+// checked against a website URL instead of an email address) — whole-branch review item L2.
+// `PLATFORM_EMAIL_DOMAINS` is now the one source of truth for "this domain is a shared platform,
+// never a lead's own"; this is just the social/review hosts that PLATFORM_EMAIL_DOMAINS doesn't
+// need to carry (an email at facebook.com etc. is already covered separately by
+// PLACEHOLDER_EMAIL_RE/isPlatformEmail's own social entries — see that module) unioned with it.
+const SOCIAL_HOSTS = ["facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com"];
+const SHARED_HOSTS = [...new Set([...SOCIAL_HOSTS, ...PLATFORM_EMAIL_DOMAINS])];
 
 export function domainFromUrl(url: string | null): string | null {
   if (!url) return null;
@@ -162,9 +165,16 @@ export async function runEnrich(
     if (added === 0 && updated === 0 && skippedOrg) {
       // Every candidate that reached the org-name guard mismatched, and nothing else was added
       // or updated either: this is a targeting failure, not a "found nobody" success, so it gets
-      // its own message and returns before validateEmails/recomputeContactQuality/lastEnrichedAt
-      // — matching how the other early-return skip reasons above (excluded/not_found/recent)
-      // never touch those either.
+      // its own message and returns before validateEmails/recomputeContactQuality — matching how
+      // the other early-return skip reasons above (excluded/not_found/recent) never touch those
+      // either.
+      //
+      // lastEnrichedAt IS still set here (whole-branch review, L1), unlike those other skips:
+      // without it the lead stays flagged as "needs enrichment" and a later bulk pass re-spends
+      // the Organization Search credit on the same lead, only to hit the same mismatch again.
+      // Force via Re-enrich still bypasses the recheckDays gate at the top of this function, so a
+      // user who wants to retry a specific lead right away still can.
+      await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
       await log(`Enrichment skipped: Apollo matched a different company (${skippedOrg})`);
       return { added: 0, updated: 0, skipped: "org_mismatch" as const };
     }
@@ -178,6 +188,22 @@ export async function runEnrich(
     else if (e instanceof ProviderNotConfiguredError) await log("Enrichment skipped: Apollo API key is not configured");
     else if (e instanceof ProviderDisabledError) await log("Enrichment skipped: Apollo is disabled in Settings");
     else if (e instanceof ProviderPlanError) await log(`Enrichment unavailable: ${e.message} (${e.detail})`);
+    else {
+      // Whole-branch review, M3: everything else (429/5xx/network errors, etc.) used to leave no
+      // activity row at all, so a lead that failed enrichment looked identical to one that was
+      // never attempted. Apollo keys always travel in the "x-api-key" request header, never in a
+      // URL or error message, so this can't leak key material in practice — but the redaction is
+      // kept anyway as defense in depth against a future error message that happens to echo back
+      // request state. Truncated to 200 chars so a huge provider error body can't bloat the log.
+      const message = redactApiKeyLike((e as Error).message).slice(0, 200);
+      await log(`Enrichment failed: ${message}`);
+    }
     throw e;
   }
+}
+
+/** Strips anything shaped like an "x-api-key" header value from a log message. Defense in depth
+ * only — see the M3 comment at its call site for why this should never actually trigger. */
+function redactApiKeyLike(message: string): string {
+  return message.replace(/x-api-key[^\s]*/gi, "[redacted]");
 }

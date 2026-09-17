@@ -1,17 +1,21 @@
 export type ActivityLike = { kind: string; message: string };
 
 /**
- * True when an enrich-related activity message represents an unavailable or paused attempt —
- * worth surfacing as a persistent line under the Enrich button so a failed click stays visible
- * after a page refresh, not just as a one-shot toast.
+ * True when an enrich-related activity message represents an unavailable, paused, or failed
+ * attempt — worth surfacing as a persistent line under the Enrich button so a failed click stays
+ * visible after a page refresh, not just as a one-shot toast.
  *
  * Deliberately excludes "Enrichment skipped: ..." messages: that prefix also covers the benign
  * recency skip runEnrich logs when a business was enriched too recently to recheck (expected,
  * not a problem — the button already says "Re-enrich" in that state) and the disabled-provider
  * skip, which would otherwise duplicate the existing monthly-credit-cap line for the common case.
+ *
+ * "failed" (whole-branch review, M3) covers runEnrich's generic catch-all — 429s, 5xxs, network
+ * errors, anything not already one of the typed provider errors above — which previously left no
+ * activity row at all, so LeadDetail had no way to show that a click had failed.
  */
 export function isEnrichIssueMessage(message: string): boolean {
-  return /^Enrichment (unavailable|paused)/.test(message);
+  return /^Enrichment (unavailable|paused|failed)/.test(message);
 }
 
 /**

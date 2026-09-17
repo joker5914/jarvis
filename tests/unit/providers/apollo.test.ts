@@ -201,6 +201,50 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({ update: { planBlockDetail: "API_INACCESSIBLE" } });
   });
 
+  // H2: a live 403 body observed from a Basic (Trial) plan carries BOTH error_code and a nested
+  // error_details object; classification must catch it via either signal.
+  it("classifies a live Basic-Trial 403 body (error_code AND error_details.code/message) as a plan block", async () => {
+    mockFetch(() =>
+      json(
+        {
+          error:
+            "The api/v1/mixed_people/api_search API is not included in your Basic (Trial) plan and is not accessible, even with a master key. All paid plans include full API access. Upgrade your plan from https://www.apollo.io/pricing",
+          error_code: "API_INACCESSIBLE",
+          error_details: {
+            code: "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED",
+            message: "Your team is not permitted to call this endpoint.",
+          },
+        },
+        403,
+      ),
+    );
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+      ProviderPlanError,
+    );
+    // error_code wins over error_details.code when both are present.
+    expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({ update: { planBlockDetail: "API_INACCESSIBLE" } });
+  });
+
+  it("classifies a 403 body with only error_details.code set (no top-level error_code) as a plan block, using error_details.code as detail", async () => {
+    mockFetch(() =>
+      json(
+        {
+          error_details: {
+            code: "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED",
+            message: "Your team is not permitted to call this endpoint.",
+          },
+        },
+        403,
+      ),
+    );
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+      ProviderPlanError,
+    );
+    expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({
+      update: { planBlockDetail: "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED" },
+    });
+  });
+
   it("a plain 403 (no API_INACCESSIBLE) throws a generic HTTP error and is never memoized", async () => {
     mockFetch(() => json({ error: "forbidden" }, 403));
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(
@@ -240,6 +284,23 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     expect(await apolloPlanBlocked()).toEqual({ blocked: false });
   });
 
+  // M1: apolloPlanBlocked() must revalidate a "blocked" memo against the persisted row, not trust
+  // it outright — otherwise a Settings save that clears the block in another web process/replica
+  // would never take effect here until this process's memo happened to expire on its own.
+  it("apolloPlanBlocked() revalidates a live memo against the row: row cleared -> unblocked and the memo is dropped", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
+    providerConfigMock.findUnique.mockResolvedValueOnce(null); // Settings save cleared the row
+    expect(await apolloPlanBlocked()).toEqual({ blocked: false });
+    expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1);
+
+    // The memo is gone provider-wide, not just for PEOPLE_SEARCH_PATH: a follow-up call to the
+    // low-level checkPlanBlocked gate (via searchPeople) proceeds to the network instead of
+    // throwing from a stale block.
+    mockFetch(() => json({ total_entries: 0, people: [] }));
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
   describe("D1: checkPlanBlocked revalidates a memoized block against the persisted row", () => {
     it("memo says blocked but the row was cleared (e.g. a Settings key save in the web process): the call proceeds to the network, and the memo is dropped entirely", async () => {
       __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000);
@@ -277,7 +338,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
   });
 
   describe("D2: a failed persist must not change classification", () => {
-    it("markPlanBlocked's upsert rejecting still throws ProviderPlanError and still sets the memo", async () => {
+    it("markPlanBlocked's upsert rejecting still throws ProviderPlanError, still sets the memo, but the block degrades to one 403 per job (no row to revalidate against, so the next call re-fetches instead of short-circuiting)", async () => {
       providerConfigMock.upsert.mockRejectedValueOnce(new Error("connection reset"));
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
@@ -287,11 +348,16 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
         expect(calls).toHaveLength(1);
         expect(consoleErrorSpy).toHaveBeenCalled(); // logged, not silently swallowed
 
-        // Memo still set despite the failed persist: the next call short-circuits (via the
-        // revalidation read, which the describe's default mock reports as "still blocked")
-        // instead of re-hitting the network.
+        // The memo is set, but because the persist failed there's no ProviderConfig row for the
+        // next call's revalidation read to confirm — so it comes back null (as if a Settings save
+        // had cleared it), the memo is dropped, and the call proceeds to the network rather than
+        // throwing from the cache. This documents the real degraded behavior after a failed
+        // persist: "skipped, not retried" only holds for the single job that hit the live 403;
+        // every job after it re-hits the network (and re-403s) until a persist finally succeeds.
+        providerConfigMock.findUnique.mockResolvedValueOnce(null);
+        mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
         await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
-        expect(calls).toHaveLength(1);
+        expect(calls).toHaveLength(1); // re-fetched (mockFetch reset calls) instead of short-circuiting
       } finally {
         consoleErrorSpy.mockRestore();
       }

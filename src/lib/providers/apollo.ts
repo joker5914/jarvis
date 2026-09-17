@@ -36,10 +36,17 @@ function clearPlanBlockMemo(): void {
  * production): the Next.js web process's copy of `planBlockedUntil` is always empty, so the
  * routes' gate (apolloPlanBlocked) must be able to see this via the database, not just memory.
  * Upserts like withBudget() does, in case no ProviderConfig row exists yet. The persist is
- * best-effort: the in-process memo above (which is what actually protects this process from
- * re-hitting a blocked endpoint) is already set by the time this runs, and the caller always
- * throws ProviderPlanError regardless of whether this write lands — a transient DB failure here
- * must not surface as a generic Prisma error and re-enable pg-boss retries. */
+ * best-effort: the caller always throws ProviderPlanError regardless of whether this write
+ * lands, so a transient DB failure here never surfaces as a generic Prisma error or re-enables
+ * pg-boss retries for the job that just saw the live 403.
+ *
+ * The in-process memo set below is NOT enough on its own to protect later calls in this process
+ * if the persist fails: `checkPlanBlocked` always revalidates a memoized block against the
+ * persisted ProviderConfig row before honoring it (see its doc comment), and with no row to find,
+ * that revalidation reads back `null`, drops the memo, and lets the next call proceed to the
+ * network. So a failed persist degrades the block to "skip this one job, but not the next" — the
+ * next job re-hits Apollo, gets 403'd again, and tries (and may again fail) to persist. See the
+ * D2 test in tests/unit/providers/apollo.test.ts for the exact sequence. */
 async function markPlanBlocked(path: string, detail: string): Promise<void> {
   const until = Date.now() + PLAN_BLOCK_TTL_MS;
   planBlockedUntil.set(path, until);
@@ -96,18 +103,29 @@ export async function clearPlanBlock(provider: string): Promise<void> {
 
 /** True when Apollo's plan is known (within the last 6h) to not include the People Search /
  * People Enrichment APIs this app relies on for lead enrichment. Used by the enrich routes to
- * refuse before even queuing a job. Checks this process's memo first (cheap, and what the worker
- * relies on); when the memo is empty or expired, falls back to the persisted ProviderConfig row
- * so a block set by the worker process is still visible to the Next.js web process, which never
- * calls Apollo directly. A DB hit also re-primes this process's memo so a repeat call in the same
- * process (e.g. bulk enrich looping business-by-business) doesn't re-hit the database each time.
+ * refuse before even queuing a job.
+ *
+ * Mirrors `checkPlanBlocked`'s revalidation contract rather than trusting the in-process memo
+ * outright: a "blocked" memo is only ever a starting point, confirmed (or dropped) against a
+ * single PK read of the persisted ProviderConfig row on every call — this function already reads
+ * that row on every call today (to catch a block set by the worker process, which this Next.js
+ * web process's own memo never sees), so revalidating a blocked memo against it costs nothing
+ * extra. Without this, a Settings save that clears the key/block in one web process/replica would
+ * never take effect in another process that had already memoized the old block — it would keep
+ * reporting 409 until its memo happened to expire on its own 6h TTL. When the row is clear or
+ * expired, the memo (provider-wide, not per-path) is dropped entirely so it can't cause a false
+ * "blocked" anywhere else that still reads it (e.g. checkPlanBlocked in the worker, if this ever
+ * ran in the same process). When the row still says blocked, this also re-primes this process's
+ * memo, matching the pre-existing behavior of keeping the memo in sync with the DB.
  * Fake provider mode never populates the memo or the row, so this always reports unblocked there. */
 export async function apolloPlanBlocked(): Promise<{ blocked: boolean; detail?: string }> {
   const now = Date.now();
+  let memoBlocked = false;
   for (const path of [PEOPLE_SEARCH_PATH, ORG_SEARCH_PATH, PEOPLE_MATCH_PATH]) {
     const until = planBlockedUntil.get(path);
     if (until !== undefined && until > now) {
-      return { blocked: true, detail: planBlockedDetail.get(path) };
+      memoBlocked = true;
+      break;
     }
   }
   const cfg = await prisma.providerConfig.findUnique({ where: { provider: "apollo" }, select: { planBlockedUntil: true, planBlockDetail: true } });
@@ -119,6 +137,8 @@ export async function apolloPlanBlocked(): Promise<{ blocked: boolean; detail?: 
     }
     return { blocked: true, detail: cfg.planBlockDetail ?? undefined };
   }
+  // The row disagrees with a memo that said blocked (cleared or expired) — drop the stale memo.
+  if (memoBlocked) clearPlanBlockMemo();
   return { blocked: false };
 }
 
@@ -135,14 +155,24 @@ export function __resetPlanBlockedForTests(): void {
   clearPlanBlockMemo();
 }
 
-type ApolloErrorBody = { error?: string; error_code?: string };
+type ApolloErrorBody = {
+  error?: string;
+  error_code?: string;
+  error_details?: { code?: string; message?: string };
+};
 
-/** Apollo's Free plan returns 403 API_INACCESSIBLE (with an explanatory `error` string) for
- * People Search/Enrichment even with a valid key — distinct from a real auth/permissions 403.
- * Reads the body once to tell the two apart, memoizes a plan block so this process stops hitting
- * the endpoint for a while, and always throws (never returns). The raw `error_code` (falling back
- * to "API_INACCESSIBLE" when matched only via the error text) is kept as `detail` for diagnosis
- * in the activity log — never the human-facing message, which lives on ProviderPlanError itself. */
+/** Apollo's Free/Basic-trial plans return 403 for People Search/Enrichment even with a valid key
+ * — distinct from a real auth/permissions 403. Two shapes have been observed in the wild:
+ *   - `error_code: "API_INACCESSIBLE"` with an `error` string containing "not included in your"
+ *     (the plan simply lacks the endpoint), and
+ *   - `error_details.code: "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED"` with
+ *     `error_details.message` matching /not permitted to call this endpoint/i (a Basic Trial
+ *     plan whose team isn't permitted to call the endpoint at all, even with a master key).
+ * Reads the body once to tell a plan block apart from a genuine 403, memoizes the block so this
+ * process stops hitting the endpoint for a while, and always throws (never returns) once
+ * classified as a plan block. `detail` prefers `error_code`, falling back to `error_details.code`,
+ * then the literal "API_INACCESSIBLE" — kept for diagnosis in the activity log, never the
+ * human-facing message, which lives on ProviderPlanError itself. */
 async function throwFor403(path: string, res: Response): Promise<never> {
   let body: ApolloErrorBody | null = null;
   try {
@@ -151,8 +181,15 @@ async function throwFor403(path: string, res: Response): Promise<never> {
     // Non-JSON body: fall through to the generic 403 below.
   }
   const errorText = body?.error ?? "";
-  if (body?.error_code === "API_INACCESSIBLE" || /not included in your/i.test(errorText)) {
-    const detail = body?.error_code ?? "API_INACCESSIBLE";
+  const detailsCode = body?.error_details?.code ?? "";
+  const detailsMessage = body?.error_details?.message ?? "";
+  const isPlanBlocked =
+    body?.error_code === "API_INACCESSIBLE" ||
+    /not included in your/i.test(errorText) ||
+    detailsCode === "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED" ||
+    /not permitted to call this endpoint/i.test(detailsMessage);
+  if (isPlanBlocked) {
+    const detail = body?.error_code || detailsCode || "API_INACCESSIBLE";
     await markPlanBlocked(path, detail);
     throw new ProviderPlanError("apollo", path, detail);
   }
@@ -241,7 +278,8 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
     );
     const org = r.data?.organizations?.[0];
     if (!org) return null;
-    if (!orgNameMatches(normalizeForOrgCompare(name), normalizeForOrgCompare(org.name ?? ""))) return null;
+    // orgNameMatches normalizes its own inputs (see its doc comment) — pass the raw names.
+    if (!orgNameMatches(name, org.name ?? "")) return null;
     return { id: org.id, primaryDomain: org.primary_domain ?? null };
   }
 

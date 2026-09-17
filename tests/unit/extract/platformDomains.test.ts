@@ -33,6 +33,29 @@ describe("isPlatformEmail", () => {
     expect(isPlatformEmail("test@exampleemail.com")).toBe(true);
   });
 
+  // L2 (whole-branch review): domains added to consolidate with SHARED_HOSTS in enrich.ts, plus
+  // new platform domains.
+  it("matches domains merged in from SHARED_HOSTS and newly added platform domains", () => {
+    expect(isPlatformEmail("info@sites.google.com")).toBe(true);
+    expect(isPlatformEmail("hello@business.site")).toBe(true);
+    expect(isPlatformEmail("hi@example.jimdosite.com")).toBe(true);
+    expect(isPlatformEmail("hi@example.webnode.page")).toBe(true);
+    expect(isPlatformEmail("hi@example.carrd.co")).toBe(true);
+    expect(isPlatformEmail("hi@example.bio.site")).toBe(true);
+    expect(isPlatformEmail("noreply@blogspot.com")).toBe(true);
+    expect(isPlatformEmail("support@order.online")).toBe(true);
+    expect(isPlatformEmail("hello@glossgenius.com")).toBe(true);
+    expect(isPlatformEmail("support@acuityscheduling.com")).toBe(true);
+    expect(isPlatformEmail("hi@as.me")).toBe(true);
+    expect(isPlatformEmail("support@setmore.com")).toBe(true);
+  });
+
+  // L2: mail.com sells real "@email.com" mailboxes, so it must NOT be treated as a placeholder
+  // or platform domain — an SMB really can have a genuine "@email.com" contact address.
+  it("no longer treats email.com as a platform domain", () => {
+    expect(isPlatformEmail("owner@email.com")).toBe(false);
+  });
+
   it("returns false for a string with no domain", () => {
     expect(isPlatformEmail("not-an-email")).toBe(false);
   });
