@@ -308,7 +308,10 @@ field *before* setting it in Settings, and **clear the field back to blank
 before rolling either service back** — only still applies when rolling back
 to a build that predates `39dca90`. On any build from `39dca90` onward,
 rolling back just drops the newer key(s) on the older service and keeps the
-rest of the row intact, so no clearing step is needed.
+rest of the row intact, so no clearing step is needed. One caveat: saving
+Settings from the rolled-back build's UI rewrites the whole row, so the newer
+keys are then gone for good rather than temporarily ignored — re-enter them
+after rolling forward.
 
 ### 1. Create the project
 

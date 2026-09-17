@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mergeConfig, overridesSchema, salvageOverrides } from "@/lib/config/runtime";
+import { mergeConfig, overridesSchema, salvageBySection, salvageOverrides } from "@/lib/config/runtime";
 import { CATEGORIES } from "@/lib/config/categories";
 import { DEFAULT_EXCLUSION_CONFIG } from "@/lib/config/exclusion";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
@@ -219,5 +219,18 @@ describe("targeting overrides (chainHeadcountMin, preferredTitles, seniorities)"
     expect(() => overridesSchema.parse({ enrichment: { chainHeadcountMin: 1.5 } })).toThrow();
     expect(() => overridesSchema.parse({ enrichment: { chainHeadcountMin: ENRICH_CONFIG.chainHeadcountMinMax + 1 } })).toThrow();
     expect(overridesSchema.parse({ enrichment: { chainHeadcountMin: 1 } }).enrichment?.chainHeadcountMin).toBe(1);
+  });
+});
+
+describe("salvageBySection fallback keeps independently valid sections", () => {
+  it("drops only the broken section and names it", () => {
+    const r = salvageBySection({ enrichment: { monthlyCreditCap: 1000 }, exclusion: { costHardLimit: -5 } }, []);
+    expect(r.overrides).toEqual({ enrichment: { monthlyCreditCap: 1000 } });
+    expect(r.dropped).toEqual(["exclusion"]);
+  });
+  it("names every broken section", () => {
+    const r = salvageBySection({ enrichment: "nope", exclusion: { costHardLimit: -5 }, projects: { highFitThreshold: 75 } }, ["x"]);
+    expect(r.overrides).toEqual({ projects: { highFitThreshold: 75 } });
+    expect(r.dropped).toEqual(["x", "enrichment", "exclusion"]);
   });
 });

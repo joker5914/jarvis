@@ -169,16 +169,20 @@ function dropAt(root: object, path: readonly PropertyKey[]): string | null {
  * converge on) the offending field: drop whole top-level sections, one at a time, until the
  * remainder validates. A live server then keeps serving the sections that are intact instead of
  * discarding the entire row -- this should only ever trigger on a row `dropAt` can't handle. */
-function salvageBySection(candidate: Record<PropertyKey, unknown>, dropped: string[]): { overrides: ConfigOverrides; dropped: string[] } {
-  let attempt = candidate;
+export function salvageBySection(candidate: Record<PropertyKey, unknown>, dropped: string[]): { overrides: ConfigOverrides; dropped: string[] } {
+  // Keep every section that validates on its own; drop (and name) each one that does not. Judging
+  // sections independently means a valid `enrichment` never disappears because `exclusion` was
+  // the broken one, and `dropped` lists everything removed rather than only the last section.
+  const kept: Record<PropertyKey, unknown> = {};
+  const removed: string[] = [];
   for (const section of Object.keys(candidate)) {
-    const next = { ...attempt };
-    delete next[section];
-    const r = overridesSchema.safeParse(next);
-    if (r.success) return { overrides: r.data, dropped: [...dropped, section] };
-    attempt = next;
+    const r = overridesSchema.safeParse({ [section]: candidate[section] });
+    if (r.success) kept[section] = candidate[section];
+    else removed.push(section);
   }
-  return { overrides: {}, dropped: [...dropped, "<root>"] };
+  const r = overridesSchema.safeParse(kept);
+  if (r.success) return { overrides: r.data, dropped: [...dropped, ...removed] };
+  return { overrides: {}, dropped: [...dropped, ...removed, "<root>"] };
 }
 
 /**
