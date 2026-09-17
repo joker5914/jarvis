@@ -103,15 +103,102 @@ export function mergeConfig(o: ConfigOverrides): RuntimeConfig {
   };
 }
 
+/** Walk `path` from `root`, returning the object/array it lands on, or null if the path is absent
+ * or lands on a scalar. */
+function nodeAt(root: object, path: readonly PropertyKey[]): Record<PropertyKey, unknown> | null {
+  let node: unknown = root;
+  for (const key of path) {
+    if (node === null || typeof node !== "object") return null;
+    node = (node as Record<PropertyKey, unknown>)[key];
+  }
+  return node !== null && typeof node === "object" ? (node as Record<PropertyKey, unknown>) : null;
+}
+
+/** Delete the narrowest thing that owns a failing `issue.path`: normally the offending leaf field,
+ * but for an issue on an array *element* (or on a whole section, as a cross-field `.refine()`
+ * reports) the containing field, since deleting an element would leave a hole that fails again.
+ * Returns the dotted path actually removed, or null if there was nothing to remove. */
+function dropAt(root: object, path: readonly PropertyKey[]): string | null {
+  for (let end = path.length; end >= 1; end--) {
+    const parent = nodeAt(root, path.slice(0, end - 1));
+    if (!parent || Array.isArray(parent)) continue;
+    const key = path[end - 1];
+    if (key in parent) {
+      delete parent[key];
+      return path.slice(0, end).join(".");
+    }
+  }
+  return null;
+}
+
+/**
+ * Read path for a stored `AppConfig.overrides` row: salvage everything that still validates
+ * instead of discarding the row wholesale.
+ *
+ * A row is written by whichever build was deployed at the time, so a running server can meet keys
+ * its own `.strict()` schema doesn't know. That is not hypothetical: a `next start` serving a build
+ * that predated `enrichment.metroLocation` rejected the whole row over that one key and reverted
+ * *every* setting to its default -- the operator's `monthlyCreditCap: 1000` silently became 80,
+ * with only a "[config] ignoring invalid overrides" line to show for it. An unrecognized or
+ * malformed entry must cost only itself.
+ *
+ * Writes deliberately keep using `overridesSchema` directly (see `saveOverrides`), so the Settings
+ * API still rejects a typo'd key outright rather than quietly swallowing it.
+ */
+export function salvageOverrides(raw: unknown): { overrides: ConfigOverrides; dropped: string[] } {
+  const first = overridesSchema.safeParse(raw);
+  if (first.success) return { overrides: first.data, dropped: [] };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { overrides: {}, dropped: ["<root>"] };
+
+  const candidate = structuredClone(raw) as Record<PropertyKey, unknown>;
+  const dropped: string[] = [];
+
+  // Each pass removes at least one key, so the row converges; the bound is a guard against a
+  // pathological row, not an expected exit. Unrecognized keys go first and are handled separately
+  // because zod reports them as one issue *per object* (`path` = the object, `keys` = its unknown
+  // entries), unlike a value error whose `path` points at the value itself.
+  for (let pass = 0; pass < 20; pass++) {
+    const r = overridesSchema.safeParse(candidate);
+    if (r.success) return { overrides: r.data, dropped };
+
+    const unknowns = r.error.issues.filter((i) => i.code === "unrecognized_keys");
+    let removed = false;
+    for (const issue of unknowns) {
+      const parent = nodeAt(candidate, issue.path);
+      if (!parent) continue;
+      for (const key of issue.keys) {
+        if (!(key in parent)) continue;
+        delete parent[key];
+        dropped.push([...issue.path, key].join("."));
+        removed = true;
+      }
+    }
+    if (removed) continue;
+
+    // Whatever is left is a real validation failure, so drop what owns it.
+    for (const issue of r.error.issues) {
+      if (issue.path.length === 0) return { overrides: {}, dropped: [...dropped, "<root>"] };
+      const gone = dropAt(candidate, issue.path);
+      if (gone) {
+        dropped.push(gone);
+        removed = true;
+      }
+    }
+    if (!removed) return { overrides: {}, dropped: [...dropped, "<root>"] };
+  }
+  return { overrides: {}, dropped: [...dropped, "<root>"] };
+}
+
 export async function loadConfig(ownerId: string): Promise<RuntimeConfig> {
   const row = await prisma.appConfig.findUnique({ where: { ownerId } });
   if (!row) return mergeConfig({});
-  const parsed = overridesSchema.safeParse(row.overrides);
-  if (!parsed.success) {
-    console.warn(`[config] ignoring invalid AppConfig overrides for ${ownerId}: ${parsed.error.message}`);
-    return mergeConfig({});
+  const { overrides, dropped } = salvageOverrides(row.overrides);
+  if (dropped.length > 0) {
+    // Name exactly what was lost and say the rest survived -- the old wording ("ignoring invalid
+    // overrides") read as if one key had been skipped while in fact every setting had been reset.
+    console.warn(`[config] dropped unusable AppConfig entries for ${ownerId}, other settings still apply: ${dropped.join(", ")}`);
   }
-  return mergeConfig(parsed.data);
+  return mergeConfig(overrides);
 }
 
 export async function saveOverrides(ownerId: string, overrides: unknown): Promise<RuntimeConfig> {

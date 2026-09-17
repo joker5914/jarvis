@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mergeConfig, overridesSchema } from "@/lib/config/runtime";
+import { mergeConfig, overridesSchema, salvageOverrides } from "@/lib/config/runtime";
 import { CATEGORIES } from "@/lib/config/categories";
 import { DEFAULT_EXCLUSION_CONFIG } from "@/lib/config/exclusion";
 
@@ -58,5 +58,59 @@ describe("overridesSchema", () => {
     expect(() => overridesSchema.parse({ enrichment: { metroLocation: "TX" } })).toThrow(); // shorter than min(3)
     expect(() => overridesSchema.parse({ enrichment: { metroLocation: "x".repeat(81) } })).toThrow(); // longer than max(80)
     expect(overridesSchema.parse({ enrichment: { metroLocation: null } }).enrichment?.metroLocation).toBeNull();
+  });
+});
+
+describe("salvageOverrides", () => {
+  it("passes a valid row through untouched", () => {
+    const r = salvageOverrides({ projects: { highFitThreshold: 75 }, enrichment: { monthlyCreditCap: 1000 } });
+    expect(r.dropped).toEqual([]);
+    expect(r.overrides).toEqual({ projects: { highFitThreshold: 75 }, enrichment: { monthlyCreditCap: 1000 } });
+  });
+
+  // The Plan 9 production bug: `next start` was serving a build predating `enrichment.metroLocation`,
+  // so its `.strict()` schema rejected the stored row and `loadConfig` reverted *every* setting to
+  // defaults -- the user's monthlyCreditCap 1000 silently became 80. A key this build doesn't know
+  // must cost only itself. `futureSetting` stands in for "written by a newer build".
+  it("drops an unknown key inside a section and keeps its valid siblings", () => {
+    const r = salvageOverrides({ enrichment: { monthlyCreditCap: 1000, futureSetting: "x" } });
+    expect(r.overrides.enrichment?.monthlyCreditCap).toBe(1000);
+    expect(r.dropped).toEqual(["enrichment.futureSetting"]);
+  });
+
+  it("drops an unknown top-level section and keeps the recognized ones", () => {
+    const r = salvageOverrides({ futureSection: { a: 1 }, projects: { highFitThreshold: 75 } });
+    expect(r.overrides.projects?.highFitThreshold).toBe(75);
+    expect(r.dropped).toEqual(["futureSection"]);
+  });
+
+  it("drops only the offending leaf when a value is out of range", () => {
+    const r = salvageOverrides({ enrichment: { maxPeople: 6, monthlyCreditCap: 1000 } });
+    expect(r.overrides.enrichment).toEqual({ monthlyCreditCap: 1000 });
+    expect(r.dropped).toEqual(["enrichment.maxPeople"]);
+  });
+
+  it("drops the whole section for a cross-field refine failure, but not unrelated sections", () => {
+    const r = salvageOverrides({ projects: { highFitThreshold: 20, mediumFitThreshold: 30 }, exclusion: { chains: ["bella"] } });
+    expect(r.overrides.projects).toBeUndefined();
+    expect(r.overrides.exclusion?.chains).toEqual(["bella"]);
+    expect(r.dropped).toEqual(["projects"]);
+  });
+
+  it("drops a bad array field rather than the section holding it", () => {
+    const r = salvageOverrides({ exclusion: { chains: ["x".repeat(81)], costHardLimit: 5 } });
+    expect(r.overrides.exclusion).toEqual({ costHardLimit: 5 });
+    expect(r.dropped).toEqual(["exclusion.chains"]);
+  });
+
+  it("falls back to defaults when the row is not an object at all", () => {
+    expect(salvageOverrides("nonsense")).toEqual({ overrides: {}, dropped: ["<root>"] });
+    expect(salvageOverrides(null)).toEqual({ overrides: {}, dropped: ["<root>"] });
+  });
+
+  it("does not mutate the caller's object", () => {
+    const raw = { enrichment: { monthlyCreditCap: 1000, futureSetting: "x" } };
+    salvageOverrides(raw);
+    expect(raw.enrichment.futureSetting).toBe("x");
   });
 });

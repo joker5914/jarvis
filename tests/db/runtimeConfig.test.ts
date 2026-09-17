@@ -41,6 +41,19 @@ describe("runtime config", () => {
     expect(c.exclusion.chains).toEqual(["bella"]);
   });
 
+  // Reproduces the Plan 9 production failure at the DB boundary: a row written by a newer build
+  // carries a key this build's `.strict()` schema has never heard of. It used to sink the whole
+  // row -- monthlyCreditCap reverted to the 80 default. The unknown key must cost only itself.
+  // Written via prisma directly because `saveOverrides` is strict and would reject it by design.
+  it("keeps the valid settings in a row that also carries a key this build does not know", async () => {
+    await prisma.appConfig.create({
+      data: { ownerId: OWNER, overrides: { enrichment: { monthlyCreditCap: 1000 }, projects: { highFitThreshold: 75 }, futureSection: { a: 1 } } },
+    });
+    const c = await loadConfig(OWNER);
+    expect(c.enrichment.monthlyCreditCap).toBe(1000);
+    expect(c.projects.highFitThreshold).toBe(75);
+  });
+
   it("a disabled category is not searched, and re-enabling it with a new chain override excludes the matching business", async () => {
     // First search: nail_salon disabled, plus a chain override that never matches anything the
     // fixture generates (the fake discovery only yields "Bella Nails & Spa" for the promote
