@@ -101,12 +101,52 @@ describe("creditUsage", () => {
     expect(init.method).toBe("POST");
     expect(url).not.toContain("api_key");
   });
-  it("returns null on a non-200 and on a network error, and does not memoize failures", async () => { /* 403 → null; then throw → null; then 200 → object; 3 fetch calls */ });
-  it("returns null without a key", async () => { /* getProviderKey mocked to null → no fetch */ });
+  it("returns null on a non-200 and on a network error, and does not memoize failures", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ error: "forbidden" }, 403))
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce(json(body, 200));
+    vi.stubGlobal("fetch", fetchMock);
+    const p = new ApolloEnrichmentProvider();
+    expect(await p.creditUsage()).toBeNull();
+    expect(await p.creditUsage()).toBeNull();
+    expect(await p.creditUsage()).toMatchObject({ leftOver: 2508 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+  it("returns null without a key and makes no request", async () => {
+    vi.mocked(getProviderKey).mockResolvedValueOnce(null); // the file already mocks @/lib/providers/keys
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    expect(await new ApolloEnrichmentProvider().creditUsage()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 ```
-`tests/unit/enrichment/credits.test.ts` — `creditStatus` unit test with a stubbed `creditsUsed` (2) and a stubbed provider returning `leftOver: 5`, cap 500 → `remaining` is `min(500-2, 5) = 5`; with provider `null` → `remaining 498`, `apollo null`; when `cycleRenewsOn` is null and live `cycleEnd` is `2026-10-17T04:58:17Z`, `cycleRenewsOn` in the result is the local calendar date of `cycleEnd` in `REGION.timezone` (`"2026-10-16"`), and `cycleStart` is computed from that day.
-`tests/unit/config/runtime` — `monthlyCreditCap: 5000` accepted, `5001` rejected.
+`tests/unit/enrichment/credits.test.ts` (exists) — add:
+```ts
+describe("creditStatus with a live Apollo balance", () => {
+  const cfg = (cap: number, cycleRenewsOn: string | null) => ({ enrichment: { maxPeople: 1, monthlyCreditCap: cap, cycleRenewsOn } }) as unknown as RuntimeConfig;
+  const provider = (usage: ApolloCreditUsage | null) => ({ creditUsage: async () => usage }) as unknown as EnrichmentProvider;
+  const live: ApolloCreditUsage = { limit: 2510, consumed: 2, leftOver: 5, cycleStart: new Date("2026-09-17T04:58:17Z"), cycleEnd: new Date("2026-10-17T04:58:17Z"), fetchedAt: new Date() };
+  const at = new Date("2026-09-20T12:00:00Z");
+  // creditsUsed hits Prisma; creditStatus takes a 5th `deps` param `{ creditsUsed }` defaulting to the real one.
+  const deps = { creditsUsed: async () => 2 };
+
+  it("remaining is the smaller of the app cap and Apollo's balance", async () => {
+    const s = await creditStatus("o", cfg(500, "2026-10-16"), at, provider(live), deps);
+    expect(s).toMatchObject({ used: 2, cap: 500, remaining: 5, apollo: { limit: 2510, consumed: 2, leftOver: 5, cycleEnd: "2026-10-16" } });
+  });
+  it("falls back to the app cap alone when Apollo is unavailable", async () => {
+    const s = await creditStatus("o", cfg(500, "2026-10-16"), at, provider(null), deps);
+    expect(s).toMatchObject({ remaining: 498, apollo: null });
+  });
+  it("derives the renewal day from Apollo's cycle end (local date) when Settings leaves it blank", async () => {
+    const s = await creditStatus("o", cfg(500, null), at, provider(live), deps);
+    expect(s.cycleRenewsOn).toBe("2026-10-16"); // 04:58Z on the 17th is 11:58 PM on the 16th in REGION.timezone
+    expect(s.cycleStart.toISOString()).toBe(creditCycleStart(at, "2026-10-16", REGION.timezone).toISOString());
+  });
+});
+```
+`tests/unit/config/runtime.test.ts` (exists) — `monthlyCreditCap: 5000` accepted, `5001` rejected by `overridesSchema`.
 `tests/db/businessEnrichRoute.test.ts` "credits for a fresh owner" — add `apollo: null` to the expected object (fake mode returns null unless the fake is primed; see Step 3).
 
 - [ ] **Step 2: Run them, expect failures** — `npm test -- apollo credits runtime`.
@@ -144,11 +184,15 @@ async creditUsage(): Promise<ApolloCreditUsage | null> {
 
 `src/lib/enrichment/credits.ts`:
 ```ts
-export async function creditStatus(ownerId: string, cfg: RuntimeConfig, now = new Date(), provider: EnrichmentProvider = getProviders().enrichment): Promise<CreditStatus> {
+export async function creditStatus(
+  ownerId: string, cfg: RuntimeConfig, now = new Date(),
+  provider: EnrichmentProvider = getProviders().enrichment,
+  deps: { creditsUsed: typeof creditsUsed } = { creditsUsed },
+): Promise<CreditStatus> {
   const live = await provider.creditUsage();
   const cycleRenewsOn = cfg.enrichment.cycleRenewsOn ?? (live ? localDateString(live.cycleEnd, REGION.timezone) : null);
   const cycleStart = creditCycleStart(now, cycleRenewsOn, REGION.timezone);
-  const used = await creditsUsed(ownerId, cycleStart);
+  const used = await deps.creditsUsed(ownerId, cycleStart);
   const cap = cfg.enrichment.monthlyCreditCap;
   const remaining = Math.max(0, Math.min(cap - used, live ? live.leftOver : Number.POSITIVE_INFINITY));
   return { used, cap, remaining, cycleStart, cycleRenewsOn, apollo: live ? { limit: live.limit, consumed: live.consumed, leftOver: live.leftOver, cycleEnd: localDateString(live.cycleEnd, REGION.timezone) } : null };
@@ -242,7 +286,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 `src/lib/providers/fake.ts`: returns `{ people: [...same two...], totalFound: 2, scope: q.city && q.state ? "city" : "any" }`.
 
-`src/lib/jobs/enrich.ts` `runEnrich`: `const { city, state } = regionFromAddress(b.formattedAddress); const search = await …searchPeople({ domain, orgName: b.name, city, state }, maxPeople); const people = search.people;` — replace `found = people.length` with `search.totalFound` for the "out of N found" wording only when `search.totalFound > people.length` would misstate examined candidates: keep `found = people.length` for the "checked" logic (Task 7) and append ` (${search.totalFound} at ${scopeLabel} in Apollo)` is over-engineering — instead append a short scope suffix to the success and none-had-email messages: ` (matched in ${city}, ${state})` for `scope === "city"`, ` (matched in ${stateNameFor(state)})` for `"state"`, nothing for `"any"`.
+`src/lib/jobs/enrich.ts` `runEnrich`: `const { city, state } = regionFromAddress(b.formattedAddress); const search = await …searchPeople({ domain, orgName: b.name, city, state }, maxPeople); const people = search.people;`. Keep `found = people.length` and the Task 7 "checked" logic exactly as they are (they describe the page we examined). Append a scope suffix to the success and none-had-email messages only: ` (matched in ${city}, ${state})` when `search.scope === "city"`, ` (matched in ${stateNameFor(state)})` when `"state"`, nothing when `"any"`. `search.totalFound` is consumed by Task 3, not by any message here.
 
 `tests/db/enrichCredits.test.ts`: its subclass overriding `searchPeople` must return the result object.
 
@@ -257,7 +301,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 - Modify: `src/lib/config/enrichment.ts` (`chainHeadcountMin`), `src/lib/config/exclusion.ts` (seed chains)
 - Create: `src/lib/jobs/rescore.ts`, `scripts/chain-sweep.ts`
 - Modify: `src/lib/jobs/enrich.ts` (headcount guard), `src/app/api/businesses/[id]/route.ts` (PATCH `markAsChain`), `src/components/leads/LeadDetail.tsx` (action)
-- Test: `tests/unit/scoring/smbFit.test.ts` (seed additions), `tests/db/rescore.test.ts` (new), `tests/db/enrich.test.ts`, `tests/db/businessRoute.test.ts` (or the file that tests the PATCH route; create if absent)
+- Test: `tests/unit/scoring/smbFit.test.ts` (seed additions), `tests/db/rescore.test.ts` (new), `tests/db/enrich.test.ts`, `tests/db/businessPatchRoute.test.ts` (new — no db test covers the PATCH route today; mirror the request/context helpers in `tests/db/businessEnrichRoute.test.ts`)
 
 **Why:** Zumiez, Pet Paradise and H&R Block escaped chain exclusion (name-list only). Apollo's `total_entries` for a domain is a free national headcount: 6,579 for hrblock.com. Franchise brands stay eligible (kidsrkids.com is 139; the local owner is a real SMB prospect), so the threshold is deliberately high.
 
@@ -280,7 +324,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 `tests/db/enrich.test.ts`: fake returns `totalFound: 6579` for a business with a domain → `skipped: "chain"`, `enrich` calls 0, exclusion `enterprise`, reason `chain:apollo_headcount:6579`, one activity row, `lastEnrichedAt` null; `totalFound: 139` → proceeds normally.
 
-PATCH route test: `markAsChain: true` on "Zumiez" → 200, `rescore.newlyExcluded ≥ 1`, `AppConfig.overrides.exclusion.chains` contains `"zumiez"`; a second call is idempotent (no duplicate entry).
+`tests/db/businessPatchRoute.test.ts`: `markAsChain: true` on "Zumiez" → 200, `rescore.newlyExcluded ≥ 1`, `AppConfig.overrides.exclusion.chains` contains `"zumiez"`; a second call is idempotent (no duplicate entry).
 
 - [ ] **Step 2: Run, expect failures.**
 
