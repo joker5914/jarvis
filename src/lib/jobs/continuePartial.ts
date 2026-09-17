@@ -37,7 +37,10 @@ export async function continuePartialSearches(enqueue: typeof enqueueZipSearch =
       // Only mark the row "queued" once the job is actually accepted — flipping status first and
       // then having enqueue fail or decline would leave the search stuck showing "queued" with
       // nothing ever going to run it.
-      await prisma.search.update({ where: { id: search.id }, data: { status: "queued", error: null } });
+      // Guarded on the status we selected: if the job started (or, in JOB_MODE=inline, already
+      // finished) before this write, the job's own status wins and we must not stamp "queued"
+      // over it.
+      await prisma.search.updateMany({ where: { id: search.id, status: "complete" }, data: { status: "queued", error: null } });
       queued.push(search.id);
     } catch (e) {
       console.error(`[continue-partial] failed to queue search ${search.id}`, e);
