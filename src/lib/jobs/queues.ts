@@ -6,6 +6,7 @@ export const QUEUES = {
   websiteRecheck: "website-recheck",
   scannerTick: "scanner-tick",
   enrich: "enrich",
+  continuePartial: "continue-partial",
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -30,6 +31,9 @@ export const QUEUE_OPTIONS: Record<QueueName, { expireInSeconds: number; policy:
   [QUEUES.websiteRecheck]: { expireInSeconds: 3600, policy: "exclusive" },
   [QUEUES.scannerTick]: { expireInSeconds: 300, policy: "exclusive" },
   [QUEUES.enrich]: { expireInSeconds: 600, policy: "stately" },
+  // Nightly sweep of every complete-but-partial search; a single run re-queues all of them, so
+  // there is never more than one in flight at a time, same as tdlrSync/scannerTick.
+  [QUEUES.continuePartial]: { expireInSeconds: 600, policy: "exclusive" },
 };
 
 export type JobOrigin = "manual" | "scanner";
@@ -40,6 +44,7 @@ export type PromoteBatchJobData = Record<string, never>;
 export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string; origin?: JobOrigin };
 export type ScannerTickJobData = Record<string, never>;
 export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean; people?: number };
+export type ContinuePartialJobData = Record<string, never>;
 
 // Minimal structural type for the pg-boss instance this helper needs: avoids importing the
 // `pg-boss` package (and its types) into every caller just to type one parameter.

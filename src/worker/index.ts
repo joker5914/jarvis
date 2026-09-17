@@ -3,6 +3,7 @@ import {
   ensureQueue,
   QUEUES,
   QUEUE_OPTIONS,
+  type ContinuePartialJobData,
   type EnrichJobData,
   type PromoteBatchJobData,
   type PromoteJobData,
@@ -16,6 +17,7 @@ import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
 import { handleEnrichJob } from "@/lib/jobs/enrichHandler";
+import { continuePartialSearches } from "@/lib/jobs/continuePartial";
 import { JobPausedError, recheckPauseCheck, scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
@@ -54,6 +56,15 @@ async function main() {
   // singletonKey matches the manual "Sync now" key so a cron fire can never
   // queue a second run behind one already in flight.
   await boss.schedule(QUEUES.tdlrSync, "0 3 * * *", {}, { tz: REGION.timezone, singletonKey: "tdlr" });
+
+  await boss.work<ContinuePartialJobData>(QUEUES.continuePartial, { batchSize: 1 }, async () => {
+    const r = await continuePartialSearches();
+    console.log(`[continue-partial] queued ${r.queued.length}`);
+  });
+  // Shortly after the Google daily budget resets at midnight in the configured region, so a
+  // search that completed on Search.pendingDiscovery > 0 the day before continues automatically
+  // with no user action needed. singletonKey mirrors tdlrSync's above.
+  await boss.schedule(QUEUES.continuePartial, "15 0 * * *", {}, { tz: REGION.timezone, singletonKey: "continue-partial" });
 
   await boss.work<PromoteJobData>(QUEUES.promote, { batchSize: 1 }, async ([job]) => {
     console.log(`[promote] start ${job.data.businessId}`);
