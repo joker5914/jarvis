@@ -326,7 +326,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                   ) : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
                 </Button>
                 {credits && (
-                  <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
+                  <span className="whitespace-nowrap text-xs text-muted-foreground" data-testid="enrich-estimate">
                     ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
                   </span>
                 )}
