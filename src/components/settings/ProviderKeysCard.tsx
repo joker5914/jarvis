@@ -11,6 +11,18 @@ import { Label } from "@/components/ui/label";
 import { formatDate } from "@/lib/format";
 import type { CreditStatus, ProviderEntry } from "./types";
 
+function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/** Formats a `YYYY-MM-DD` local-date string as "Oct 16" without going through the viewer's own
+ * timezone (a plain `new Date("2026-10-16")` is midnight UTC, which a US timezone would render
+ * as the previous day) — forces UTC on both the parse and the format so the date never shifts. */
+function formatMonthDay(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 const STATUS_LABEL: Record<ProviderEntry["source"], string> = {
   env: "From environment",
   stored: "Stored",
@@ -79,9 +91,21 @@ function ProviderRow({ p, credits, onChanged }: { p: ProviderEntry; credits?: Cr
         </span>
       </div>
       {p.provider === "apollo" && credits && (
-        <p className="text-xs text-muted-foreground" data-testid="credits-used">
-          Credits used this cycle: {credits.used}/{credits.cap} · cycle started {formatDate(credits.cycleStart)}
-        </p>
+        credits.apollo ? (
+          <div className="space-y-0.5" data-testid="credits-used">
+            <p className="text-xs text-muted-foreground">
+              Apollo account: {formatCount(credits.apollo.leftOver)} of {formatCount(credits.apollo.limit)} credits left · renews{" "}
+              {formatMonthDay(credits.apollo.cycleEnd)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              This app: {credits.used} of {credits.cap} this cycle
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground" data-testid="credits-used">
+            Credits used this cycle: {credits.used}/{credits.cap} · cycle started {formatDate(credits.cycleStart)}
+          </p>
+        )
       )}
       {p.source === "env" && p.hasStoredKey && (
         <p className="text-xs text-amber-600 dark:text-amber-400">

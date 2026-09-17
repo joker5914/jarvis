@@ -45,4 +45,9 @@ describe("overridesSchema", () => {
     expect(() => overridesSchema.parse({ enrichment: { maxPeople: 6 } })).toThrow();
     expect(() => overridesSchema.parse({ enrichment: { cycleRenewsOn: "15 Oct" } })).toThrow();
   });
+  it("raises the monthly credit cap ceiling to 5000", () => {
+    const ok = overridesSchema.parse({ enrichment: { monthlyCreditCap: 5000 } });
+    expect(ok.enrichment?.monthlyCreditCap).toBe(5000);
+    expect(() => overridesSchema.parse({ enrichment: { monthlyCreditCap: 5001 } })).toThrow();
+  });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/providers/budget", () => ({ withBudget: async (_p: string, fn: () => Promise<unknown>) => fn() }));
-vi.mock("@/lib/providers/keys", () => ({ getProviderKey: async () => "test-key" }));
+vi.mock("@/lib/providers/keys", () => ({ getProviderKey: vi.fn(async () => "test-key") }));
 // apollo.ts persists a plan block to ProviderConfig (see markPlanBlocked/apolloPlanBlocked) so
 // the web process — which never calls Apollo directly — can see a block the worker discovered.
 // This unit suite only exercises the in-process memo, so Prisma is mocked out entirely; the real
@@ -19,7 +19,15 @@ vi.mock("@/lib/db", () => ({
 }));
 
 import { prisma } from "@/lib/db";
-import { ApolloEnrichmentProvider, apolloPlanBlocked, __setPlanBlockedForTests, __resetPlanBlockedForTests, PEOPLE_SEARCH_PATH } from "@/lib/providers/apollo";
+import { getProviderKey } from "@/lib/providers/keys";
+import {
+  ApolloEnrichmentProvider,
+  apolloPlanBlocked,
+  __setPlanBlockedForTests,
+  __resetPlanBlockedForTests,
+  __resetCreditUsageForTests,
+  PEOPLE_SEARCH_PATH,
+} from "@/lib/providers/apollo";
 import { ProviderPlanError } from "@/lib/providers/errors";
 
 const providerConfigMock = prisma.providerConfig as unknown as {
@@ -411,5 +419,54 @@ describe("ApolloEnrichmentProvider.enrichPerson", () => {
     expect(await new ApolloEnrichmentProvider().enrichPerson("nope")).toBeNull();
     mockFetch(() => json({ person: { id: "x", match_confidence: "none" } }));
     expect(await new ApolloEnrichmentProvider().enrichPerson("x")).toBeNull();
+  });
+});
+
+describe("ApolloEnrichmentProvider.creditUsage", () => {
+  const usageBody = {
+    credit_usage_stats: { lead_credit: { limit: 2510, consumed: 2, left_over: 2508 } },
+    current_credit_cycle: { start_date: "2026-09-17T04:58:17.000+00:00", end_date: "2026-10-17T04:58:17.000+00:00" },
+  };
+
+  beforeEach(() => {
+    __resetCreditUsageForTests();
+    __resetPlanBlockedForTests();
+  });
+
+  it("maps lead_credit and the cycle dates; memoizes for the TTL", async () => {
+    const fetchMock = vi.fn(async () => json(usageBody, 200));
+    vi.stubGlobal("fetch", fetchMock);
+    const p = new ApolloEnrichmentProvider();
+    const u1 = await p.creditUsage();
+    expect(u1).toMatchObject({ limit: 2510, consumed: 2, leftOver: 2508 });
+    expect(u1!.cycleEnd.toISOString()).toBe("2026-10-17T04:58:17.000Z");
+    await p.creditUsage();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // memoized
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.apollo.io/api/v1/usage_stats/credit_usage_stats");
+    expect(init.method).toBe("POST");
+    expect(url).not.toContain("api_key");
+  });
+
+  it("returns null on a non-200 and on a network error, and does not memoize failures", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ error: "forbidden" }, 403))
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce(json(usageBody, 200));
+    vi.stubGlobal("fetch", fetchMock);
+    const p = new ApolloEnrichmentProvider();
+    expect(await p.creditUsage()).toBeNull();
+    expect(await p.creditUsage()).toBeNull();
+    expect(await p.creditUsage()).toMatchObject({ leftOver: 2508 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns null without a key and makes no request", async () => {
+    vi.mocked(getProviderKey).mockResolvedValueOnce(null); // the file already mocks @/lib/providers/keys
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await new ApolloEnrichmentProvider().creditUsage()).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

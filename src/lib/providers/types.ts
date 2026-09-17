@@ -121,6 +121,17 @@ export type EnrichPerson = {
   orgName: string | null;
 };
 
+/** Apollo's account-wide lead-credit balance and current billing cycle, from
+ * `usage_stats/credit_usage_stats`. */
+export type ApolloCreditUsage = {
+  limit: number; // lead_credit.limit
+  consumed: number; // lead_credit.consumed
+  leftOver: number; // lead_credit.left_over
+  cycleStart: Date; // current_credit_cycle.start_date
+  cycleEnd: Date; // current_credit_cycle.end_date
+  fetchedAt: Date;
+};
+
 export interface EnrichmentProvider {
   /**
    * Cheap people lookup by employer domain (fallback: org name + city). Never returns emails.
@@ -134,6 +145,9 @@ export interface EnrichmentProvider {
   searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]>;
   /** Paid reveal for one person (email, LinkedIn). Null when Apollo has no match. */
   enrichPerson(apolloId: string): Promise<EnrichPerson | null>;
+  /** Live account balance (0 credits to call). Null when unavailable (no key, non-200, network
+   * error). Memoized per process for ENRICH_CONFIG.creditUsageTtlMs. */
+  creditUsage(): Promise<ApolloCreditUsage | null>;
 }
 
 export type Providers = {

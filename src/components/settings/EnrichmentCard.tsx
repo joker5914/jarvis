@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import type { EnrichmentConfig } from "./types";
 
 const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
@@ -12,7 +13,17 @@ const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
 // in the (portalled, closed-by-default) popup.
 const MAX_PEOPLE_ITEMS = MAX_PEOPLE_OPTIONS.map((n) => ({ value: String(n), label: `${n} ${n === 1 ? "person" : "people"}` }));
 
-export function EnrichmentCard({ value, onChange }: { value: EnrichmentConfig; onChange: (next: EnrichmentConfig) => void }) {
+export function EnrichmentCard({
+  value,
+  onChange,
+  renewalPlaceholder,
+}: {
+  value: EnrichmentConfig;
+  onChange: (next: EnrichmentConfig) => void;
+  /** Apollo's own cycle-end date (`YYYY-MM-DD`), shown as the renewal date field's placeholder
+   * when Settings hasn't set one explicitly — see credits.apollo.cycleEnd. */
+  renewalPlaceholder?: string | null;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -40,7 +51,7 @@ export function EnrichmentCard({ value, onChange }: { value: EnrichmentConfig; o
             id="enrichment-cap"
             type="number"
             min={0}
-            max={1000}
+            max={ENRICH_CONFIG.monthlyCreditCapMax}
             value={value.monthlyCreditCap}
             onChange={(e) => onChange({ ...value, monthlyCreditCap: Number(e.target.value) })}
             data-testid="enrichment-cap"
@@ -53,8 +64,10 @@ export function EnrichmentCard({ value, onChange }: { value: EnrichmentConfig; o
             type="date"
             value={value.cycleRenewsOn ?? ""}
             onChange={(e) => onChange({ ...value, cycleRenewsOn: e.target.value || null })}
+            placeholder={renewalPlaceholder ?? undefined}
             data-testid="enrichment-renews"
           />
+          <p className="text-xs text-muted-foreground">Leave blank to use Apollo&apos;s cycle</p>
         </div>
       </CardContent>
     </Card>

@@ -81,7 +81,7 @@
   ```
 - `ENRICH_CONFIG` gains `monthlyCreditCapMax: 5000` and `creditUsageTtlMs: 5 * 60_000`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/unit/providers/apollo.test.ts` — add:
 ```ts
@@ -149,9 +149,9 @@ describe("creditStatus with a live Apollo balance", () => {
 `tests/unit/config/runtime.test.ts` (exists) — `monthlyCreditCap: 5000` accepted, `5001` rejected by `overridesSchema`.
 `tests/db/businessEnrichRoute.test.ts` "credits for a fresh owner" — add `apollo: null` to the expected object (fake mode returns null unless the fake is primed; see Step 3).
 
-- [ ] **Step 2: Run them, expect failures** — `npm test -- apollo credits runtime`.
+- [x] **Step 2: Run them, expect failures** — `npm test -- apollo credits runtime`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/lib/config/enrichment.ts`: add `monthlyCreditCapMax: 5000`, `creditUsageTtlMs: 5 * 60_000`; update the doc comment (the user is on a paid plan with 2,500 credits; the default cap stays 80 until the user raises it).
 
@@ -204,8 +204,8 @@ Route: unchanged shape plus `apollo`. `assertCredits` in both enrich routes alre
 
 UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists: `Apollo account: 2,508 of 2,510 credits left · renews Oct 16` and `This app: 2 of 500 this cycle`; otherwise the existing single line. `EnrichmentCard.tsx`: cap input `max={ENRICH_CONFIG.monthlyCreditCapMax}` (import the constant); renewal date label gets helper text `Leave blank to use Apollo's cycle` and shows the live date as placeholder when available (pass `credits?.apollo?.cycleEnd` down from `SettingsView`). `src/components/settings/types.ts` `CreditStatus` gains `apollo`.
 
-- [ ] **Step 4: Run** `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run test:db` — all exit 0.
-- [ ] **Step 5: Commit** `feat(credits): live Apollo balance and cycle in Settings; cap ceiling 5000; remaining = min(app cap, Apollo balance)`.
+- [x] **Step 4: Run** `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run test:db` — all exit 0.
+- [x] **Step 5: Commit** `feat(credits): live Apollo balance and cycle in Settings; cap ceiling 5000; remaining = min(app cap, Apollo balance)`.
 
 ---
 

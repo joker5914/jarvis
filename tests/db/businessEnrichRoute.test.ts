@@ -331,7 +331,7 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     const res = await creditsGet({} as NextRequest, noCtx);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ used: 0, cap: 80, remaining: 80, maxPeople: 1 });
+    expect(body).toMatchObject({ used: 0, cap: 80, remaining: 80, maxPeople: 1, apollo: null });
     expect(body.cycleStart).toBeTruthy();
   });
 

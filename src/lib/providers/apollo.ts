@@ -4,12 +4,14 @@ import { ProviderNotConfiguredError, ProviderPlanError } from "./errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { normalizeName } from "@/lib/jobs/shared";
 import { prisma } from "@/lib/db";
-import type { EnrichPerson, EnrichmentProvider } from "./types";
+import { discardBody } from "@/lib/net/safeFetch";
+import type { ApolloCreditUsage, EnrichPerson, EnrichmentProvider } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
 export const ORG_SEARCH_PATH = "/mixed_companies/search";
 export const PEOPLE_SEARCH_PATH = "/mixed_people/api_search";
 export const PEOPLE_MATCH_PATH = "/people/match";
+export const CREDIT_USAGE_PATH = "/usage_stats/credit_usage_stats";
 
 const PLAN_BLOCK_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -153,6 +155,17 @@ export function __setPlanBlockedForTests(path: string, untilEpochMs: number, det
  * forced block from one test doesn't leak into the next. */
 export function __resetPlanBlockedForTests(): void {
   clearPlanBlockMemo();
+}
+
+/** Process-wide memo for creditUsage(), separate from the plan-block memo above: a successful
+ * fetch is cached for ENRICH_CONFIG.creditUsageTtlMs so Settings/route polling doesn't re-hit
+ * Apollo on every request; a failure is never memoized (see creditUsage()'s doc comment). */
+let creditUsageMemo: ApolloCreditUsage | null = null;
+
+/** Test-only: clears the creditUsage() memo. Call in beforeEach/afterEach alongside
+ * __resetPlanBlockedForTests so a memoized balance from one test doesn't leak into the next. */
+export function __resetCreditUsageForTests(): void {
+  creditUsageMemo = null;
 }
 
 type ApolloErrorBody = {
@@ -353,5 +366,49 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       hasEmail: !!p.email,
       orgName: p.organization?.name ?? null,
     };
+  }
+
+  /** Live account balance and current billing cycle from usage_stats/credit_usage_stats. Not
+   * wrapped in withBudget(): it is a status read (costs no Apollo credits and isn't gated by the
+   * app's own daily-call budget), not a data call. Not gated by checkPlanBlocked() either — a
+   * plan block on People Search/Enrichment says nothing about whether this status endpoint is
+   * reachable, so a fresh call is always attempted (subject to its own TTL memo below). Never
+   * throws: every failure path (no key, non-2xx, network error, unexpected body shape) resolves
+   * to null so Settings can render "balance unavailable" instead of an error boundary. */
+  async creditUsage(): Promise<ApolloCreditUsage | null> {
+    if (creditUsageMemo && Date.now() - creditUsageMemo.fetchedAt.getTime() < ENRICH_CONFIG.creditUsageTtlMs) {
+      return creditUsageMemo;
+    }
+    const key = await getProviderKey("apollo");
+    if (!key) return null;
+    try {
+      const res = await fetch(`${BASE}${CREDIT_USAGE_PATH}`, {
+        method: "POST",
+        headers: { accept: "application/json", "x-api-key": key },
+      });
+      if (!res.ok) {
+        await discardBody(res);
+        return null;
+      }
+      const body = (await res.json()) as {
+        credit_usage_stats?: { lead_credit?: { limit?: number; consumed?: number; left_over?: number } };
+        current_credit_cycle?: { start_date?: string; end_date?: string };
+      };
+      const lc = body.credit_usage_stats?.lead_credit;
+      const cy = body.current_credit_cycle;
+      if (!lc || !cy?.start_date || !cy.end_date) return null;
+      creditUsageMemo = {
+        limit: lc.limit ?? 0,
+        consumed: lc.consumed ?? 0,
+        leftOver: lc.left_over ?? 0,
+        cycleStart: new Date(cy.start_date),
+        cycleEnd: new Date(cy.end_date),
+        fetchedAt: new Date(),
+      };
+      return creditUsageMemo;
+    } catch (e) {
+      console.error("[apollo] credit usage unavailable", (e as Error).message);
+      return null;
+    }
   }
 }

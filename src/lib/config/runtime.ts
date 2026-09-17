@@ -46,7 +46,7 @@ export const overridesSchema = z
     enrichment: z
       .object({
         maxPeople: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
-        monthlyCreditCap: z.number().int().min(0).max(1000).optional(),
+        monthlyCreditCap: z.number().int().min(0).max(ENRICH_CONFIG.monthlyCreditCapMax).optional(),
         cycleRenewsOn: z
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/)

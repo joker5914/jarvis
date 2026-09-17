@@ -46,6 +46,8 @@ export type CreditStatus = {
   cap: number;
   remaining: number;
   cycleStart: string;
+  /** Apollo's own account-wide balance and cycle end (ISO date), or null when unavailable. */
+  apollo: { limit: number; consumed: number; leftOver: number; cycleEnd: string } | null;
 };
 
 export type SettingsPayload = {

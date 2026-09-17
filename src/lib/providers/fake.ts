@@ -1,6 +1,7 @@
 import { REGION } from "@/lib/config/region";
 import type { PageFetcher } from "@/lib/extract/website";
 import type {
+  ApolloCreditUsage,
   DiscoveredBusiness,
   DiscoveryProvider,
   EnrichPerson,
@@ -120,6 +121,9 @@ export class FakeValidationProvider implements ValidationProvider {
 
 export class FakeEnrichmentProvider implements EnrichmentProvider {
   calls = { search: 0, enrich: 0, orgSearch: 0 };
+  /** Tests set this to simulate a live Apollo balance; defaults to null (unavailable), matching
+   * fake mode's "no live Apollo account" stance — see creditUsage() below. */
+  fakeCreditUsage: ApolloCreditUsage | null = null;
   // `max` unused (see EnrichmentProvider.searchPeople's doc comment): the fake mirrors Apollo's
   // real behavior of returning the full ranked page and leaving the `max` slice to the caller.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability
@@ -142,6 +146,9 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
     const [, domain, role] = m;
     if (role === "gm") return { apolloId, firstName: "Lee", lastName: "Tran", name: "Lee Tran", title: "General Manager", email: null, emailStatus: null, linkedinUrl: "https://www.linkedin.com/in/lee-tran-fake", hasEmail: false, orgName: null };
     return { apolloId, firstName: "Maria", lastName: "Lopez", name: "Maria Lopez", title: "Owner", email: `owner@${domain}`, emailStatus: "verified", linkedinUrl: "https://www.linkedin.com/in/maria-lopez-fake", hasEmail: true, orgName: null };
+  }
+  async creditUsage(): Promise<ApolloCreditUsage | null> {
+    return this.fakeCreditUsage ?? null;
   }
 }
 
