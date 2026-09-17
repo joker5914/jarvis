@@ -206,6 +206,27 @@ name check, reusing `orgNameMatches` from `src/lib/providers/apollo.ts`.
 
 **Known limitation (follow-up, not this task):** national chains that escaped chain exclusion (e.g. Zumiez) match by name and domain and will spend a credit on HQ staff; and franchise brand domains return HQ people — People Search supports `person_locations[]`, to be used in a later task to prefer people in the business's city.
 
+### Task 5: Platform support addresses are not lead contacts
+
+**Why:** after the cleanup re-scrape, businesses whose site is hosted on a booking/site-builder
+platform carry that platform's support addresses as contacts (`support@vagaro.com`,
+`safeguarding@vagaro.com`, `hello@booksy.com`, `filler@godaddy.com`). They pass syntax and MX
+checks, score the business green, and are useless for outreach.
+
+**Files:**
+- Create: `src/lib/extract/platformDomains.ts` — `PLATFORM_EMAIL_DOMAINS: ReadonlySet<string>` and `isPlatformEmail(email: string): boolean` (matches the domain or any subdomain of it).
+- Modify: `src/lib/extract/normalize.ts` (`normalizeEmail` returns null for platform emails) or `src/lib/extract/website.ts` (filter before emitting) — whichever keeps `normalizeEmail`'s contract simplest; document the choice.
+- Modify: `src/lib/extract/junk.ts` — `isJunkEmail(email)` = `isGluedEmail(email) || isPlatformEmail(email)`; `scripts/cleanup-invalid-emails.ts` uses it so a re-run deletes stored platform rows.
+- Test: `tests/unit/extract/platformDomains.test.ts`, extend `tests/unit/extract/junk.test.ts` and `website.test.ts`.
+
+**Domains (seed; extend from a read-only query of stored email domains):** vagaro.com, booksy.com, godaddy.com, godaddysites.com, wix.com, wixpress.com, wixsite.com, squarespace.com, shopify.com, myshopify.com, clover.com, squareup.com, square.site, toasttab.com, mindbodyonline.com, fresha.com, styleseat.com, schedulicity.com, zocdoc.com, doordash.com, ubereats.com, grubhub.com, linktr.ee, weebly.com, jimdo.com, duda.co, wordpress.com, wordpress.org, sentry.io, yelp.com, facebook.com, google.com, example.com, domain.com, email.com, yoursite.com, yourdomain.com, w3.org.
+
+- [ ] **Step 1: Failing tests** — `isPlatformEmail("support@vagaro.com")` true, `("x@app.vagaro.com")` true, `("info@vagarosalon.com")` false; extractor drops `support@vagaro.com` from a fixture page but keeps `info@pearlywhitespearland.com`; cleanup classifier flags platform rows.
+- [ ] **Step 2: Run, expect failures.**
+- [ ] **Step 3: Implement** as above.
+- [ ] **Step 4: tsc, lint, unit, db — exit 0.** Dry-run the cleanup script (no `--apply`) and report the platform-row count.
+- [ ] **Step 5: Commit** `fix(extract): drop booking/site-builder platform support addresses; cleanup deletes stored ones`.
+
 ## Done criteria for Plan 8
 
 - Drawer: "Open full page" and the close button sit on one chrome row without overlap on phone and desktop.
