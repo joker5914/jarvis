@@ -27,7 +27,7 @@
 
 | File | Responsibility |
 |---|---|
-| `prisma/schema.prisma` + migration `poc_accuracy` | `Business.candidates Json?`, `candidatesAt DateTime?`, `primaryPerson String?`, `suppressedApolloIds String[] @default([])` |
+| `prisma/schema.prisma` + migration `poc_accuracy` | `Business.candidates Json?`, `candidatesAt DateTime?`, `primaryPerson String?`, `suppressedApolloIds String[] @default([])`, `Contact.apolloId String?` |
 | `src/lib/enrichment/candidates.ts` (**new**) | `findCandidates(businessId, ownerId, deps)`: free search → ranked candidate list stored on the business; `Candidate` type; suppression filter |
 | `src/lib/jobs/enrich.ts` | `runEnrich` accepts `apolloId` (reveal exactly that candidate, no search); honours `suppressedApolloIds` on the auto path |
 | `src/lib/jobs/queues.ts` | `EnrichJobData.apolloId?` |
@@ -44,7 +44,7 @@
 ### Task 1: "Find people" — candidates before credits
 
 **Files:**
-- Modify: `prisma/schema.prisma` (migration `poc_accuracy`, all four columns in one migration so later tasks need none)
+- Modify: `prisma/schema.prisma` (migration `poc_accuracy`: the four `Business` columns plus `Contact.apolloId String?`, all in one migration so later tasks need none; `runEnrich` sets `apolloId` on every Apollo contact row it creates or updates)
 - Create: `src/lib/enrichment/candidates.ts`, `src/app/api/businesses/[id]/candidates/route.ts`
 - Modify: `src/lib/jobs/enrich.ts`, `src/lib/jobs/queues.ts`, `src/app/api/businesses/[id]/enrich/route.ts`, `src/lib/leads/queries.ts`
 - Test: `tests/db/candidates.test.ts` (new), `tests/db/enrich.test.ts`, `tests/db/businessEnrichRoute.test.ts`
@@ -122,7 +122,7 @@ Rules, in order: a manual primary → `primary`, label `Primary contact set by y
 //   → suppressApolloId: adds to Business.suppressedApolloIds, deletes that person's Apollo-sourced Contact rows (email/linkedin) and clears
 //     primaryPerson if it pointed at them, removes them from Business.candidates, writes activity `Removed <name> (not the decision-maker)`.
 ```
-- The Apollo id of a revealed person is not stored on `Contact` today: store it in `Contact.personTitle`? No — add the mapping through `candidates` (each candidate has `apolloId` + first name) and, for revealed people, persist `apolloId` on the contact rows via a new nullable column `Contact.apolloId String?` (include it in the Task 1 migration; `runEnrich` sets it on rows it creates/updates).
+- Suppression needs the Apollo id of a revealed person: `Contact.apolloId` (added and populated in Task 1) links each Apollo-sourced row to the person, and `candidates` carries the id for people not yet revealed.
 
 - [ ] **Step 1: Failing tests**: add person with email + title sets primary and creates two contacts; add person with only a name → 400; primary must exist; suppress deletes Apollo rows, clears primary, adds the id, logs the row; `groupPeople` output marks `isPrimary`; `pocConfidence` returns `primary` afterwards.
 - [ ] **Step 2: Run, expect failures.**
