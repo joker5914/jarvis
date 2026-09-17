@@ -113,8 +113,17 @@ export async function runEnrich(
     // `added` but should still count toward "N people with a verified email" in the activity
     // message below).
     let withEmail = 0;
-    for (const p of people.slice(0, maxPeople)) {
+    // Bound the run by *reveals* (the calls that can cost a credit), not by candidates examined:
+    // rejecting a candidate on the free search data (wrong company, no email) costs nothing, so
+    // walk the whole ranked page until `maxPeople` reveals have been made. Otherwise a no-email
+    // Owner at rank 0 would end a maxPeople=1 run with nothing while an emailed Manager sits at
+    // rank 1 in a page we already fetched for free.
+    let reveals = 0;
+    let checked = 0;
+    for (const p of people) {
+      if (reveals >= maxPeople) break;
       await checkPause(deps);
+      checked++;
       // Apollo's obfuscated search rows carry `organization.name` but no domain, so a name check
       // is the only guard available here — reject before spending a credit on a wrong-company hit.
       // Only on the no-domain branch: when the search was filtered by the lead's own website
@@ -133,6 +142,7 @@ export async function runEnrich(
       if (!p.hasEmail && !p.email) continue;
       const willPay = !p.email;
       if (willPay && remaining <= 0) break; // cap reached mid-run: stop revealing further people, but let the business finish
+      reveals++;
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
       if (willPay && full.email) remaining--;
@@ -198,8 +208,16 @@ export async function runEnrich(
       // Search found candidates but none had (or yielded, on reveal) a verified email — worth
       // explaining which titles came back empty-handed rather than just "0 people" (the live bug
       // this task fixes: the best candidate used to never even be fetched).
-      const titles = people.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
-      await log(`Enriched via Apollo: none of ${found} ${found === 1 ? "person" : "people"} found had an email (${titles})`);
+      // Report the candidates actually examined (the loop above may stop early at the credit
+      // cap), never titles of people that were never looked at.
+      const examined = people.slice(0, checked);
+      const titles = examined.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
+      const noun = (n: number) => (n === 1 ? "person" : "people");
+      await log(
+        checked < found
+          ? `Enriched via Apollo: none of the ${checked} ${noun(checked)} checked (of ${found} found) had an email (${titles})`
+          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`,
+      );
     } else {
       await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
     }

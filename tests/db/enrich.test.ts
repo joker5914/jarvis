@@ -80,6 +80,21 @@ describe("runEnrich", () => {
     expect(log).toHaveLength(1);
     expect(log[0].message).toBe("Enriched via Apollo: none of 2 people found had an email (Store Manager, Barista)");
   });
+  it("walks past a no-email candidate at rank 0 and reveals the emailed one at rank 1 within maxPeople=1 (re-review D2)", async () => {
+    const b = await biz();
+    const fake = new FakeEnrichmentProvider();
+    fake.searchPeople = async () => [
+      { apolloId: "fake-bellanails.com-gm", firstName: "Lee", lastName: null, name: "Lee", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
+      { apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
+    ];
+    const d = deps(fake);
+    const r = await runEnrich(b.id, OWNER, d);
+    expect(r.added).toBe(1);
+    expect(d.enrichment.calls.enrich).toBe(1);
+    const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+    expect(log[0].message).toMatch(/^Enriched via Apollo: 1 person with a verified email out of 2 found; /);
+  });
+
   it("m=1, n=0: singular wording — 'none of 1 person found had an email'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
