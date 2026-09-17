@@ -283,6 +283,12 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
     return { id: org.id, primaryDomain: org.primary_domain ?? null };
   }
 
+  // `max` is accepted for interface stability (a future/other provider may use it to bound its
+  // own request page size) but unused here: People Search is free of Apollo credits, so this
+  // always fetches a full page (searchPageSize) and returns the whole ranked list — the caller
+  // (runEnrich) is the one that slices to `max` once it starts spending on paid reveals, so it
+  // can also report how many total candidates were found, not just how many it acted on.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability, see comment above
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
     await checkPlanBlocked(PEOPLE_SEARCH_PATH);
     const key = await requireKey();
@@ -290,7 +296,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       person_titles: [...ENRICH_CONFIG.preferredTitles],
       include_similar_titles: true,
       person_seniorities: [...ENRICH_CONFIG.seniorities],
-      per_page: max,
+      per_page: ENRICH_CONFIG.searchPageSize,
       page: 1,
     };
     let filter: Record<string, string | number | boolean | string[] | undefined>;
@@ -317,7 +323,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       orgName: p.organization?.name ?? null,
     }));
     people.sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
-    return people.slice(0, max);
+    return people;
   }
 
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {

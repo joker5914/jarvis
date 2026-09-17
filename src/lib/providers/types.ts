@@ -122,7 +122,15 @@ export type EnrichPerson = {
 };
 
 export interface EnrichmentProvider {
-  /** Cheap people lookup by employer domain (fallback: org name + city). Never returns emails. */
+  /**
+   * Cheap people lookup by employer domain (fallback: org name + city). Never returns emails.
+   * Returns the full ranked candidate page (best match first — see ApolloEnrichmentProvider's
+   * titleRank/hasEmail sort), NOT sliced to `max`: the search itself costs no credits, so callers
+   * that only want to reveal/pay for `max` of them (runEnrich) do their own `.slice(0, max)` at
+   * the point they start spending, while still being able to report how many candidates existed
+   * in total. `max` is kept on the signature as a hint a provider MAY use to bound its own
+   * request page size, not a hard cap on the result length.
+   */
   searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]>;
   /** Paid reveal for one person (email, LinkedIn). Null when Apollo has no match. */
   enrichPerson(apolloId: string): Promise<EnrichPerson | null>;

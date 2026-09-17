@@ -229,6 +229,32 @@ checks, score the business green, and are useless for outreach.
 - [ ] **Step 4: tsc, lint, unit, db — exit 0.** Dry-run the cleanup script (no `--apply`) and report the platform-row count.
 - [ ] **Step 5: Commit** `fix(extract): drop booking/site-builder platform support addresses; cleanup deletes stored ones`.
 
+### Task 7: Enrichment actually finds the best candidate, and the drawer shows live status
+
+**Why (live, 2026-09-17):** clicking Enrich on Pearland Coffee Roasters reported "Enriched via Apollo:
+0 people". A zero-credit probe shows Apollo returns 2 people for the domain with our title filters
+(Store Manager, no email; Production/Operations Manager, email). `searchPeople` requests
+`per_page: max` (= `maxPeople`, default 1), so Apollo hands back one row chosen by its own order,
+and our title/has-email ranking runs on that single row — the emailed manager is never seen.
+Separately, after the 202 the drawer only shows a "queued" toast; the user must refresh to learn
+the outcome.
+
+**Files:**
+- Modify: `src/lib/providers/apollo.ts` (`searchPeople`), `src/lib/config/enrichment.ts` (`searchPageSize: 10`)
+- Modify: `src/lib/jobs/enrich.ts` (success message wording)
+- Modify: `src/components/leads/LeadDetail.tsx` (+ new `src/components/leads/useEnrichmentWatch.ts`)
+- Test: `tests/unit/providers/apollo.test.ts`, `tests/db/enrich.test.ts`, `tests/unit/leads/enrichmentWatch.test.ts`
+
+**Interfaces:**
+- Produces: `ENRICH_CONFIG.searchPageSize = 10`; activity message `Enriched via Apollo: <n> person(s) with a verified email out of <m> found; <a> new contacts, <u> updated` (and, when m > 0 but n = 0: `Enriched via Apollo: none of <m> people found had an email (<titles…>)`).
+- Produces: `watchEnrichment({ businessId, since, fetchDetail, intervalMs, timeoutMs }) → Promise<"done" | "timeout">` — pure, injectable, resolves "done" when the detail's newest `enriched` activity is newer than `since` or `lastEnrichedAt` changed.
+
+- [ ] **Step 1: failing tests.** (a) apollo unit: fake fetch returns 5 rows in Apollo order [Barista/no email, Barista/no email, Production/Operations Manager/email, Store Manager/no email, Owner/no email]; `searchPeople(q, 1)` must request `per_page=10` and return exactly the Owner (title rank first) — and with `[Store Manager/no email, Production/Operations Manager/email]` return the Manager with email first when ranks tie/are lower: ranking = titleRank asc, then hasEmail desc. (b) db: runEnrich message for m=2, n=0 (both no email) and for m=2, n=1. (c) watcher: resolves "done" on a newer enriched activity; "done" on lastEnrichedAt change; "timeout" after timeoutMs; polls at intervalMs (fake timers).
+- [ ] **Step 2: run, expect failures.**
+- [ ] **Step 3: implement.** `per_page: ENRICH_CONFIG.searchPageSize` (10), sort as today, slice to `max`. Message wording per Interfaces. In LeadDetail: on a 202, set `enriching=true`, render the button as "Enriching…" (disabled, spinner), call `watchEnrichment` with `since = now` and `fetchDetail = () => fetch('/api/businesses/'+id)`, interval 2000 ms, timeout 90 000 ms; on "done" reload the detail and toast the newest enriched row's message; on "timeout" reload and toast "Still working — check the activity log in a minute". Cancel the watch on unmount/close. Bulk enrich (BulkBar) is out of scope.
+- [ ] **Step 4: tsc, lint, unit, db exit 0.**
+- [ ] **Step 5: commit** `fix(enrich): fetch a page of candidates before ranking (best person was never seen); live enrichment status in the lead drawer`.
+
 ## Done criteria for Plan 8
 
 - Drawer: "Open full page" and the close button sit on one chrome row without overlap on phone and desktop.

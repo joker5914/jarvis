@@ -53,7 +53,9 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     expect(u.searchParams.getAll("person_titles[]")).toContain("owner");
     expect(u.searchParams.getAll("person_seniorities[]")).toContain("owner");
     expect(u.searchParams.get("include_similar_titles")).toBe("true");
-    expect(u.searchParams.get("per_page")).toBe("5");
+    // People Search is free of credits: always requests a full page (searchPageSize), regardless
+    // of `max`, then ranks and slices locally (see Plan 8 Task 7).
+    expect(u.searchParams.get("per_page")).toBe("10");
     expect(u.searchParams.get("page")).toBe("1");
     expect(calls[0].init.body).toBeUndefined();
     expect((calls[0].init.headers as Record<string, string>)["x-api-key"]).toBe("test-key");
@@ -100,6 +102,36 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     expect(await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).toEqual([]);
     mockFetch(() => json({ error: "slow down" }, 429));
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/429/);
+  });
+
+  // Live bug (Plan 8 Task 7): searchPeople used to request per_page: max (often 1) AND slice its
+  // own result to max, so Apollo's own row ordering decided who was ever seen — the best
+  // candidate could be sitting further down the page and never come back at all. Fetching a full
+  // page (searchPageSize) and returning the whole ranked list (not sliced to `max`) means the
+  // caller (runEnrich) sees every candidate Apollo found and decides for itself how many to spend
+  // paid reveals on — `max` no longer bounds what searchPeople itself returns.
+  it("requests a full page (searchPageSize) even when max is small, and returns the whole list ranked with the best candidate first", async () => {
+    mockFetch(() => json({ total_entries: 5, people: [
+      { id: "p1", first_name: "Sam", title: "Barista", has_email: false },
+      { id: "p2", first_name: "Alex", title: "Barista", has_email: false },
+      { id: "p3", first_name: "Jordan", title: "Production/Operations Manager", has_email: true },
+      { id: "p4", first_name: "Casey", title: "Store Manager", has_email: false },
+      { id: "p5", first_name: "Riley", title: "Owner", has_email: false },
+    ] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 1);
+    const u = new URL(calls[0].url);
+    expect(u.searchParams.get("per_page")).toBe("10"); // requests the full page, not max=1
+    expect(people).toHaveLength(5); // not sliced to max=1 — the caller decides how many to act on
+    expect(people[0]).toMatchObject({ apolloId: "p5", title: "Owner" }); // title rank wins outright
+  });
+
+  it("ranks by titleRank asc, then hasEmail desc, so a tied-rank title with an email beats one without", async () => {
+    mockFetch(() => json({ total_entries: 2, people: [
+      { id: "p4", first_name: "Casey", title: "Store Manager", has_email: false },
+      { id: "p3", first_name: "Jordan", title: "Production/Operations Manager", has_email: true },
+    ] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+    expect(people.map((p) => p.apolloId)).toEqual(["p3", "p4"]); // same title rank (both "manager"), email breaks the tie
   });
 
   it("maps organization.name to orgName, and null when organization (or its name) is absent", async () => {

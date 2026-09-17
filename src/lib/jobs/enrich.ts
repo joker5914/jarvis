@@ -107,8 +107,23 @@ export async function runEnrich(
     // across the whole loop so a business where *every* candidate mismatches gets one explanatory
     // activity row (below) instead of the generic "0 people" success message.
     let skippedOrg: string | null = null;
-    for (const p of people.slice(0, maxPeople)) {
+    // Counts people who actually came back with a verified email this run (via the free search's
+    // hasEmail flag, or a paid reveal that confirmed one) — distinct from `added`, which only
+    // counts people who produced a *new* contact row (an already-known email doesn't increment
+    // `added` but should still count toward "N people with a verified email" in the activity
+    // message below).
+    let withEmail = 0;
+    // Bound the run by *reveals* (the calls that can cost a credit), not by candidates examined:
+    // rejecting a candidate on the free search data (wrong company, no email) costs nothing, so
+    // walk the whole ranked page until `maxPeople` reveals have been made. Otherwise a no-email
+    // Owner at rank 0 would end a maxPeople=1 run with nothing while an emailed Manager sits at
+    // rank 1 in a page we already fetched for free.
+    let reveals = 0;
+    let checked = 0;
+    for (const p of people) {
+      if (reveals >= maxPeople) break;
       await checkPause(deps);
+      checked++;
       // Apollo's obfuscated search rows carry `organization.name` but no domain, so a name check
       // is the only guard available here — reject before spending a credit on a wrong-company hit.
       // Only on the no-domain branch: when the search was filtered by the lead's own website
@@ -127,9 +142,11 @@ export async function runEnrich(
       if (!p.hasEmail && !p.email) continue;
       const willPay = !p.email;
       if (willPay && remaining <= 0) break; // cap reached mid-run: stop revealing further people, but let the business finish
+      reveals++;
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
       if (willPay && full.email) remaining--;
+      if (full.email) withEmail++;
       const personName = full.name;
       const personTitle = full.title;
       const rows: { type: "email" | "linkedin"; value: string }[] = [];
@@ -181,7 +198,29 @@ export async function runEnrich(
     await validateEmails([businessId], deps);
     await recomputeContactQuality(businessId);
     await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
-    await log(`Enriched via Apollo: ${added} ${added === 1 ? "person" : "people"}, ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+    const found = people.length;
+    if (found === 0) {
+      // Search itself came back empty (no domain/name match at all) — distinct from "found
+      // candidates but none had an email" below, and worth naming what was searched for since
+      // there's nothing else (no titles) to show.
+      await log(`Enriched via Apollo: no people found for ${domain ?? b.name}`);
+    } else if (withEmail === 0) {
+      // Search found candidates but none had (or yielded, on reveal) a verified email — worth
+      // explaining which titles came back empty-handed rather than just "0 people" (the live bug
+      // this task fixes: the best candidate used to never even be fetched).
+      // Report the candidates actually examined (the loop above may stop early at the credit
+      // cap), never titles of people that were never looked at.
+      const examined = people.slice(0, checked);
+      const titles = examined.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
+      const noun = (n: number) => (n === 1 ? "person" : "people");
+      await log(
+        checked < found
+          ? `Enriched via Apollo: none of the ${checked} ${noun(checked)} checked (of ${found} found) had an email (${titles})`
+          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`,
+      );
+    } else {
+      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+    }
     return { added, updated, skipped: null };
   } catch (e) {
     if (e instanceof BudgetExhaustedError) await log("Enrichment paused: Apollo daily budget exhausted");

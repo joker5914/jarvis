@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Tag } from "@prisma/client";
 import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -12,11 +13,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
-import { latestEnrichIssue } from "@/lib/leads/enrichActivity";
+import { isEnrichIssueMessage, latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
 import { QualityBadge } from "./QualityBadge";
 import { SourceBadge } from "./SourceBadge";
+
+const ENRICH_WATCH_INTERVAL_MS = 2000;
+const ENRICH_WATCH_TIMEOUT_MS = 90_000;
 
 type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string };
 type Project = { id: string; projectNumber: string; projectName: string; estimatedCost: number | null; startDate: string | null; completionDate: string | null; scopeOfWork: string | null; ownerName: string | null; ownerPhone: string | null; timingWindow: string | null };
@@ -71,14 +76,33 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [enriching, setEnriching] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
+  // different lead) so a stale timer never touches this component's state after it's gone.
+  const enrichWatchController = useRef<AbortController | null>(null);
+  // Aborts on a different lead being shown (the drawer can swap `id` without fully unmounting
+  // LeadDetail — see also the `key={id}` belt-and-braces fix on LeadDrawer) as well as on real
+  // unmount, so a watch started for one lead never lands on another's state. Also resets
+  // `enriching` here (not just in enrich()'s finally): the component is still mounted across an
+  // id swap, so the *next* lead's button must not be stuck reading "Enriching…" from the old
+  // one's in-flight watch, which resolves "timeout" (aborted) and — by design — skips touching
+  // state itself once it sees its own controller was aborted.
+  useEffect(() => {
+    return () => {
+      enrichWatchController.current?.abort();
+      setEnriching(false);
+    };
+  }, [id]);
 
-  async function load() {
-    setB(null);
+  async function load(opts: { quiet?: boolean } = {}): Promise<Detail | null> {
+    // `quiet` skips the `setB(null)` blank-out: used after watchEnrichment resolves, so the
+    // drawer doesn't flash back to "Loading…" once enrichment has already finished rendering.
+    if (!opts.quiet) setB(null);
     const res = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
-    if (!res.ok) return toast.error("Could not load lead");
+    if (!res.ok) { toast.error("Could not load lead"); return null; }
     const { business } = await res.json();
     setB(business);
     setNotes(business.notes);
+    return business as Detail;
   }
   async function loadCredits() {
     const res = await fetch("/api/enrichment/credits", { cache: "no-store" });
@@ -102,6 +126,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   async function enrich() {
     setEnriching(true);
+    enrichWatchController.current?.abort(); // a stale watch from a previous click, if any
+    const controller = new AbortController();
+    enrichWatchController.current = controller;
     try {
       const res = await fetch(`/api/businesses/${id}/enrich`, {
         method: "POST",
@@ -117,11 +144,45 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       }
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
       toast.success("Enrichment queued");
-      await load();
+      onChanged?.();
+      // Server-time baseline, not browser time: the newest enriched activity (or lastEnrichedAt)
+      // from the detail already loaded before this click, so "newer than since" compares two
+      // server timestamps instead of a client clock against a server one. A lead that has never
+      // been enriched has neither, so epoch always counts as "before".
+      const priorEnriched = b?.activity.find((a) => a.kind === "enriched");
+      const since = priorEnriched
+        ? new Date(priorEnriched.createdAt)
+        : b?.lastEnrichedAt
+          ? new Date(b.lastEnrichedAt)
+          : new Date(0);
+      const result = await watchEnrichment({
+        businessId: id,
+        since,
+        fetchDetail: async (): Promise<WatchableDetail> => {
+          const r = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
+          if (!r.ok) throw new Error(`Could not load lead (HTTP ${r.status})`); // treated as a failed poll — watchEnrichment keeps retrying
+          const { business } = await r.json();
+          return business as WatchableDetail;
+        },
+        intervalMs: ENRICH_WATCH_INTERVAL_MS,
+        timeoutMs: ENRICH_WATCH_TIMEOUT_MS,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return; // unmounted/switched leads mid-watch — don't touch state
+      const fresh = await load({ quiet: true }); // avoid re-blanking a drawer that's already rendered
       await loadCredits();
       onChanged?.();
+      if (result === "done") {
+        const newest = fresh?.activity.find((a) => a.kind === "enriched");
+        // An unavailable/paused/failed/org-mismatch outcome already surfaces as the amber
+        // `lastEnrichIssue` line below the button (from the same activity row) — toasting it too
+        // would just duplicate that message.
+        if (newest && !isEnrichIssueMessage(newest.message)) toast.success(newest.message);
+      } else {
+        toast("Still working — check the activity log in a minute");
+      }
     } finally {
-      setEnriching(false);
+      if (!controller.signal.aborted) setEnriching(false);
     }
   }
 
@@ -201,7 +262,12 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             {b.exclusion === "none" ? (
               <>
                 <Button size="sm" variant="outline" data-testid="enrich-button" disabled={enriching || credits?.remaining === 0} onClick={enrich}>
-                  {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+                  {enriching ? (
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                      Enriching…
+                    </span>
+                  ) : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
                 </Button>
                 {credits && (
                   <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
