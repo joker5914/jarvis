@@ -112,3 +112,9 @@ describe("normalizeWebsiteUrl", () => {
     expect(normalizeWebsiteUrl("")).toBeNull();
   });
 });
+
+describe("normalizeEmail keeps real mailboxes at look-alike domains", () => {
+  it("accepts @email.com (mail.com sells genuine mailboxes there)", () => {
+    expect(normalizeEmail("owner@email.com")).toBe("owner@email.com");
+  });
+});

@@ -15,7 +15,10 @@ export type ActivityLike = { kind: string; message: string };
  * activity row at all, so LeadDetail had no way to show that a click had failed.
  */
 export function isEnrichIssueMessage(message: string): boolean {
-  return /^Enrichment (unavailable|paused|failed)/.test(message);
+  // The one "skipped" message that *is* a problem worth showing: the search matched a different
+  // company, so nothing was enriched even though lastEnrichedAt is now set (so the button reads
+  // "Re-enrich" and the People list is empty — this line explains why).
+  return /^Enrichment (unavailable|paused|failed)/.test(message) || /^Enrichment skipped: Apollo matched a different company/.test(message);
 }
 
 /**

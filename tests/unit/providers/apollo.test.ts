@@ -201,9 +201,9 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({ update: { planBlockDetail: "API_INACCESSIBLE" } });
   });
 
-  // H2: a live 403 body observed from a Basic (Trial) plan carries BOTH error_code and a nested
+  // H2: a live 403 body observed on some accounts carries BOTH error_code and a nested
   // error_details object; classification must catch it via either signal.
-  it("classifies a live Basic-Trial 403 body (error_code AND error_details.code/message) as a plan block", async () => {
+  it("classifies a live 403 body (error_code AND error_details.code/message) as a plan block", async () => {
     mockFetch(() =>
       json(
         {

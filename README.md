@@ -33,8 +33,8 @@ repeats the category searches.
 
 **Apollo's free and trial plans do not include the People Search or People
 Enrichment API** — every plan tier can call Organization Enrichment, but
-People Search and People Match return HTTP 403 (`API_INACCESSIBLE`, or on a
-Basic-Trial plan `AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED`) even with a
+People Search and People Match return HTTP 403 (`API_INACCESSIBLE`, or on some
+accounts `AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED`) even with a
 valid key on both the Free plan and the Basic 14-day trial, regardless of
 the monthly credit balance above. The app detects this the first time it
 happens, records an `Enrichment unavailable: …` row (with the raw Apollo

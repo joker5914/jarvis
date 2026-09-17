@@ -54,3 +54,12 @@ describe("latestEnrichIssue", () => {
     expect(latestEnrichIssue([STATUS])).toBeNull();
   });
 });
+
+describe("isEnrichIssueMessage: org-mismatch skip", () => {
+  it("surfaces the 'matched a different company' skip (lastEnrichedAt is set, People list is empty, so the line explains why)", () => {
+    expect(isEnrichIssueMessage("Enrichment skipped: Apollo matched a different company (Booksy)")).toBe(true);
+  });
+  it("still hides the benign recency skip", () => {
+    expect(isEnrichIssueMessage("Enrichment skipped: enriched 3 day(s) ago (use Re-enrich to refresh)")).toBe(false);
+  });
+});

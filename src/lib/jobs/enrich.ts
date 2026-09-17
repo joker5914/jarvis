@@ -195,7 +195,7 @@ export async function runEnrich(
       // URL or error message, so this can't leak key material in practice — but the redaction is
       // kept anyway as defense in depth against a future error message that happens to echo back
       // request state. Truncated to 200 chars so a huge provider error body can't bloat the log.
-      const message = redactApiKeyLike((e as Error).message).slice(0, 200);
+      const message = redactApiKeyLike(String((e as Error)?.message ?? e)).slice(0, 200);
       await log(`Enrichment failed: ${message}`);
     }
     throw e;

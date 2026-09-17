@@ -166,8 +166,8 @@ type ApolloErrorBody = {
  *   - `error_code: "API_INACCESSIBLE"` with an `error` string containing "not included in your"
  *     (the plan simply lacks the endpoint), and
  *   - `error_details.code: "AUTH.AUTHORIZATION.ENDPOINT_ACCESS_DENIED"` with
- *     `error_details.message` matching /not permitted to call this endpoint/i (a Basic Trial
- *     plan whose team isn't permitted to call the endpoint at all, even with a master key).
+ *     `error_details.message` matching /not permitted to call this endpoint/i (seen on some
+ *     accounts whose team isn't permitted to call the endpoint at all, even with a master key).
  * Reads the body once to tell a plan block apart from a genuine 403, memoizes the block so this
  * process stops hitting the endpoint for a while, and always throws (never returns) once
  * classified as a plan block. `detail` prefers `error_code`, falling back to `error_details.code`,

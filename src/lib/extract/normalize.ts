@@ -61,7 +61,7 @@ export function longestPlausibleTldPrefix(tld: string): string | null {
 // known site-builder/ESP domains that leak into scraped markup (e.g. "filler@godaddy.com" left
 // over from an unfinished GoDaddy site builder template).
 const PLACEHOLDER_DOMAINS = [
-  "example.com", "example.org", "example.net", "domain.com", "email.com",
+  "example.com", "example.org", "example.net", "domain.com",
   "yourdomain.com", "yourcompany.com", "company.com", "test.com",
   "sentry.io", "wixpress.com", "squarespace.com", "godaddy.com",
   "mysite.com", "website.com",
