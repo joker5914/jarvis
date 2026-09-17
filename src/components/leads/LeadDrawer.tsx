@@ -1,18 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { XIcon } from "lucide-react";
+import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
 import { LeadDetail } from "./LeadDetail";
 
 export function LeadDrawer({ id, onClose, onChanged }: { id: string | null; onClose: () => void; onChanged: () => void }) {
   return (
     <Sheet open={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl">
+      {/* showCloseButton={false}: the sheet's own close is absolutely positioned inside
+          the popup, so it scrolls out of view with the rest of the content. This drawer
+          puts its own close inside the sticky chrome row instead, alongside the "Open
+          full page" link, so exactly one × exists and it stays visible while scrolling. */}
+      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl" showCloseButton={false}>
         <SheetTitle className="sr-only">Lead detail</SheetTitle>
         {id && (
           <>
-            <div className="sticky top-0 z-10 flex h-12 items-center border-b bg-background pl-5 pr-14">
+            <div className="sticky top-0 z-10 flex h-12 items-center justify-between border-b bg-background px-5">
               <Link href={`/leads/${id}`} className="text-sm text-blue-600 hover:underline dark:text-blue-400">Open full page</Link>
+              <SheetClose data-slot="sheet-close" render={<Button variant="ghost" size="icon-sm" aria-label="Close" />}>
+                <XIcon />
+                <span className="sr-only">Close</span>
+              </SheetClose>
             </div>
             <div className="p-5">
               <LeadDetail id={id} onChanged={onChanged} />
