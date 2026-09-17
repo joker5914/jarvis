@@ -14,6 +14,7 @@ export const leadFiltersSchema = z.object({
   product: z.string().optional(),
   timing: z.enum(["opening_soon", "under_construction", "planned", "just_completed", "stale"]).optional(),
   searchId: z.string().optional(),
+  needs: z.enum(["enrichment"]).optional(),
   showExcluded: bool,
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
@@ -43,6 +44,16 @@ export function buildBusinessWhere(f: LeadFilters, ownerId: string): Prisma.Busi
   if (f.product) where.productsPitched = { has: f.product };
   if (f.searchId) where.searches = { some: { searchId: f.searchId } };
   if (f.timing) where.projects = { some: { timingWindow: f.timing } };
+  // "Needs enrichment": website-bearing, non-excluded, yellow-or-better leads that were never
+  // enriched and have no email contact yet — the leads actually worth an Apollo credit. This
+  // overrides the plain exclusion/quality filters above so the checkbox is a clean, exact filter.
+  if (f.needs === "enrichment") {
+    where.websiteUrl = { not: null };
+    where.exclusion = "none";
+    where.contactQualityBand = { in: ["green", "yellow"] };
+    where.lastEnrichedAt = null;
+    where.contacts = { none: { type: "email" } };
+  }
   return where;
 }
 

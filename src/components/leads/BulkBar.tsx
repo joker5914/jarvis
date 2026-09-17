@@ -9,14 +9,20 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { titleCase } from "@/lib/format";
 
 const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
+const BULK_ENRICH_MAX = 10;
+type CreditStatus = { used: number; cap: number; remaining: number; maxPeople: number };
 
 export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => void; refresh: () => void }) {
   const router = useRouter();
   const [tags, setTags] = useState<Tag[]>([]);
   const [busy, setBusy] = useState(false);
+  const [credits, setCredits] = useState<CreditStatus | null>(null);
 
   useEffect(() => {
     fetch("/api/tags").then((r) => r.json()).then((d) => setTags((d.items ?? []).filter((t: Tag) => !t.isSystem)));
+  }, []);
+  useEffect(() => {
+    fetch("/api/enrichment/credits", { cache: "no-store" }).then((r) => r.json()).then(setCredits).catch(() => {});
   }, []);
 
   if (ids.length === 0) return null;
@@ -38,6 +44,14 @@ export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => v
 
   async function enrichSelected() {
     if (busy) return;
+    if (ids.length > BULK_ENRICH_MAX) {
+      toast.error(`Enrich at most ${BULK_ENRICH_MAX} leads per action`);
+      return;
+    }
+    const maxPeople = credits?.maxPeople ?? 1;
+    const remaining = credits?.remaining ?? 0;
+    const estimate = ids.length * maxPeople;
+    if (!window.confirm(`Enrich ${ids.length} leads for up to ${estimate} Apollo credits (${remaining} left this cycle)?`)) return;
     setBusy(true);
     try {
       const res = await fetch("/api/businesses/bulk", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids, enrich: true }) });
@@ -55,6 +69,7 @@ export function BulkBar({ ids, clear, refresh }: { ids: string[]; clear: () => v
       );
       clear();
       refresh();
+      fetch("/api/enrichment/credits", { cache: "no-store" }).then((r) => r.json()).then(setCredits).catch(() => {});
     } finally {
       setBusy(false);
     }

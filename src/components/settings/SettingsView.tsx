@@ -4,10 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { CategoriesCard } from "./CategoriesCard";
+import { EnrichmentCard } from "./EnrichmentCard";
 import { ExclusionCard } from "./ExclusionCard";
 import { ProjectsCard } from "./ProjectsCard";
 import { ProviderKeysCard } from "./ProviderKeysCard";
-import type { CategoryEntry, ExclusionConfig, ProjectsConfig, SettingsPayload } from "./types";
+import type { CategoryEntry, EnrichmentConfig, ExclusionConfig, ProjectsConfig, SettingsPayload } from "./types";
 
 /** Shallow diff: only the top-level keys of `current` that differ from `defaults`. */
 function diffFields<T extends Record<string, unknown>>(current: T, defaults: T): Partial<T> {
@@ -31,6 +32,7 @@ export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
   const [categories, setCategories] = useState<CategoryEntry[]>([]);
   const [exclusion, setExclusion] = useState<ExclusionConfig | null>(null);
   const [projects, setProjects] = useState<ProjectsConfig | null>(null);
+  const [enrichment, setEnrichment] = useState<EnrichmentConfig | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -42,6 +44,7 @@ export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
       setCategories(payload.config.categories);
       setExclusion(payload.config.exclusion);
       setProjects(payload.config.projects);
+      setEnrichment(payload.config.enrichment);
     } catch {
       toast.error("Could not load settings");
     }
@@ -51,14 +54,22 @@ export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
   }, [load]);
 
   function buildOverrides() {
-    if (!data || !exclusion || !projects) return null;
-    const overrides: { exclusion?: Partial<ExclusionConfig>; projects?: Partial<ProjectsConfig>; categories?: { disabled?: string[]; packageOverrides?: Record<string, string> } } = {};
+    if (!data || !exclusion || !projects || !enrichment) return null;
+    const overrides: {
+      exclusion?: Partial<ExclusionConfig>;
+      projects?: Partial<ProjectsConfig>;
+      enrichment?: Partial<EnrichmentConfig>;
+      categories?: { disabled?: string[]; packageOverrides?: Record<string, string> };
+    } = {};
 
     const exclusionDiff = diffFields(exclusion, data.defaults.exclusion);
     if (Object.keys(exclusionDiff).length > 0) overrides.exclusion = exclusionDiff;
 
     const projectsDiff = diffFields(projects, data.defaults.projects);
     if (Object.keys(projectsDiff).length > 0) overrides.projects = projectsDiff;
+
+    const enrichmentDiff = diffFields(enrichment, data.defaults.enrichment);
+    if (Object.keys(enrichmentDiff).length > 0) overrides.enrichment = enrichmentDiff;
 
     const disabled = categories.filter((c) => !c.enabled).map((c) => c.slug);
     const packageOverrides: Record<string, string> = {};
@@ -101,14 +112,15 @@ export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
     putConfig({});
   }
 
-  if (!data || !exclusion || !projects) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (!data || !exclusion || !projects || !enrichment) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   return (
     <div className="space-y-4">
-      <ProviderKeysCard providers={data.providers} onChanged={load} />
+      <ProviderKeysCard providers={data.providers} credits={data.credits} onChanged={load} />
       <CategoriesCard categories={categories} packages={data.packages} onChange={setCategories} />
       <ExclusionCard value={exclusion} onChange={setExclusion} />
       <ProjectsCard value={projects} onChange={setProjects} />
+      <EnrichmentCard value={enrichment} onChange={setEnrichment} />
       <div className="flex gap-2">
         <Button disabled={saving} onClick={saveConfig} data-testid="settings-config-save">
           Save configuration
