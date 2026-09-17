@@ -75,7 +75,7 @@ export function SyncBar({ onActivity, onChanged }: { onActivity: (running: boole
         ) : c?.status === "running" && s?.running === false ? (
           <span className="text-amber-700" data-testid="sync-stale">last run did not finish; you can start a new one</span>
         ) : c?.status === "failed" ? (
-          <span className="text-red-600">failed — {c.error}</span>
+          <span className="text-red-600">failed — {c.error ?? c.message ?? "unknown error"}</span>
         ) : (
           <span className="text-muted-foreground">{s?.lastSuccessfulAt ? `last synced ${timeAgo(s.lastSuccessfulAt)}` : "never synced"}{c?.counts ? ` · ${c.counts.created ?? 0} new` : ""}</span>
         )}

@@ -4,7 +4,7 @@ import type { DiscoveredBusiness, DiscoveryProvider, GeocodeProvider, GeocodeRes
 
 type LatLng = { lat: number; lng: number };
 type Viewport = { northeast: LatLng; southwest: LatLng };
-type GeocodeComponent = { long_name: string; short_name: string; types: string[] };
+type GeocodeComponent = { long_name: string; short_name: string; types?: string[] };
 
 export type PlacesApiPlace = {
   id: string;
@@ -16,7 +16,7 @@ export type PlacesApiPlace = {
   rating?: number;
   userRatingCount?: number;
   types?: string[];
-  addressComponents?: { longText?: string; shortText?: string; types: string[] }[];
+  addressComponents?: { longText?: string; shortText?: string; types?: string[] }[];
 };
 
 const SEARCH_FIELD_MASK = [
@@ -56,14 +56,14 @@ export function radiusFromViewport(v: Viewport | undefined): number {
 }
 
 export function cityAndState(components: GeocodeComponent[]) {
-  const find = (t: string) => components.find((c) => c.types.includes(t));
+  const find = (t: string) => components.find((c) => c.types?.includes(t));
   const city = find("locality") ?? find("sublocality") ?? find("neighborhood") ?? find("postal_town");
   const state = find("administrative_area_level_1");
   return { city: city?.long_name ?? null, state: state?.short_name ?? null };
 }
 
 export function mapPlace(p: PlacesApiPlace): DiscoveredBusiness {
-  const zip = p.addressComponents?.find((c) => c.types.includes("postal_code"))?.longText ?? null;
+  const zip = p.addressComponents?.find((c) => c.types?.includes("postal_code"))?.longText ?? null;
   return {
     placeId: p.id,
     name: p.displayName?.text ?? "",
