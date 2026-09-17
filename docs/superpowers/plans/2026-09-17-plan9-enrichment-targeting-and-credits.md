@@ -360,9 +360,9 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 **Why:** "GET /api/enrichment/credits returns the credit status for a fresh owner" failed once in a full `test:db` run with `used: 1`: an Apollo-sourced email contact for the shared `local-user` owner existed at that moment (Vitest orders files by cached duration, so which file runs first varies). The route's actor is always `local-user`, so the test cannot pick a private owner; it must clear what it counts.
 
-- [ ] **Step 1:** In that describe's `beforeEach`, after `cleanup()`, add `await prisma.contact.deleteMany({ where: { ownerId: OWNER, source: "apollo", type: "email" } });` with a comment naming the leak. Assert additionally that `creditsUsed(OWNER, new Date(0))` is 0 right before the request so a future leak fails with a clear message.
-- [ ] **Step 2:** Run `npm run test:db` three times in a row; all green.
-- [ ] **Step 3: Commit** `test(db): credits status test clears Apollo contacts for the shared owner (order-dependent fixture leak)`.
+- [x] **Step 1:** In that describe's `beforeEach`, after `cleanup()`, add `await prisma.contact.deleteMany({ where: { ownerId: OWNER, source: "apollo", type: "email" } });` with a comment naming the leak. Assert additionally that `creditsUsed(OWNER, new Date(0))` is 0 right before the request so a future leak fails with a clear message.
+- [x] **Step 2:** (three consecutive full runs are done by the coordinator at the branch gate) Run `npm run test:db` three times in a row; all green.
+- [x] **Step 3: Commit** `test(db): credits status test clears Apollo contacts for the shared owner (order-dependent fixture leak)`.
 
 ---
 
