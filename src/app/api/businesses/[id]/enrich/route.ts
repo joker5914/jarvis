@@ -41,7 +41,7 @@ export const POST = handle(async (req, ctx) => {
   if (!(await isProviderEnabled("apollo"))) {
     return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
   }
-  if (apolloPlanBlocked().blocked) {
+  if ((await apolloPlanBlocked()).blocked) {
     return json({ error: APOLLO_PLAN_BLOCK_MESSAGE, settingsHref: "/settings" }, 409);
   }
   // Body is optional (a plain "Enrich" click sends no body at all); an absent/unparsable body is

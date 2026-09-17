@@ -101,6 +101,45 @@ describe("Settings API", () => {
     expect((await budgetStatus("apollo")).limit).toBe(50);
   });
 
+  it("saving a new key clears a persisted Apollo plan block", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const res = await providerPut(jsonReq({ key: "freshkey99" }), ctxFor("apollo"));
+    expect(res.status).toBe(200);
+    const row = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    expect(row?.planBlockedUntil).toBeNull();
+    expect(row?.planBlockDetail).toBeNull();
+  });
+
+  it("re-enabling Apollo (disabled -> enabled) clears a persisted plan block", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { enabled: false, planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", enabled: false, planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const res = await providerPut(jsonReq({ enabled: true }), ctxFor("apollo"));
+    expect(res.status).toBe(200);
+    const row = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    expect(row?.planBlockedUntil).toBeNull();
+    expect(row?.planBlockDetail).toBeNull();
+  });
+
+  it("an update that neither sets a key nor turns enabled on leaves a persisted plan block untouched", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { enabled: true, planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", enabled: true, planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const res = await providerPut(jsonReq({ dailyBudget: 42 }), ctxFor("apollo"));
+    expect(res.status).toBe(200);
+    const row = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    expect(row?.planBlockedUntil).not.toBeNull();
+    expect(row?.planBlockDetail).toBe("API_INACCESSIBLE");
+  });
+
   it("rejects an unknown provider with 400", async () => {
     const res = await providerPut(jsonReq({ key: "abc123zz45" }), ctxFor("bing"));
     expect(res.status).toBe(400);

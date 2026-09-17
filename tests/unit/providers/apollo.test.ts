@@ -2,9 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@/lib/providers/budget", () => ({ withBudget: async (_p: string, fn: () => Promise<unknown>) => fn() }));
 vi.mock("@/lib/providers/keys", () => ({ getProviderKey: async () => "test-key" }));
+// apollo.ts persists a plan block to ProviderConfig (see markPlanBlocked/apolloPlanBlocked) so
+// the web process — which never calls Apollo directly — can see a block the worker discovered.
+// This unit suite only exercises the in-process memo, so Prisma is mocked out entirely; the real
+// persistence path is covered by the DB tests in tests/db/businessEnrichRoute.test.ts. The mock
+// factory is hoisted above any top-level const, so its innards must be literal (no closed-over
+// variable) — the handle used by tests below comes from importing the (now-mocked) "@/lib/db".
+vi.mock("@/lib/db", () => ({
+  prisma: {
+    providerConfig: {
+      upsert: vi.fn(async (_args: unknown) => ({})),
+      findUnique: vi.fn(async (_args: unknown) => null as { planBlockedUntil: Date | null; planBlockDetail: string | null } | null),
+      updateMany: vi.fn(async (_args: unknown) => ({ count: 0 })),
+    },
+  },
+}));
 
-import { ApolloEnrichmentProvider, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
+import { prisma } from "@/lib/db";
+import { ApolloEnrichmentProvider, apolloPlanBlocked, __setPlanBlockedForTests, __resetPlanBlockedForTests, PEOPLE_SEARCH_PATH } from "@/lib/providers/apollo";
 import { ProviderPlanError } from "@/lib/providers/errors";
+
+const providerConfigMock = prisma.providerConfig as unknown as {
+  upsert: ReturnType<typeof vi.fn>;
+  findUnique: ReturnType<typeof vi.fn>;
+  updateMany: ReturnType<typeof vi.fn>;
+};
 
 type Call = { url: string; init: RequestInit };
 let calls: Call[];
@@ -113,9 +135,14 @@ describe("ApolloEnrichmentProvider.searchOrganization", () => {
 });
 
 describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
+  beforeEach(() => {
+    providerConfigMock.upsert.mockClear();
+    providerConfigMock.findUnique.mockClear();
+    providerConfigMock.findUnique.mockResolvedValue(null);
+  });
   afterEach(() => __resetPlanBlockedForTests());
 
-  it("a 403 with error_code API_INACCESSIBLE throws ProviderPlanError, and memoizes so the next call skips fetch entirely", async () => {
+  it("a 403 with error_code API_INACCESSIBLE throws ProviderPlanError, persists the block, and memoizes so the next call skips fetch entirely", async () => {
     mockFetch(() =>
       json(
         {
@@ -129,10 +156,28 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     const provider = new ApolloEnrichmentProvider();
     await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
     expect(calls).toHaveLength(1);
+    // Persisted (via markPlanBlocked's upsert) so the Next.js web process, which never sees this
+    // in-memory memo, can still learn about the block by reading ProviderConfig.
+    expect(providerConfigMock.upsert).toHaveBeenCalledTimes(1);
+    expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({
+      where: { provider: "apollo" },
+      update: { planBlockDetail: "API_INACCESSIBLE" },
+    });
 
     // Second call, same process: the memo should short-circuit before any network call.
     await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
     expect(calls).toHaveLength(1); // fetch mock still only called once total
+    expect(providerConfigMock.upsert).toHaveBeenCalledTimes(1); // no new persistence on the memo hit
+  });
+
+  it("falls back to matching the error text (/not included in your/i) when error_code is absent, defaulting detail to API_INACCESSIBLE", async () => {
+    mockFetch(() =>
+      json({ error: "This endpoint is not included in your Basic (Trial) plan and is not accessible, even with a master key." }, 403),
+    );
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+      ProviderPlanError,
+    );
+    expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({ update: { planBlockDetail: "API_INACCESSIBLE" } });
   });
 
   it("a plain 403 (no API_INACCESSIBLE) throws a generic HTTP error and is never memoized", async () => {
@@ -143,6 +188,35 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     // Not memoized: a second call re-fetches instead of throwing from a cached block.
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/HTTP 403/);
     expect(calls).toHaveLength(2);
+    expect(providerConfigMock.upsert).not.toHaveBeenCalled();
+  });
+
+  it("the 6h plan-block memo expires: a call after the TTL re-hits the network instead of short-circuiting", async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
+      const provider = new ApolloEnrichmentProvider();
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+      expect(calls).toHaveLength(1);
+
+      // Still within the 6h window: short-circuits without a new fetch.
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+      expect(calls).toHaveLength(1);
+
+      // Advance past the 6h TTL: the memo should no longer block, so the next call re-fetches.
+      vi.advanceTimersByTime(6 * 60 * 60 * 1000 + 1000);
+      mockFetch(() => json({ total_entries: 0, people: [] }));
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      expect(calls).toHaveLength(1); // mockFetch() reset the calls array; this is the post-expiry fetch
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("apolloPlanBlocked() reports unblocked once the in-process memo has expired (with no persisted row)", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() - 1000);
+    providerConfigMock.findUnique.mockResolvedValue(null);
+    expect(await apolloPlanBlocked()).toEqual({ blocked: false });
   });
 });
 

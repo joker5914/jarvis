@@ -51,7 +51,7 @@ export const POST = handle(async (req) => {
     if (!(await isProviderEnabled("apollo"))) {
       return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
     }
-    if (apolloPlanBlocked().blocked) {
+    if ((await apolloPlanBlocked()).blocked) {
       return json({ error: APOLLO_PLAN_BLOCK_MESSAGE, settingsHref: "/settings" }, 409);
     }
     const cfg = await loadConfig(actor.id);

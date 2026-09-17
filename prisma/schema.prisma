@@ -267,6 +267,13 @@ model ProviderConfig {
   dailyBudget  Int       @default(1000)
   usedToday    Int       @default(0)
   usageDate    String?
+  // Persists a provider-plan block (e.g. Apollo's 403 API_INACCESSIBLE for People Search/
+  // Enrichment on free/trial plans) across processes: the worker sees the live 403, but the
+  // Next.js web process only ever reads this row, never Apollo directly, so the routes' gate
+  // must go through the database, not an in-process memo. planBlockDetail carries the raw
+  // provider error code for diagnosis; never key material.
+  planBlockedUntil DateTime?
+  planBlockDetail  String?
 }
 
 model SyncState {

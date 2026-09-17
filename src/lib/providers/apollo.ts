@@ -3,6 +3,7 @@ import { getProviderKey } from "./keys";
 import { ProviderNotConfiguredError, ProviderPlanError } from "./errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { normalizeName } from "@/lib/jobs/shared";
+import { prisma } from "@/lib/db";
 import type { EnrichPerson, EnrichmentProvider } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
@@ -20,13 +21,28 @@ const planBlockedUntil = new Map<string, number>();
  * planBlockedUntil so apolloPlanBlocked() can surface it without a network call. */
 const planBlockedDetail = new Map<string, string>();
 
-function markPlanBlocked(path: string, detail: string) {
-  planBlockedUntil.set(path, Date.now() + PLAN_BLOCK_TTL_MS);
+/** Marks `path` blocked in this process's memo (the worker's per-call short-circuit — see
+ * checkPlanBlocked) *and* persists a single provider-wide block on the ProviderConfig row, since
+ * the worker process is the only one that ever calls Apollo directly (JOB_MODE=queue in
+ * production): the Next.js web process's copy of `planBlockedUntil` is always empty, so the
+ * routes' gate (apolloPlanBlocked) must be able to see this via the database, not just memory.
+ * Upserts like withBudget() does, in case no ProviderConfig row exists yet. */
+async function markPlanBlocked(path: string, detail: string): Promise<void> {
+  const until = Date.now() + PLAN_BLOCK_TTL_MS;
+  planBlockedUntil.set(path, until);
   planBlockedDetail.set(path, detail);
+  await prisma.providerConfig.upsert({
+    where: { provider: "apollo" },
+    update: { planBlockedUntil: new Date(until), planBlockDetail: detail },
+    create: { provider: "apollo", planBlockedUntil: new Date(until), planBlockDetail: detail },
+  });
 }
 
 /** Throws ProviderPlanError with no network call when `path` was recently 403'd as
- * plan-inaccessible; a no-op otherwise (including once the 6h memo has expired). */
+ * plan-inaccessible; a no-op otherwise (including once the 6h memo has expired). Memo-only (no DB
+ * read) — this runs on the hot path inside searchOrganization/searchPeople/enrichPerson, which
+ * only the worker process calls, so its own memo (set by throwFor403 in the same process) is
+ * always up to date for it. */
 function checkPlanBlocked(path: string): void {
   const until = planBlockedUntil.get(path);
   if (until !== undefined && until > Date.now()) {
@@ -34,17 +50,45 @@ function checkPlanBlocked(path: string): void {
   }
 }
 
+/** Clears a plan block, in this process's memo and on the persisted ProviderConfig row, for the
+ * given provider. Called when the operator saves a (presumably fixed) key or re-enables the
+ * provider in Settings, so a stale block doesn't keep refusing Enrich after the underlying
+ * problem is resolved. Provider-neutral name/signature since Settings' PUT route is shared across
+ * providers, even though only Apollo populates a block today. */
+export async function clearPlanBlock(provider: string): Promise<void> {
+  if (provider === "apollo") {
+    for (const path of [PEOPLE_SEARCH_PATH, ORG_SEARCH_PATH, PEOPLE_MATCH_PATH]) {
+      planBlockedUntil.delete(path);
+      planBlockedDetail.delete(path);
+    }
+  }
+  await prisma.providerConfig.updateMany({ where: { provider }, data: { planBlockedUntil: null, planBlockDetail: null } });
+}
+
 /** True when Apollo's plan is known (within the last 6h) to not include the People Search /
  * People Enrichment APIs this app relies on for lead enrichment. Used by the enrich routes to
- * refuse before even queuing a job. Fake provider mode never populates the memo, so this always
- * reports unblocked there. */
-export function apolloPlanBlocked(): { blocked: boolean; detail?: string } {
+ * refuse before even queuing a job. Checks this process's memo first (cheap, and what the worker
+ * relies on); when the memo is empty or expired, falls back to the persisted ProviderConfig row
+ * so a block set by the worker process is still visible to the Next.js web process, which never
+ * calls Apollo directly. A DB hit also re-primes this process's memo so a repeat call in the same
+ * process (e.g. bulk enrich looping business-by-business) doesn't re-hit the database each time.
+ * Fake provider mode never populates the memo or the row, so this always reports unblocked there. */
+export async function apolloPlanBlocked(): Promise<{ blocked: boolean; detail?: string }> {
   const now = Date.now();
   for (const path of [PEOPLE_SEARCH_PATH, ORG_SEARCH_PATH, PEOPLE_MATCH_PATH]) {
     const until = planBlockedUntil.get(path);
     if (until !== undefined && until > now) {
       return { blocked: true, detail: planBlockedDetail.get(path) };
     }
+  }
+  const cfg = await prisma.providerConfig.findUnique({ where: { provider: "apollo" }, select: { planBlockedUntil: true, planBlockDetail: true } });
+  if (cfg?.planBlockedUntil && cfg.planBlockedUntil.getTime() > now) {
+    const untilMs = cfg.planBlockedUntil.getTime();
+    for (const path of [PEOPLE_SEARCH_PATH, ORG_SEARCH_PATH, PEOPLE_MATCH_PATH]) {
+      planBlockedUntil.set(path, untilMs);
+      if (cfg.planBlockDetail) planBlockedDetail.set(path, cfg.planBlockDetail);
+    }
+    return { blocked: true, detail: cfg.planBlockDetail ?? undefined };
   }
   return { blocked: false };
 }
@@ -81,7 +125,7 @@ async function throwFor403(path: string, res: Response): Promise<never> {
   const errorText = body?.error ?? "";
   if (body?.error_code === "API_INACCESSIBLE" || /not included in your/i.test(errorText)) {
     const detail = body?.error_code ?? "API_INACCESSIBLE";
-    markPlanBlocked(path, detail);
+    await markPlanBlocked(path, detail);
     throw new ProviderPlanError("apollo", path, detail);
   }
   throw new Error(`Apollo ${path} HTTP 403`);

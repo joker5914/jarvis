@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
+import { latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
 import { CopyButton } from "./CopyButton";
 import { QualityBadge } from "./QualityBadge";
@@ -148,13 +149,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const people = groupPeople(b.contacts);
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
-  // `b.activity` is ordered most-recent-first (see getBusinessDetail), so the first "enriched"
-  // row whose message starts with one of these prefixes is the latest failed/paused/skipped
-  // enrich attempt — surfaced here so a click that silently failed (e.g. a plan-blocked Apollo
-  // endpoint, a budget/credit pause) stays visible on refresh, not just as a one-shot toast.
-  const lastEnrichIssue = b.activity.find(
-    (a) => a.kind === "enriched" && /^Enrichment (unavailable|skipped|paused)/.test(a.message),
-  );
+  // Surfaces the latest unavailable/paused enrich attempt so a click that silently failed (e.g.
+  // a plan-blocked Apollo endpoint, a budget pause) stays visible on refresh, not just as a
+  // one-shot toast — but only while it's still the most recent enrich outcome, so a later
+  // successful re-enrich clears the line instead of leaving a stale warning underneath it.
+  const lastEnrichIssue = latestEnrichIssue(b.activity);
 
   return (
     <div className="space-y-4" data-testid="lead-detail">

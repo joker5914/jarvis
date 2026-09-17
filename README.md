@@ -18,29 +18,35 @@ as having no email. A monthly credit cap (default 80, a few credits under
 the free tier as headroom) tracks Apollo-sourced email contacts created
 since the cycle's renewal day, which you also set in Settings; every enrich
 path (the background job, the single-business route, the bulk route, and
-the UI) refuses at the cap with no provider call. Bulk Enrich from the
-Leads table is capped at 10 leads per action and confirms the estimated
-credit spend before sending it. Apollo enrichment normally searches people
-by the business's website domain; businesses without a usable website
-domain cost one extra Apollo credit for an Organization Search before the
-people lookup. Phone reveals are never requested. Each category search
-returns at most `maxPlacesPerCategory` (40) places, ranked by Google
-prominence, so a dense zip costs at most about 34 × 40 Place Details calls; a
-Resume never repeats the category searches.
+the UI) refuses at the cap with no provider call — the cap applies once you
+are on a paid plan with API access (see below); a free or trial key never
+reaches it, since People Search/Enrichment calls are refused before any
+credit-consuming request goes out. Bulk Enrich from the Leads table is
+capped at 10 leads per action and confirms the estimated credit spend
+before sending it. Apollo enrichment normally searches people by the
+business's website domain; businesses without a usable website domain cost
+one extra Apollo credit for an Organization Search before the people
+lookup. Phone reveals are never requested. Each category search returns at
+most `maxPlacesPerCategory` (40) places, ranked by Google prominence, so a
+dense zip costs at most about 34 × 40 Place Details calls; a Resume never
+repeats the category searches.
 
-**Apollo's Free plan does not include the People Search or People
+**Apollo's free and trial plans do not include the People Search or People
 Enrichment API** — every plan tier can call Organization Enrichment, but
 People Search and People Match return HTTP 403 (`API_INACCESSIBLE`) even
-with a valid key, regardless of the monthly credit balance above. The app
-detects this the first time it happens, records an `Enrichment
-unavailable: …` row (with the raw Apollo error code) on the lead's activity
-log so a failed Enrich click stays visible after a refresh, and stops
-calling those endpoints for 6 hours (both the background job and the
-single/bulk Enrich routes refuse up front with a 409 during that window) so
-a blocked plan doesn't waste retries or budget. A paid Apollo plan is
-required for API-based people enrichment; without one, use Apollo's web app
-to find and paste in contacts manually, then generate a new API key and
-save it in Settings once you upgrade.
+with a valid key on both the Free plan and the Basic 14-day trial,
+regardless of the monthly credit balance above. The app detects this the
+first time it happens, records an `Enrichment unavailable: …` row (with the
+raw Apollo error code) on the lead's activity log so a failed Enrich click
+stays visible after a refresh, and persists the block (on the `ProviderConfig`
+row, not just in the worker's memory) for 6 hours so both the background
+job and the single/bulk Enrich routes — including the Next.js web process,
+which never calls Apollo directly — refuse up front with a 409 during that
+window instead of wasting retries or budget. Saving a new key or
+re-enabling Apollo in Settings clears the block immediately. A paid Apollo
+plan is required for API-based people enrichment; without one, use Apollo's
+web app to find and paste in contacts manually, then save your API key
+again in Settings once you upgrade.
 
 ## Prerequisites
 
