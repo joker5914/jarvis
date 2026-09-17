@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mergeConfig, overridesSchema, salvageOverrides } from "@/lib/config/runtime";
 import { CATEGORIES } from "@/lib/config/categories";
 import { DEFAULT_EXCLUSION_CONFIG } from "@/lib/config/exclusion";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 
 describe("mergeConfig", () => {
   it("returns defaults for empty overrides", () => {
@@ -10,7 +11,15 @@ describe("mergeConfig", () => {
     expect(c.exclusion.chains).toEqual(DEFAULT_EXCLUSION_CONFIG.chains);
     expect(c.exclusion.entityPatterns).toBe(DEFAULT_EXCLUSION_CONFIG.entityPatterns);
     expect(c.projects).toEqual({ highFitThreshold: 60, mediumFitThreshold: 30, backfillMonths: 12 });
-    expect(c.enrichment).toEqual({ maxPeople: 1, monthlyCreditCap: 80, cycleRenewsOn: null, metroLocation: null });
+    expect(c.enrichment).toEqual({
+      maxPeople: 1,
+      monthlyCreditCap: 80,
+      cycleRenewsOn: null,
+      metroLocation: null,
+      chainHeadcountMin: ENRICH_CONFIG.chainHeadcountMin,
+      preferredTitles: ENRICH_CONFIG.preferredTitles,
+      seniorities: ENRICH_CONFIG.seniorities,
+    });
   });
   it("replaces list fields wholesale, keeps entityPatterns, applies category disable and package override", () => {
     const c = mergeConfig({ exclusion: { chains: ["bella"] }, categories: { disabled: ["bar"], packageOverrides: { cafe: "internet_mobile" } }, projects: { highFitThreshold: 70 } });
@@ -112,5 +121,49 @@ describe("salvageOverrides", () => {
     const raw = { enrichment: { monthlyCreditCap: 1000, futureSetting: "x" } };
     salvageOverrides(raw);
     expect(raw.enrichment.futureSetting).toBe("x");
+  });
+});
+
+describe("targeting overrides (chainHeadcountMin, preferredTitles, seniorities)", () => {
+  it("defaults all three to ENRICH_CONFIG when unset", () => {
+    const e = mergeConfig({}).enrichment;
+    expect(e.chainHeadcountMin).toBe(ENRICH_CONFIG.chainHeadcountMin);
+    expect(e.preferredTitles).toEqual(ENRICH_CONFIG.preferredTitles);
+    expect(e.seniorities).toEqual(ENRICH_CONFIG.seniorities);
+  });
+
+  it("accepts an override for each and merges it over the default", () => {
+    const o = overridesSchema.parse({
+      enrichment: { chainHeadcountMin: 250, preferredTitles: ["Owner", "  Principal "], seniorities: ["owner", "c_suite"] },
+    });
+    // preferredTitles reuses the exclusion word-list normalizer: trimmed and lowercased.
+    expect(o.enrichment?.preferredTitles).toEqual(["owner", "principal"]);
+    const e = mergeConfig(o).enrichment;
+    expect(e.chainHeadcountMin).toBe(250);
+    expect(e.preferredTitles).toEqual(["owner", "principal"]);
+    expect(e.seniorities).toEqual(["owner", "c_suite"]);
+  });
+
+  // An empty title/seniority list would drop the filter from the Apollo query entirely, so the
+  // search would match every employee and the chain threshold would be counting a different
+  // population than it was calibrated against. Refuse it rather than silently widen targeting.
+  it("refuses an empty title or seniority list", () => {
+    expect(() => overridesSchema.parse({ enrichment: { preferredTitles: [] } })).toThrow();
+    expect(() => overridesSchema.parse({ enrichment: { seniorities: [] } })).toThrow();
+    expect(() => overridesSchema.parse({ enrichment: { preferredTitles: ["  ", ""] } })).toThrow();
+  });
+
+  it("refuses a seniority that is not an Apollo-shaped token", () => {
+    // Apollo's person_seniorities values are snake_case tokens ("c_suite"); a space means the
+    // operator typed a label ("C Suite") that Apollo would silently match nothing for.
+    expect(() => overridesSchema.parse({ enrichment: { seniorities: ["C Suite"] } })).toThrow();
+    expect(overridesSchema.parse({ enrichment: { seniorities: ["C_Suite"] } }).enrichment?.seniorities).toEqual(["c_suite"]);
+  });
+
+  it("bounds chainHeadcountMin", () => {
+    expect(() => overridesSchema.parse({ enrichment: { chainHeadcountMin: 0 } })).toThrow();
+    expect(() => overridesSchema.parse({ enrichment: { chainHeadcountMin: 1.5 } })).toThrow();
+    expect(() => overridesSchema.parse({ enrichment: { chainHeadcountMin: ENRICH_CONFIG.chainHeadcountMinMax + 1 } })).toThrow();
+    expect(overridesSchema.parse({ enrichment: { chainHeadcountMin: 1 } }).enrichment?.chainHeadcountMin).toBe(1);
   });
 });

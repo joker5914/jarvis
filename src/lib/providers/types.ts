@@ -138,7 +138,19 @@ export type ApolloCreditUsage = {
  * operator-configured `enrichment.metroLocation` Settings value (e.g. "Houston, Texas"), passed
  * through verbatim as a `person_locations[]` value — it is not derived from the lead's own
  * address, unlike `city`/`state`. */
-export type PeopleSearchQuery = { domain: string | null; orgName: string; city: string | null; state: string | null; metro: string | null };
+export type PeopleSearchQuery = {
+  domain: string | null;
+  orgName: string;
+  city: string | null;
+  state: string | null;
+  metro: string | null;
+  /** Decision-maker targeting filters (Plan 9: per-owner Settings values). Optional so a
+   * standalone caller -- the chain-sweep script, provider unit tests -- can omit them and get the
+   * ENRICH_CONFIG defaults; runEnrich always passes the owner's configured lists. `titles` also
+   * sets the result ranking order, so it must be the same list that built the query. */
+  titles?: string[];
+  seniorities?: string[];
+};
 
 /** Which location scope a `searchPeople` cascade attempt matched in. "any" means either the
  * unlocated first call already had everyone (a single-location SMB), no city/state/metro was

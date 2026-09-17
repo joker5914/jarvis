@@ -230,17 +230,17 @@ async function requireKey() {
   return key;
 }
 
-function titleRank(title: string | null | undefined): number {
+function titleRank(title: string | null | undefined, titles: readonly string[]): number {
   const t = (title ?? "").toLowerCase();
-  const i = ENRICH_CONFIG.preferredTitles.findIndex((p) => t.includes(p));
-  return i === -1 ? ENRICH_CONFIG.preferredTitles.length : i;
+  const i = titles.findIndex((p) => t.includes(p));
+  return i === -1 ? titles.length : i;
 }
 
 /** Best match first: preferred-title rank ascending, then a verified/available email ahead of
  * none, for ties. Extracted from searchPeople (Plan 9 Task 2) so the cascade's per-scope mapping
  * step can call it once per attempt without duplicating the sort. */
-function rank(people: EnrichPerson[]): EnrichPerson[] {
-  return [...people].sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
+function rank(people: EnrichPerson[], titles: readonly string[]): EnrichPerson[] {
+  return [...people].sort((a, b) => titleRank(a.title, titles) - titleRank(b.title, titles) || Number(b.hasEmail) - Number(a.hasEmail));
 }
 
 function qs(params: Record<string, string | number | boolean | string[] | undefined>): string {
@@ -349,10 +349,15 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
   async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
     await checkPlanBlocked(PEOPLE_SEARCH_PATH);
     const key = await requireKey();
+    // Per-owner targeting filters, defaulting to the code constants (see PeopleSearchQuery.titles).
+    // `titles` is reused for the local ranking below so the sort order always matches the filter
+    // that produced the page.
+    const titles = q.titles ?? [...ENRICH_CONFIG.preferredTitles];
+    const seniorities = q.seniorities ?? [...ENRICH_CONFIG.seniorities];
     const base: Record<string, string | number | boolean | string[] | undefined> = {
-      person_titles: [...ENRICH_CONFIG.preferredTitles],
+      person_titles: [...titles],
       include_similar_titles: true,
-      person_seniorities: [...ENRICH_CONFIG.seniorities],
+      person_seniorities: [...seniorities],
       per_page: ENRICH_CONFIG.searchPageSize,
       page: 1,
     };
@@ -387,7 +392,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
         linkedinUrl: null,
         hasEmail: !!p.has_email,
         orgName: p.organization?.name ?? null,
-      })));
+      })), titles);
       const totalEntries = r.data?.total_entries;
       return {
         people,

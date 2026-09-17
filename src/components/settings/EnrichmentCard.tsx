@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { formatMonthDayUtc } from "@/lib/format";
 import type { EnrichmentConfig } from "./types";
@@ -13,6 +15,7 @@ const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
 // <Select.Value> otherwise resolves labels only from <Select.Item>s that have already mounted
 // in the (portalled, closed-by-default) popup.
 const MAX_PEOPLE_ITEMS = MAX_PEOPLE_OPTIONS.map((n) => ({ value: String(n), label: `${n} ${n === 1 ? "person" : "people"}` }));
+const linesToArray = (v: string) => v.split("\n").map((s) => s.trim()).filter(Boolean);
 
 export function EnrichmentCard({
   value,
@@ -25,6 +28,20 @@ export function EnrichmentCard({
    * Settings hasn't set one explicitly — see credits.apollo.cycleEnd. */
   renewalHint?: string | null;
 }) {
+  // Same raw-text buffering as ExclusionCard: keep the typed text locally so a newline isn't
+  // collapsed by re-deriving `join("\n")` on every keystroke, and resync only when `value`
+  // changes identity from outside (e.g. a reload after save).
+  const [titlesText, setTitlesText] = useState(value.preferredTitles.join("\n"));
+  const [senioritiesText, setSenioritiesText] = useState(value.seniorities.join("\n"));
+  const lastValue = useRef(value);
+  useEffect(() => {
+    if (lastValue.current !== value) {
+      lastValue.current = value;
+      setTitlesText(value.preferredTitles.join("\n"));
+      setSenioritiesText(value.seniorities.join("\n"));
+    }
+  }, [value]);
+
   return (
     <Card>
       <CardHeader>
@@ -80,6 +97,60 @@ export function EnrichmentCard({
             data-testid="enrichment-metro"
           />
           <p className="text-xs text-muted-foreground">Used when nobody is found in the lead&apos;s own city: the nearest larger city, written as City, State</p>
+        </div>
+      </CardContent>
+      <CardContent className="space-y-4 border-t pt-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-medium">Decision-maker targeting</h3>
+          <p className="text-xs text-muted-foreground">
+            These three settings work together. The title and seniority filters below decide which people Apollo counts at a
+            company, and the chain cutoff is a threshold on that same count &mdash; so if you change either list, the cutoff is
+            measuring a different population and should be re-checked against a few known companies before you trust it.
+            Searching is free; only revealing a contact costs a credit.
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="space-y-1">
+            <Label htmlFor="enrichment-chain-min">Chain cutoff (decision-makers)</Label>
+            <Input
+              id="enrichment-chain-min"
+              type="number"
+              min={1}
+              max={ENRICH_CONFIG.chainHeadcountMinMax}
+              value={value.chainHeadcountMin}
+              onChange={(e) => onChange({ ...value, chainHeadcountMin: Number(e.target.value) })}
+              data-testid="enrichment-chain-min"
+            />
+            <p className="text-xs text-muted-foreground">At or above this many matching people company-wide, a lead is treated as a national chain and skipped before any credit is spent</p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="enrichment-titles">Titles (one per line)</Label>
+            <Textarea
+              id="enrichment-titles"
+              data-testid="enrichment-titles"
+              rows={7}
+              value={titlesText}
+              onChange={(e) => {
+                setTitlesText(e.target.value);
+                onChange({ ...value, preferredTitles: linesToArray(e.target.value) });
+              }}
+            />
+            <p className="text-xs text-muted-foreground">Most-wanted first &mdash; the order also ranks which contact is revealed first. Similar titles are matched too</p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="enrichment-seniorities">Seniorities (one per line)</Label>
+            <Textarea
+              id="enrichment-seniorities"
+              data-testid="enrichment-seniorities"
+              rows={7}
+              value={senioritiesText}
+              onChange={(e) => {
+                setSenioritiesText(e.target.value);
+                onChange({ ...value, seniorities: linesToArray(e.target.value) });
+              }}
+            />
+            <p className="text-xs text-muted-foreground">Apollo&apos;s own seniority codes, lowercase with underscores &mdash; e.g. owner, founder, c_suite, vp, director, manager</p>
+          </div>
         </div>
       </CardContent>
     </Card>

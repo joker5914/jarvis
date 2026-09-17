@@ -42,6 +42,13 @@ export type EnrichmentConfig = {
   /** Operator-typed metro area (e.g. "Houston, Texas"), used by the location cascade's metro
    * scope when the lead's own city scope is empty or skipped. Not prefilled; null by default. */
   metroLocation: string | null;
+  /** Decision-maker targeting. These three are coupled: the two lists decide which people Apollo
+   * counts, and `chainHeadcountMin` is the cutoff on that count above which a domain is treated
+   * as a national chain rather than an SMB — so changing a list invalidates a threshold that was
+   * measured against the old one. The card states this next to the fields. */
+  chainHeadcountMin: number;
+  preferredTitles: string[];
+  seniorities: string[];
 };
 
 export type CreditStatus = {

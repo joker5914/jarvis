@@ -50,6 +50,34 @@ beforeEach(() => vi.useRealTimers());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ApolloEnrichmentProvider.searchPeople", () => {
+  // Plan 9: the title/seniority filters became per-owner Settings values. The provider takes them
+  // off the query so it stays usable standalone (chain-sweep, tests) and falls back to the
+  // ENRICH_CONFIG defaults when the caller doesn't supply them.
+  it("sends the caller's titles and seniorities, and ranks by the caller's title order", async () => {
+    mockFetch(() => json({ total_entries: 2, people: [
+      { id: "p1", first_name: "Sam", last_name_obfuscated: "K.", title: "Principal", has_email: false },
+      { id: "p2", first_name: "Maria", last_name_obfuscated: "L.", title: "Owner", has_email: false },
+    ] }));
+    const { people } = await new ApolloEnrichmentProvider().searchPeople(
+      { domain: "x.com", orgName: "X", city: null, state: null, metro: null, titles: ["principal", "owner"], seniorities: ["partner"] },
+      5,
+    );
+    const u = new URL(calls[0].url);
+    expect(u.searchParams.getAll("person_titles[]")).toEqual(["principal", "owner"]);
+    expect(u.searchParams.getAll("person_seniorities[]")).toEqual(["partner"]);
+    // "principal" is first in the caller's list, so it outranks the owner -- proving the ranking
+    // reads the same list as the query, not the ENRICH_CONFIG default (where owner is first).
+    expect(people.map((x) => x.title)).toEqual(["Principal", "Owner"]);
+  });
+
+  it("falls back to the ENRICH_CONFIG targeting filters when the query omits them", async () => {
+    mockFetch(() => json({ total_entries: 1, people: [{ id: "p1", first_name: "Maria", last_name_obfuscated: "L.", title: "Owner", has_email: false }] }));
+    await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5);
+    const u = new URL(calls[0].url);
+    expect(u.searchParams.getAll("person_titles[]")).toEqual([...ENRICH_CONFIG.preferredTitles]);
+    expect(u.searchParams.getAll("person_seniorities[]")).toEqual([...ENRICH_CONFIG.seniorities]);
+  });
+
   it("sends people search parameters in the query string (arrays as name[]), and ranks owners first", async () => {
     mockFetch(() => json({ total_entries: 3, people: [
       { id: "p1", first_name: "Sam", last_name_obfuscated: "K.", title: "Barista", has_email: true },

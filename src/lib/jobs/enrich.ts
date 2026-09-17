@@ -129,9 +129,13 @@ export async function runEnrich(
     const domain = domainFromUrl(b.websiteUrl);
     const { city, state } = regionFromAddress(b.formattedAddress);
     const metro = cfg.enrichment.metroLocation ?? null;
-    const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state, metro }, maxPeople);
+    const search = await deps.providers.enrichment.searchPeople(
+      { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities },
+      maxPeople,
+    );
     // Chain-headcount guard (Plan 9 Task 3): a domain with this many *decision-maker* hits in
-    // Apollo (title/seniority-filtered — see the ENRICH_CONFIG.chainHeadcountMin doc comment for
+    // Apollo (title/seniority-filtered by the same cfg.enrichment lists passed above — see the
+    // ENRICH_CONFIG.chainHeadcountMin doc comment for
     // why this isn't a raw employee count), at any location, is a national chain, not an SMB
     // prospect — reads search.totalAtDomain (the *national* count from the cascade's unlocated
     // first call), never search.totalFound (which can be a much smaller scoped count, e.g. just a
@@ -140,7 +144,7 @@ export async function runEnrich(
     // undo path) can still re-enrich. The persisted reason string keeps the `apollo_headcount`
     // name (not renamed to match the "decision-makers" wording) since it's a stored, matched-on
     // contract — see rescoreExclusions and the PATCH route's clearChain branch.
-    if (domain && search.totalAtDomain !== null && search.totalAtDomain >= ENRICH_CONFIG.chainHeadcountMin) {
+    if (domain && search.totalAtDomain !== null && search.totalAtDomain >= cfg.enrichment.chainHeadcountMin) {
       const reason = `chain:apollo_headcount:${search.totalAtDomain}`;
       await prisma.business.update({
         where: { id: businessId },

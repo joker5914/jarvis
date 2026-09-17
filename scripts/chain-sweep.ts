@@ -27,7 +27,7 @@ import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { getProviders } from "@/lib/providers";
 import { domainFromUrl, redactApiKeyLike } from "@/lib/jobs/enrich";
-import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { loadConfig } from "@/lib/config/runtime";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { ProviderNotConfiguredError, ProviderPlanError } from "@/lib/providers/errors";
 
@@ -43,6 +43,10 @@ async function main() {
   }
 
   const actor = await getActor();
+  // Plan 9: threshold and targeting filters are per-owner Settings values, so the sweep has to use
+  // the same ones a live Enrich click would -- a sweep run against different filters would be
+  // counting a different population than the guard it stands in for.
+  const cfg = await loadConfig(actor.id);
   // N4 (fix round review): --limit must apply AFTER skipping shared/social/booking-platform hosts
   // (domainFromUrl returns null for those), not before — otherwise `--limit 50` could examine
   // fewer than 50 actual businesses whenever some of the first N rows have no usable domain.
@@ -57,7 +61,7 @@ async function main() {
   const businesses = limit ? withDomain.slice(0, limit) : withDomain;
 
   console.log(
-    `Checking ${businesses.length} business(es) with a usable domain${limit ? ` (--limit ${limit})` : ""} for a decision-maker count >= ${ENRICH_CONFIG.chainHeadcountMin}.`,
+    `Checking ${businesses.length} business(es) with a usable domain${limit ? ` (--limit ${limit})` : ""} for a decision-maker count >= ${cfg.enrichment.chainHeadcountMin}.`,
   );
   console.log(
     "This app's Apollo daily call budget (Settings -> Apollo) bounds how many can be examined in one run — raise it to at least the business count above for full coverage.\n",
@@ -75,10 +79,13 @@ async function main() {
 
   for (const b of businesses) {
     try {
-      const search = await provider.searchPeople({ domain: b.domain, orgName: b.name, city: null, state: null, metro: null }, 1);
+      const search = await provider.searchPeople(
+        { domain: b.domain, orgName: b.name, city: null, state: null, metro: null, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities },
+        1,
+      );
       checked++;
       const total = search.totalAtDomain;
-      const isChain = total !== null && total >= ENRICH_CONFIG.chainHeadcountMin;
+      const isChain = total !== null && total >= cfg.enrichment.chainHeadcountMin;
       console.log(`${b.domain}\t${total ?? "?"}\t${isChain ? "chain?" : ""}`);
       if (isChain && total !== null) toMark.push({ id: b.id, name: b.name, domain: b.domain, total });
     } catch (e) {

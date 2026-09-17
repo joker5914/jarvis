@@ -8,10 +8,19 @@ import { PROJECT_CONFIG } from "./projects";
 
 const PACKAGE_SLUGS = PACKAGES.map((p) => p.slug) as [PackageSlug, ...PackageSlug[]];
 const CATEGORY_SLUGS = CATEGORIES.map((c) => c.slug) as [string, ...string[]];
+/** Apollo's `person_seniorities` values are snake_case tokens ("c_suite", "vp"). Not validated
+ * against a fixed vocabulary -- Apollo's set isn't pinned anywhere we control, and People Search
+ * costs no credits, so an unknown token costs a wasted search rather than a credit. The shape
+ * check still catches the likely operator error: typing a display label ("C Suite") instead. */
+const SENIORITY_TOKEN = /^[a-z][a-z_]*$/;
 const wordList = z
   .array(z.string().transform((s) => s.trim().toLowerCase()))
   .transform((a) => a.filter(Boolean))
   .pipe(z.array(z.string().max(80)).max(500));
+/** For a filter where an empty list is not "no opinion" but "match everything" -- dropping
+ * `person_titles[]`/`person_seniorities[]` from the Apollo query would widen the search to every
+ * employee and leave `chainHeadcountMin` counting a population it was never calibrated against. */
+const nonEmptyWordList = wordList.refine((a) => a.length > 0, { message: "must list at least one entry" });
 
 export const overridesSchema = z
   .object({
@@ -57,6 +66,12 @@ export const overridesSchema = z
          * see PeopleSearchQuery.metro and ApolloEnrichmentProvider.searchPeople. Not prefilled;
          * null (the default) means the metro scope is skipped entirely. */
         metroLocation: z.string().trim().min(3).max(80).nullable().optional(),
+        /** Plan 9 targeting knobs, previously code constants. All three are coupled: the two
+         * filters below decide which people Apollo counts, and `chainHeadcountMin` is a threshold
+         * on that count -- see the ENRICH_CONFIG doc comments. */
+        chainHeadcountMin: z.number().int().min(1).max(ENRICH_CONFIG.chainHeadcountMinMax).optional(),
+        preferredTitles: nonEmptyWordList.optional(),
+        seniorities: nonEmptyWordList.pipe(z.array(z.string().regex(SENIORITY_TOKEN))).optional(),
       })
       .strict()
       .optional(),
@@ -70,7 +85,15 @@ export type RuntimeConfig = {
   categories: Category[];
   allCategories: (Category & { enabled: boolean; defaultPackageSlug: PackageSlug })[];
   projects: { highFitThreshold: number; mediumFitThreshold: number; backfillMonths: number };
-  enrichment: { maxPeople: number; monthlyCreditCap: number; cycleRenewsOn: string | null; metroLocation: string | null };
+  enrichment: {
+    maxPeople: number;
+    monthlyCreditCap: number;
+    cycleRenewsOn: string | null;
+    metroLocation: string | null;
+    chainHeadcountMin: number;
+    preferredTitles: string[];
+    seniorities: string[];
+  };
   overrides: ConfigOverrides;
 };
 
@@ -98,6 +121,9 @@ export function mergeConfig(o: ConfigOverrides): RuntimeConfig {
       monthlyCreditCap: o.enrichment?.monthlyCreditCap ?? ENRICH_CONFIG.monthlyCreditCapDefault,
       cycleRenewsOn: o.enrichment?.cycleRenewsOn ?? null,
       metroLocation: o.enrichment?.metroLocation ?? null,
+      chainHeadcountMin: o.enrichment?.chainHeadcountMin ?? ENRICH_CONFIG.chainHeadcountMin,
+      preferredTitles: o.enrichment?.preferredTitles ?? [...ENRICH_CONFIG.preferredTitles],
+      seniorities: o.enrichment?.seniorities ?? [...ENRICH_CONFIG.seniorities],
     },
     overrides: o,
   };

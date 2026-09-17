@@ -47,6 +47,15 @@ export const ENRICH_CONFIG = {
    * this threshold should be re-measured if those change.
    */
   chainHeadcountMin: 1000,
+  /** Ceiling `overridesSchema` allows for `enrichment.chainHeadcountMin`. Only a sanity bound --
+   * the useful range is far lower; anything above the largest employer Apollo indexes disables the
+   * guard, which is a legitimate (if credit-hungry) choice, so this is deliberately generous. */
+  chainHeadcountMinMax: 1_000_000,
+  /** Defaults for the two coupled targeting filters. Both are overridable per owner via
+   * `overridesSchema.enrichment` (Settings -> Apollo enrichment); these values are what an owner
+   * with no override gets, and what `chainHeadcountMin` above was measured against. Changing
+   * either one changes what Apollo's `total_entries` counts, so the threshold has to be
+   * re-measured alongside them -- the Settings card says so next to the fields. */
   preferredTitles: ["owner", "founder", "general manager", "office manager", "president", "ceo", "manager"],
   seniorities: ["owner", "founder", "c_suite", "vp", "director", "manager"],
   /** Skip a paid re-enrich (and the provider calls it would cost) within this many days of the last successful run, unless forced. */

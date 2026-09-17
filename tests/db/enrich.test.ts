@@ -375,6 +375,35 @@ describe("runEnrich", () => {
       expect(log[0].message).toBe("Enrichment skipped: 4753 decision-makers at hrblock.com in Apollo — not an SMB (marked as chain)");
     });
 
+    // Plan 9: the threshold is a per-owner Settings value, not a code constant. Same headcount
+    // (31, the measured kidsrkids.com count) that passes at the 1000 default must be excluded once
+    // the owner lowers the threshold under it -- proving the guard reads config, not ENRICH_CONFIG.
+    it("uses the owner's configured threshold instead of the default", async () => {
+      await saveOverrides(OWNER, { enrichment: { chainHeadcountMin: 30 } });
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 31, totalAtDomain: 31, scope: "any" });
+      const d = deps(fake);
+      expect(await runEnrich(b.id, OWNER, d)).toEqual({ added: 0, updated: 0, skipped: "chain" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).exclusionReasons).toEqual(["chain:apollo_headcount:31"]);
+    });
+
+    // The configured targeting filters have to reach Apollo, since they are what its total_entries
+    // (and therefore the threshold above) counts.
+    it("passes the owner's configured titles and seniorities to the provider", async () => {
+      await saveOverrides(OWNER, { enrichment: { preferredTitles: ["principal"], seniorities: ["partner"] } });
+      const b = await biz({ name: "Bella Nails", websiteUrl: "https://bellanails.com" });
+      const fake = new FakeEnrichmentProvider();
+      let seen: { titles?: string[]; seniorities?: string[] } | null = null;
+      const inner = fake.searchPeople.bind(fake);
+      fake.searchPeople = async (q, max) => { seen = { titles: q.titles, seniorities: q.seniorities }; return inner(q, max); };
+      await runEnrich(b.id, OWNER, deps(fake));
+      expect(seen).toEqual({ titles: ["principal"], seniorities: ["partner"] });
+    });
+
     it("proceeds normally when totalAtDomain is below the threshold (a franchise brand, not a chain)", async () => {
       // 31 is the live-measured decision-maker count for kidsrkids.com — a real franchise SMB
       // prospect (see the ENRICH_CONFIG.chainHeadcountMin doc comment).
