@@ -2,8 +2,22 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json, parseJson } from "@/lib/api";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { loadConfig } from "@/lib/config/runtime";
+import { creditStatus, estimateCredits } from "@/lib/enrichment/credits";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
 import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
+
+/** Refuses at the monthly Apollo credit cap before any provider call is queued, shared by the
+ * single-business and bulk enrich routes. Returns null when there is remaining budget. */
+async function assertCredits(ownerId: string) {
+  const cfg = await loadConfig(ownerId);
+  const s = await creditStatus(ownerId, cfg);
+  if (s.remaining <= 0) {
+    return json({ error: `Apollo monthly credit cap reached (${s.used}/${s.cap})`, settingsHref: "/settings" }, 409);
+  }
+  return null;
+}
 
 const schema = z.object({
   ids: z.array(z.string()).min(1).max(500),
@@ -11,6 +25,7 @@ const schema = z.object({
   addTagId: z.string().optional(),
   enrich: z.boolean().optional(),
   enrichForce: z.boolean().optional(),
+  people: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
 });
 
 export const POST = handle(async (req) => {
@@ -24,14 +39,20 @@ export const POST = handle(async (req) => {
     if (!tag) throw new ApiError(404, "Tag not found");
   }
 
+  let estimatedCredits = 0;
   if (body.enrich) {
-    if (ids.length > 200) throw new ApiError(400, "Enrich at most 200 leads per action");
+    if (body.ids.length > 10) throw new ApiError(400, "Enrich at most 10 leads per action");
     if (!(await isProviderConfigured("apollo"))) {
       return json({ error: "Apollo API key is not configured", settingsHref: "/settings" }, 409);
     }
     if (!(await isProviderEnabled("apollo"))) {
       return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
     }
+    const capError = await assertCredits(actor.id);
+    if (capError) return capError;
+    const cfg = await loadConfig(actor.id);
+    const people = body.people ?? cfg.enrichment.maxPeople;
+    estimatedCredits = estimateCredits(ids.length, people);
   }
 
   if (body.outreachStatus) {
@@ -56,12 +77,12 @@ export const POST = handle(async (req) => {
         continue;
       }
       try {
-        if (await enqueueEnrich(b.id, actor.id, { force: body.enrichForce })) enrichQueued++;
+        if (await enqueueEnrich(b.id, actor.id, { force: body.enrichForce, people: body.people })) enrichQueued++;
       } catch (e) {
         enrichFailed++;
         console.error(`[bulk enrich] ${b.id}`, e);
       }
     }
   }
-  return json({ updated: ids.length, enrichQueued, enrichFailed, enrichSkipped });
+  return json({ updated: ids.length, enrichQueued, enrichFailed, enrichSkipped, estimatedCredits });
 });

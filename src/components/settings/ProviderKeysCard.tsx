@@ -8,7 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { ProviderEntry } from "./types";
+import { formatDate } from "@/lib/format";
+import type { CreditStatus, ProviderEntry } from "./types";
 
 const STATUS_LABEL: Record<ProviderEntry["source"], string> = {
   env: "From environment",
@@ -16,7 +17,7 @@ const STATUS_LABEL: Record<ProviderEntry["source"], string> = {
   none: "Not configured",
 };
 
-function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void }) {
+function ProviderRow({ p, credits, onChanged }: { p: ProviderEntry; credits?: CreditStatus; onChanged: () => void }) {
   // The key input is intentionally never derived from `p` — a stored key is never echoed back
   // by the API, so there is nothing to pre-fill it with.
   const [key, setKey] = useState("");
@@ -77,6 +78,11 @@ function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void
           {p.usedToday} / {p.dailyBudget} used today
         </span>
       </div>
+      {p.provider === "apollo" && credits && (
+        <p className="text-xs text-muted-foreground" data-testid="credits-used">
+          Credits used this cycle: {credits.used}/{credits.cap} · cycle started {formatDate(credits.cycleStart)}
+        </p>
+      )}
       {p.source === "env" && p.hasStoredKey && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
           A stored key also exists; the environment variable takes precedence until it is unset.
@@ -135,7 +141,15 @@ function ProviderRow({ p, onChanged }: { p: ProviderEntry; onChanged: () => void
   );
 }
 
-export function ProviderKeysCard({ providers, onChanged }: { providers: ProviderEntry[]; onChanged: () => void }) {
+export function ProviderKeysCard({
+  providers,
+  credits,
+  onChanged,
+}: {
+  providers: ProviderEntry[];
+  credits?: CreditStatus;
+  onChanged: () => void;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -143,7 +157,7 @@ export function ProviderKeysCard({ providers, onChanged }: { providers: Provider
       </CardHeader>
       <CardContent className="space-y-3">
         {providers.map((p) => (
-          <ProviderRow key={p.provider} p={p} onChanged={onChanged} />
+          <ProviderRow key={p.provider} p={p} credits={credits} onChanged={onChanged} />
         ))}
       </CardContent>
     </Card>

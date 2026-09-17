@@ -35,9 +35,23 @@ export type ProjectsConfig = {
   backfillMonths: number;
 };
 
+export type EnrichmentConfig = {
+  maxPeople: number;
+  monthlyCreditCap: number;
+  cycleRenewsOn: string | null;
+};
+
+export type CreditStatus = {
+  used: number;
+  cap: number;
+  remaining: number;
+  cycleStart: string;
+};
+
 export type SettingsPayload = {
   providers: ProviderEntry[];
-  config: { exclusion: ExclusionConfig; categories: CategoryEntry[]; projects: ProjectsConfig };
+  config: { exclusion: ExclusionConfig; categories: CategoryEntry[]; projects: ProjectsConfig; enrichment: EnrichmentConfig };
+  credits: CreditStatus;
   packages: PackageOption[];
-  defaults: { exclusion: ExclusionConfig; projects: ProjectsConfig };
+  defaults: { exclusion: ExclusionConfig; projects: ProjectsConfig; enrichment: EnrichmentConfig };
 };

@@ -31,6 +31,7 @@ type Detail = {
 };
 
 type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
+type CreditStatus = { used: number; cap: number; remaining: number; maxPeople: number };
 
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. */
@@ -68,6 +69,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [newTag, setNewTag] = useState("");
   const [notes, setNotes] = useState("");
   const [enriching, setEnriching] = useState(false);
+  const [credits, setCredits] = useState<CreditStatus | null>(null);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function load() {
@@ -78,7 +80,13 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     setB(business);
     setNotes(business.notes);
   }
+  async function loadCredits() {
+    const res = await fetch("/api/enrichment/credits", { cache: "no-store" });
+    if (!res.ok) return;
+    setCredits(await res.json());
+  }
   useEffect(() => { load(); fetch("/api/tags").then((r) => r.json()).then((d) => setTags(d.items ?? [])); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadCredits(); }, []);
 
   useEffect(() => () => { if (notesTimer.current) clearTimeout(notesTimer.current); }, []);
 
@@ -110,6 +118,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
       toast.success("Enrichment queued");
       await load();
+      await loadCredits();
       onChanged?.();
     } finally {
       setEnriching(false);
@@ -147,15 +156,25 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           <QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} />
           <SourceBadge source={b.source} />
           {b.exclusion === "none" ? (
-            <Button size="sm" variant="outline" className="ml-auto" data-testid="enrich-button" disabled={enriching} onClick={enrich}>
-              {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
-            </Button>
+            <span className="ml-auto flex items-center gap-2">
+              <Button size="sm" variant="outline" data-testid="enrich-button" disabled={enriching || credits?.remaining === 0} onClick={enrich}>
+                {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+              </Button>
+              {credits && (
+                <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
+                  ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
+                </span>
+              )}
+            </span>
           ) : (
             <span className="ml-auto text-xs text-muted-foreground" data-testid="enrich-excluded-note">
               Excluded — not enriched
             </span>
           )}
         </div>
+        {b.exclusion === "none" && credits?.remaining === 0 && (
+          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+        )}
         <p className="text-sm text-muted-foreground">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
         <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
           {b.phone && <span className="inline-flex items-center gap-1"><a href={`tel:${b.phone}`} className="hover:underline">{b.phone}</a><CopyButton value={b.phone} label="Phone" /></span>}

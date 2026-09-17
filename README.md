@@ -10,10 +10,21 @@ This is Plan 1 of the project: zip-code search and the leads table, detail
 drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
 Plan 3 (below) adds the always-on Scanner. Plan 4 adds Apollo enrichment
 (owner/GM contact search and match) and a Settings page for pasting API
-keys. Apollo enrichment normally searches people by the business's website
-domain; businesses without a usable website domain cost one extra Apollo
-credit for an Organization Search before the people lookup. Each category
-search returns at most `maxPlacesPerCategory` (40) places, ranked by Google
+keys. Plan 7 makes that enrichment deliberate and safe on Apollo's free
+tier (85 credits/month, one credit per verified net-new email): by default
+Apollo enrichment reveals **one** decision-maker per business (configurable
+1–5 in Settings), and it never pays to reveal a person Apollo already flags
+as having no email. A monthly credit cap (default 80, a few credits under
+the free tier as headroom) tracks Apollo-sourced email contacts created
+since the cycle's renewal day, which you also set in Settings; every enrich
+path (the background job, the single-business route, the bulk route, and
+the UI) refuses at the cap with no provider call. Bulk Enrich from the
+Leads table is capped at 10 leads per action and confirms the estimated
+credit spend before sending it. Apollo enrichment normally searches people
+by the business's website domain; businesses without a usable website
+domain cost one extra Apollo credit for an Organization Search before the
+people lookup. Phone reveals are never requested. Each category search
+returns at most `maxPlacesPerCategory` (40) places, ranked by Google
 prominence, so a dense zip costs at most about 34 × 40 Place Details calls; a
 Resume never repeats the category searches.
 

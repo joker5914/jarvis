@@ -4,6 +4,8 @@ import { handle, json } from "@/lib/api";
 import { loadConfig } from "@/lib/config/runtime";
 import { budgetStatus } from "@/lib/providers/budget";
 import { DEFAULT_EXCLUSION_CONFIG } from "@/lib/config/exclusion";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { creditStatus } from "@/lib/enrichment/credits";
 import { PACKAGES } from "@/lib/config/packages";
 import { PROJECT_CONFIG } from "@/lib/config/projects";
 
@@ -15,6 +17,7 @@ const PROVIDERS = [
 export const GET = handle(async () => {
   const actor = await getActor();
   const cfg = await loadConfig(actor.id);
+  const credits = await creditStatus(actor.id, cfg);
   const providers = await Promise.all(
     PROVIDERS.map(async (p) => {
       const row = await prisma.providerConfig.findUnique({ where: { provider: p.provider } });
@@ -47,7 +50,9 @@ export const GET = handle(async () => {
         defaultPackageSlug,
       })),
       projects: cfg.projects,
+      enrichment: cfg.enrichment,
     },
+    credits: { used: credits.used, cap: credits.cap, remaining: credits.remaining, cycleStart: credits.cycleStart },
     packages: PACKAGES,
     defaults: {
       exclusion: defaultExclusion,
@@ -56,6 +61,7 @@ export const GET = handle(async () => {
         mediumFitThreshold: PROJECT_CONFIG.mediumFitThreshold,
         backfillMonths: PROJECT_CONFIG.backfillMonths,
       },
+      enrichment: { maxPeople: ENRICH_CONFIG.maxPeople, monthlyCreditCap: ENRICH_CONFIG.monthlyCreditCapDefault, cycleRenewsOn: null },
     },
   });
 });

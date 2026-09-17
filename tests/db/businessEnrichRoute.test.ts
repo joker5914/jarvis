@@ -2,8 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import type { NextRequest } from "next/server";
 import type { ProviderConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { saveOverrides } from "@/lib/config/runtime";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
+import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -150,5 +152,81 @@ describe("enrich routes: not-configured provider (real mode, no key)", () => {
     const body = await res.json();
     expect(body.error).toBe("Apollo API key is not configured");
     expect(body.settingsHref).toBe("/settings");
+  });
+});
+
+describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
+  let prevJobMode: string | undefined;
+
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+  });
+  beforeEach(async () => {
+    await cleanup();
+    await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+  });
+
+  it("GET /api/enrichment/credits returns the credit status for a fresh owner", async () => {
+    const res = await creditsGet({} as NextRequest, noCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ used: 0, cap: 80, remaining: 80, maxPeople: 1 });
+    expect(body.cycleStart).toBeTruthy();
+  });
+
+  it("POST /businesses/:id/enrich 202 body carries estimatedCredits (default and overridden)", async () => {
+    const b1 = await biz("none");
+    const res1 = await enrichPost(jsonReq(), ctxFor(b1.id));
+    expect(res1.status).toBe(202);
+    const body1 = await res1.json();
+    expect(body1.estimatedCredits).toBe(1);
+
+    const b2 = await biz("none");
+    const res2 = await enrichPost(jsonReq({ people: 3 }), ctxFor(b2.id));
+    expect(res2.status).toBe(202);
+    const body2 = await res2.json();
+    expect(body2.estimatedCredits).toBe(3);
+  });
+
+  it("POST /businesses/:id/enrich returns 409 with settingsHref at the credit cap", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/credit cap/i);
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("POST /businesses/bulk enrich returns 409 at the credit cap", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/credit cap/i);
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("POST /businesses/bulk enrich rejects more than 10 ids with 400", async () => {
+    const ids = Array.from({ length: 11 }, (_, i) => `fake-id-${i}`);
+    const res = await bulkPost(jsonReq({ ids, enrich: true }), noCtx);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Enrich at most 10 leads per action");
+  });
+
+  it("POST /businesses/bulk enrich response includes estimatedCredits", async () => {
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.estimatedCredits).toBe(1);
   });
 });

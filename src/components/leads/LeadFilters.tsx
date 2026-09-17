@@ -110,6 +110,11 @@ export function LeadFilters({ categories = CATEGORIES }: { categories?: Category
           onCheckedChange={(c) => set("showExcluded", c ? "true" : null)} />
         <Label htmlFor="f-excluded">Show excluded (enterprise)</Label>
       </div>
+      <div className="flex items-center gap-2">
+        <Checkbox id="f-needs-enrichment" data-testid="needs-enrichment" checked={params.get("needs") === "enrichment"}
+          onCheckedChange={(c) => set("needs", c ? "enrichment" : null)} />
+        <Label htmlFor="f-needs-enrichment">Needs enrichment</Label>
+      </div>
       <Button variant="outline" size="sm" onClick={() => { dirty.current = false; zipDirty.current = false; setQ(""); setZip(""); reset(); }}>Clear filters</Button>
     </div>
   );
