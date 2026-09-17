@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { formatMonthDayUtc } from "@/lib/format";
 import type { EnrichmentConfig } from "./types";
 
 const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
@@ -12,16 +13,6 @@ const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
 // <Select.Value> otherwise resolves labels only from <Select.Item>s that have already mounted
 // in the (portalled, closed-by-default) popup.
 const MAX_PEOPLE_ITEMS = MAX_PEOPLE_OPTIONS.map((n) => ({ value: String(n), label: `${n} ${n === 1 ? "person" : "people"}` }));
-
-/** Formats a `YYYY-MM-DD` local-date string as "Oct 16" without going through the viewer's own
- * timezone (a plain `new Date("2026-10-16")` is midnight UTC, which a US timezone would render as
- * the previous day) — forces UTC on both the parse and the format so the date never shifts. Kept
- * as its own copy rather than importing ProviderKeysCard's (small, presentational, not worth a
- * shared module for one line). */
-function formatMonthDay(ymd: string): string {
-  const [y, m, d] = ymd.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-}
 
 export function EnrichmentCard({
   value,
@@ -76,7 +67,7 @@ export function EnrichmentCard({
             onChange={(e) => onChange({ ...value, cycleRenewsOn: e.target.value || null })}
             data-testid="enrichment-renews"
           />
-          <p className="text-xs text-muted-foreground">Leave blank to use Apollo&apos;s cycle{renewalHint ? ` (renews ${formatMonthDay(renewalHint)})` : ""}</p>
+          <p className="text-xs text-muted-foreground">Leave blank to use Apollo&apos;s cycle{renewalHint ? ` (renews ${formatMonthDayUtc(renewalHint)})` : ""}</p>
         </div>
         <div className="space-y-1">
           <Label htmlFor="enrichment-metro">Metro area for enrichment</Label>

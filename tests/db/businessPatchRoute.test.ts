@@ -20,7 +20,7 @@ async function chains(): Promise<string[]> {
   return (cfg?.overrides as { exclusion?: { chains?: string[] } } | null)?.exclusion?.chains ?? [];
 }
 
-const NAMES = ["Zumiez", "Zumiez Outlet", "H&R Block", "Walmart Supercenter"];
+const NAMES = ["Zumiez", "Zumiez Outlet", "H&R Block", "Walmart Supercenter", "LLC", "A1"];
 
 async function cleanup() {
   await prisma.business.deleteMany({ where: { ownerId: OWNER, name: { in: NAMES } } });
@@ -102,6 +102,25 @@ describe("PATCH /api/businesses/:id markAsChain", () => {
     const b = await biz("Zumiez");
     const res = await PATCH(jsonReq({ markAsChain: true, clearChain: true }), ctxFor(b.id));
     expect(res.status).toBe(400);
+  });
+
+  // L2 (whole-branch review): chainKeyFor("LLC") is "" (the whole name is a legal-entity suffix)
+  // — an empty key would match every business via hasWord(text, ""), so it must be refused with
+  // the same 400 the route already used for this case.
+  it("rejects an empty chain key (a business name that is only a legal-entity suffix) with a 400", async () => {
+    const b = await biz("LLC");
+    const res = await PATCH(jsonReq({ markAsChain: true }), ctxFor(b.id));
+    expect(res.status).toBe(400);
+    expect(await chains()).toEqual([]);
+  });
+
+  // L2 (whole-branch review): a 1-2 char key is too short to be a meaningful chain signal and
+  // risks matching unrelated businesses on a common short token — refused with the same 400.
+  it("rejects a chain key shorter than 3 characters with a 400", async () => {
+    const b = await biz("A1");
+    const res = await PATCH(jsonReq({ markAsChain: true }), ctxFor(b.id));
+    expect(res.status).toBe(400);
+    expect(await chains()).toEqual([]);
   });
 });
 

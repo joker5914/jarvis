@@ -10,26 +10,82 @@ This is Plan 1 of the project: zip-code search and the leads table, detail
 drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
 Plan 3 (below) adds the always-on Scanner. Plan 4 adds Apollo enrichment
 (owner/GM contact search and match) and a Settings page for pasting API
-keys. Plan 7 makes that enrichment deliberate and safe on Apollo's free
-tier (85 credits/month, one credit per verified net-new email): by default
+keys. Plan 7 makes that enrichment deliberate and safe; Plan 9 assumes a
+paid Apollo plan with API access (2,500+ credits/month) rather than the
+free tier, and adds a live read of Apollo's own account balance. By default
 Apollo enrichment reveals **one** decision-maker per business (configurable
 1–5 in Settings), and it never pays to reveal a person Apollo already flags
-as having no email. A monthly credit cap (default 80, a few credits under
-the free tier as headroom) tracks Apollo-sourced email contacts created
-since the cycle's renewal day, which you also set in Settings; every enrich
-path (the background job, the single-business route, the bulk route, and
-the UI) refuses at the cap with no provider call — the cap applies once you
-are on a paid plan with API access (see below); a free or trial key never
-reaches it, since People Search/Enrichment calls are refused before any
-credit-consuming request goes out. Bulk Enrich from the Leads table is
-capped at 10 leads per action and confirms the estimated credit spend
-before sending it. Apollo enrichment normally searches people by the
-business's website domain; businesses without a usable website domain cost
-one extra Apollo credit for an Organization Search before the people
-lookup. Phone reveals are never requested. Each category search returns at
-most `maxPlacesPerCategory` (40) places, ranked by Google prominence, so a
-dense zip costs at most about 34 × 40 Place Details calls; a Resume never
-repeats the category searches.
+as having no email. How many credits remain is
+`min(app cap, Apollo's own account balance)`: the app's own monthly cap
+(default 80, raise it in Settings up to a ceiling of **5,000**) tracks
+Apollo-sourced email contacts created since the cycle's renewal day, and
+Settings also shows Apollo's live account balance and cycle-end date (read
+from `usage_stats/credit_usage_stats`) next to it. Leave the renewal date
+blank in Settings to have it derive from Apollo's own billing cycle instead
+of tracking a separately-typed date. Every enrich path (the background job,
+the single-business route, the bulk route, and the UI) refuses at whichever
+limit binds first, with no provider call once refused — the 409 wording
+names which one: **"Apollo monthly credit cap reached (`used`/`cap`)"**
+when the app's own cap is the binding constraint, or **"Apollo account is
+out of credits (Apollo reports 0 left)"** when Apollo's own balance is
+already at or below zero regardless of what the app cap would still allow.
+Bulk Enrich from the Leads table is capped at 10 leads per action and
+confirms the estimated credit spend before sending it. Apollo enrichment
+normally searches people by the business's website domain; businesses
+without a usable website domain cost one extra Apollo credit for an
+Organization Search before the people lookup. Phone reveals are never
+requested. Each category search returns at most `maxPlacesPerCategory` (40)
+places, ranked by Google prominence, so a dense zip costs at most about
+34 × 40 Place Details calls; a Resume never repeats the category searches.
+
+**Local-first People Search (Plan 9).** People Search itself costs no
+Apollo credits, so every enrich run makes an unlocated ("any") call first
+to learn the org's total decision-maker count at that domain
+(`totalAtDomain`) before spending anything. A single-location SMB (whose
+whole page came back on that first call) stops there — one call total.
+Otherwise the search cascades **city → metro → state**, stopping at the
+first scope with any candidates, so a franchise-brand domain surfaces the
+local owner/manager instead of a national head office: worst case (a large
+org with no local match anywhere) costs 4 People Search calls, not 1. The
+**metro area** Settings field (e.g. "Houston, Texas") is the fallback the
+cascade tries when the lead's own city scope is empty or skipped (a bare
+city needs a state to disambiguate — "Pearland" alone is ambiguous); leave
+it blank to skip that scope. The activity log names which scope actually
+matched — "(matched in Pearland, TX)", "(matched in Houston, Texas)",
+"(matched in Texas)" — and, when the cascade ran but every located scope
+came back empty, "(no local match; searched nationally)" so a head-office
+fallback is visible rather than looking identical to "no location
+information was available to search with."
+
+**Chains never get a credit spent on them (Plan 9).** A domain with **1,000
+or more** decision-maker hits in Apollo's People Search — title/seniority-
+filtered (owner, founder, GM, manager, etc. — never a raw employee
+headcount), at any location — is treated as a national chain, not an SMB,
+and excluded before any paid reveal (`exclusionReasons` gets
+`chain:apollo_headcount:<n>`). The threshold is deliberately high so a
+franchise brand (e.g. Snap Fitness, where the *local* owner is a real SMB
+prospect even though the brand nationally is huge) stays eligible. The lead
+drawer's **"Not an SMB (chain)"** action adds that business's name to the
+owner's chain list and re-scores the *whole table* so look-alikes are
+excluded in the same pass — the chain list becomes **user-owned** the first
+time this is clicked: it starts as a snapshot of the built-in seed list plus
+that one new entry, so a seed chain added in a later release no longer
+applies to that owner unless they add it again themselves. **"Restore as
+SMB"** (shown once a lead is chain-excluded) undoes this for *that business
+only*: it removes the chain-list entry that excluded it — even a *seed*
+entry, if that's what matched — and clears that lead's chain-derived
+exclusion reasons, without re-scoring (or restoring) any other business.
+`scripts/chain-sweep.ts` runs the same headcount check across the whole
+table outside of a live Enrich click: dry run by default (prints
+`domain / totalAtDomain / chain?` for every non-excluded business with a
+usable domain), `--apply` marks the matches the same way the live guard
+does, `--limit N` caps how many businesses one run examines. It's bounded
+by the app's own daily Apollo call budget (Settings → Apollo) — raise the
+budget to at least the business count first for full coverage — and stops
+cleanly (partial results already printed stay valid) the moment it hits
+that budget, a missing/misconfigured API key, or an Apollo plan block,
+rather than looping through the rest of the table re-printing the same
+error.
 
 **Apollo's free and trial plans do not include the People Search or People
 Enrichment API** — every plan tier can call Organization Enrichment, but
@@ -41,9 +97,15 @@ happens, records an `Enrichment unavailable: …` row (with the raw Apollo
 error code) on the lead's activity log so a failed Enrich click stays
 visible after a refresh, and persists the block (on the `ProviderConfig`
 row, not just in the worker's memory) for 6 hours so both the background
-job and the single/bulk Enrich routes — including the Next.js web process,
-which never calls Apollo directly — refuse up front with a 409 during that
-window instead of wasting retries or budget. Saving a new key or
+job and the single/bulk Enrich routes — including the Next.js web
+process, which never itself makes the *credited* People Search/People
+Enrichment/Organization Search calls this block applies to (only the
+worker does, in `JOB_MODE=queue`) — refuse up front with a 409 during that
+window instead of wasting retries or budget. (The web process does call
+Apollo directly for one thing: reading the live credit balance for
+Settings/the credits route — see "Local-first People Search" above — which
+is why Railway's **web** service needs egress to `api.apollo.io` too, not
+just the worker; see Deploy below.) Saving a new key or
 re-enabling Apollo in Settings clears the block immediately, in every web
 process/replica: each 409 check revalidates its own remembered block
 against that `ProviderConfig` row rather than trusting it outright, so a
@@ -203,6 +265,17 @@ CI fails on any **critical** advisory affecting runtime dependencies; re-run
 The app deploys as two Railway services (web + worker) built from the same
 repo and `Dockerfile`, plus a Railway Postgres plugin.
 
+**Deploy order for the metro area setting (Plan 9).** Deploy both the
+**web** and **worker** services on a build that includes Plan 9 *before*
+typing a value into the Settings "Metro area for enrichment" field.
+`overridesSchema` only recognizes `enrichment.metroLocation` starting with
+this build; a pre-Plan-9 build's zod schema doesn't know that key and
+rejects the *whole* settings row as invalid rather than ignoring the one
+unknown field — this happened live. The same risk runs in reverse: **clear
+the metro area field back to blank before rolling either service back to a
+pre-Plan-9 build**, so the stored overrides row doesn't carry a key the
+older build will choke on.
+
 ### 1. Create the project
 
 - New Railway project, add the **PostgreSQL** plugin.
@@ -265,6 +338,12 @@ queued for it), then remove the variable.
   outbound requests from Railway's own egress IPs; if a target site
   allowlists or geofences traffic, allow Railway's IP ranges (see Railway's
   docs for the current list) rather than your own.
+- **Apollo egress from the web service too.** The worker is the only
+  process that makes credited Apollo calls, but as of Plan 9 the **web**
+  service also calls `api.apollo.io` directly (an uncredited read of the
+  live account balance for Settings/the credits route — see "Local-first
+  People Search" above). If you firewall outbound traffic per-service, the
+  web service needs egress to `api.apollo.io`, not just the worker.
 - **Pinned base image.** The `Dockerfile`'s `FROM` lines pin
   `node:22.22.3-bookworm-slim` to a specific digest (both stages carry the
   same one) so the runner isn't rebuilt against a base image that changed

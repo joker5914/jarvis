@@ -35,13 +35,18 @@ function clearPlanBlockMemo(): void {
 
 /** Marks `path` blocked in this process's memo (the worker's per-call short-circuit — see
  * checkPlanBlocked) *and* persists a single provider-wide block on the ProviderConfig row, since
- * the worker process is the only one that ever calls Apollo directly (JOB_MODE=queue in
- * production): the Next.js web process's copy of `planBlockedUntil` is always empty, so the
- * routes' gate (apolloPlanBlocked) must be able to see this via the database, not just memory.
- * Upserts like withBudget() does, in case no ProviderConfig row exists yet. The persist is
- * best-effort: the caller always throws ProviderPlanError regardless of whether this write
- * lands, so a transient DB failure here never surfaces as a generic Prisma error or re-enables
- * pg-boss retries for the job that just saw the live 403.
+ * the worker process is the only one that ever calls the *credited* People Search / People
+ * Enrichment / Organization Search endpoints (JOB_MODE=queue in production) — this function is
+ * only ever reached from those calls' 403 handling. (The Next.js web process does call Apollo
+ * directly too, as of Task 1's live credit balance: creditUsage() reads usage_stats/credit_usage_
+ * stats from Settings/the credits route, uncredited and never gated by this plan-block memo — see
+ * its own doc comment. That does not change the fact this specific function only ever runs in the
+ * worker.) The Next.js web process's own copy of `planBlockedUntil` is always empty for the paths
+ * this function marks, so the routes' gate (apolloPlanBlocked) must be able to see this via the
+ * database, not just memory. Upserts like withBudget() does, in case no ProviderConfig row exists
+ * yet. The persist is best-effort: the caller always throws ProviderPlanError regardless of
+ * whether this write lands, so a transient DB failure here never surfaces as a generic Prisma
+ * error or re-enables pg-boss retries for the job that just saw the live 403.
  *
  * The in-process memo set below is NOT enough on its own to protect later calls in this process
  * if the persist fails: `checkPlanBlocked` always revalidates a memoized block against the
@@ -100,7 +105,13 @@ async function checkPlanBlocked(path: string): Promise<void> {
  * problem is resolved. Provider-neutral name/signature since Settings' PUT route is shared across
  * providers, even though only Apollo populates a block today. */
 export async function clearPlanBlock(provider: string): Promise<void> {
-  if (provider === "apollo") clearPlanBlockMemo();
+  if (provider === "apollo") {
+    clearPlanBlockMemo();
+    // L6 (whole-branch review): a key save/re-enable is exactly when the account behind the key
+    // may have changed — without this, creditUsage()'s balance memo (keyed process-wide, not per
+    // key) could keep showing the *previous* key's balance for up to creditUsageTtlMs (5 min).
+    creditUsageMemo = null;
+  }
   await prisma.providerConfig.updateMany({ where: { provider }, data: { planBlockedUntil: null, planBlockDetail: null } });
 }
 
@@ -451,6 +462,11 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       const res = await fetch(`${BASE}${CREDIT_USAGE_PATH}`, {
         method: "POST",
         headers: { accept: "application/json", "x-api-key": key },
+        // M1 (whole-branch review): this now runs on user-facing routes (Settings, credits,
+        // both enrich routes' assertCredits) and runEnrich, not just a background poll — a
+        // hanging Apollo response used to be able to hang all of them. The catch below already
+        // maps any failure (including an abort) to null.
+        signal: AbortSignal.timeout(ENRICH_CONFIG.creditUsageTimeoutMs),
       });
       if (!res.ok) {
         await discardBody(res);

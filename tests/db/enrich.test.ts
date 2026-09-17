@@ -5,6 +5,7 @@ import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import type { JobDeps } from "@/lib/jobs/shared";
 
 const OWNER = "test-enrich-owner";
@@ -314,6 +315,39 @@ describe("runEnrich", () => {
       expect(r.added).toBe(1);
       const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
       expect(log[0].message).toMatch(/ \(matched in Pearland, TX\)$/);
+    });
+
+    // L1 (whole-branch review): the cascade ran (totalAtDomain > searchPageSize) but every
+    // located scope came back empty, so searchPeople falls back to the unlocated page and reports
+    // scope "any" again — indistinguishable from "no location info was ever available" without
+    // this suffix. 139 is below chainHeadcountMin (1000), so the chain guard doesn't fire either.
+    it("appends ' (no local match; searched nationally)' when the cascade ran but fell back to the unlocated page, and a located input (city+state) existed", async () => {
+      const b = await biz({ name: "H&R Block", websiteUrl: "https://www.hrblock.com", formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-hrblock.com-owner", firstName: "Nat", lastName: null, name: "Nat", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "H&R Block" },
+      ], totalFound: 139, totalAtDomain: 139, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).toMatch(/ \(no local match; searched nationally\)$/);
+    });
+
+    // Sanity check for the guard the previous test relies on: the short-circuit case (a
+    // single-location SMB whose whole page comes back on the unlocated call, totalAtDomain <=
+    // searchPageSize) must NOT get the "searched nationally" suffix — nothing was ever cascaded.
+    it("does not append the national-fallback suffix for a small org (totalAtDomain within searchPageSize)", async () => {
+      const b = await biz({ formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
+      ], totalFound: ENRICH_CONFIG.searchPageSize, totalAtDomain: ENRICH_CONFIG.searchPageSize, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).not.toMatch(/searched nationally/);
     });
   });
 

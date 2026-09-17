@@ -36,7 +36,16 @@ type Detail = {
 };
 
 type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
-type CreditStatus = { used: number; cap: number; remaining: number; maxPeople: number };
+type CreditStatus = {
+  used: number;
+  cap: number;
+  remaining: number;
+  maxPeople: number;
+  /** Apollo's own account-wide balance, or null when unavailable — see credits.ts's CreditStatus.
+   * M2 (whole-branch review): distinguishes "the app's own cap is the binding constraint" from
+   * "Apollo's account itself is out of credits" for the banner below. */
+  apollo: { limit: number; consumed: number; leftOver: number; cycleEnd: string } | null;
+};
 
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. */
@@ -341,7 +350,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             )}
           </div>
           {b.exclusion === "none" && credits?.remaining === 0 && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {credits.apollo && credits.apollo.leftOver <= 0 ? "Apollo account is out of credits" : "Monthly Apollo credit cap reached — adjust in Settings"}
+            </p>
           )}
           {b.exclusion === "none" && lastEnrichIssue && (
             <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="enrich-last-error">{lastEnrichIssue.message}</p>

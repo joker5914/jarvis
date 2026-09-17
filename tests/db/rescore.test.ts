@@ -46,11 +46,13 @@ describe("rescoreExclusions", () => {
     const zumiezActivity = await prisma.activityLog.findMany({ where: { businessId: zumiez.id } });
     expect(zumiezActivity).toHaveLength(1);
     expect(zumiezActivity[0]).toMatchObject({ kind: "status_changed" });
-    expect(zumiezActivity[0].message).toMatch(/^Excluded as chain: chain:zumiez/);
+    // L4 (whole-branch review): reason-agnostic wording ("Excluded: <reason>") since this pass
+    // can flip a business for an entity/same_name reason too, not just a chain match.
+    expect(zumiezActivity[0].message).toMatch(/^Excluded: chain:zumiez/);
 
     const outletActivity = await prisma.activityLog.findMany({ where: { businessId: zumiezOutlet.id } });
     expect(outletActivity).toHaveLength(1);
-    expect(outletActivity[0].message).toMatch(/^Excluded as chain:/);
+    expect(outletActivity[0].message).toMatch(/^Excluded:/);
   });
 
   it("is idempotent: a second run against the same config makes no further changes", async () => {

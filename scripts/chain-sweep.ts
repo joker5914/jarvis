@@ -29,6 +29,7 @@ import { getProviders } from "@/lib/providers";
 import { domainFromUrl, redactApiKeyLike } from "@/lib/jobs/enrich";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
+import { ProviderNotConfiguredError, ProviderPlanError } from "@/lib/providers/errors";
 
 const apply = process.argv.includes("--apply");
 const limitIdx = process.argv.indexOf("--limit");
@@ -66,7 +67,11 @@ async function main() {
   const provider = getProviders().enrichment;
   const toMark: { id: string; name: string; domain: string; total: number }[] = [];
   let checked = 0;
-  let budgetExhausted = false;
+  // L7 (whole-branch review): a missing key or a plan block stops the sweep early too — neither
+  // will resolve itself on the next business (a missing key stays missing, and a plan block
+  // persists for hours, see apollo.ts), so looping through the rest of the table would just print
+  // the same error hundreds of times. One clear line, then stop, same as budget exhaustion.
+  let stoppedEarlyReason: "budget" | "not_configured" | "plan_blocked" | null = null;
 
   for (const b of businesses) {
     try {
@@ -79,14 +84,32 @@ async function main() {
     } catch (e) {
       if (e instanceof BudgetExhaustedError) {
         console.log("\nApollo daily budget exhausted — stopping sweep early (results above are still valid).");
-        budgetExhausted = true;
+        stoppedEarlyReason = "budget";
+        break;
+      }
+      if (e instanceof ProviderNotConfiguredError) {
+        console.log(`\nApollo is not configured (${redactApiKeyLike((e as Error).message).slice(0, 200)}) — stopping sweep early.`);
+        stoppedEarlyReason = "not_configured";
+        break;
+      }
+      if (e instanceof ProviderPlanError) {
+        console.log(`\nApollo plan does not allow People Search (${redactApiKeyLike((e as Error).message).slice(0, 200)}) — stopping sweep early.`);
+        stoppedEarlyReason = "plan_blocked";
         break;
       }
       console.error(`${b.domain}\terror\t${redactApiKeyLike((e as Error).message).slice(0, 200)}`);
     }
   }
 
-  console.log(`\n${checked} checked, ${toMark.length} flagged as chains.${budgetExhausted ? " (stopped early on budget exhaustion)" : ""}`);
+  const stoppedEarlyNote =
+    stoppedEarlyReason === "budget"
+      ? " (stopped early on budget exhaustion)"
+      : stoppedEarlyReason === "not_configured"
+        ? " (stopped early: Apollo not configured)"
+        : stoppedEarlyReason === "plan_blocked"
+          ? " (stopped early: Apollo plan blocked)"
+          : "";
+  console.log(`\n${checked} checked, ${toMark.length} flagged as chains.${stoppedEarlyNote}`);
 
   if (!apply) {
     console.log(toMark.length ? "Dry run only — pass --apply to mark these as chains." : "Dry run only.");

@@ -23,12 +23,14 @@ import { getProviderKey } from "@/lib/providers/keys";
 import {
   ApolloEnrichmentProvider,
   apolloPlanBlocked,
+  clearPlanBlock,
   __setPlanBlockedForTests,
   __resetPlanBlockedForTests,
   __resetCreditUsageForTests,
   PEOPLE_SEARCH_PATH,
 } from "@/lib/providers/apollo";
 import { ProviderPlanError } from "@/lib/providers/errors";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 
 const providerConfigMock = prisma.providerConfig as unknown as {
   upsert: ReturnType<typeof vi.fn>;
@@ -582,5 +584,74 @@ describe("ApolloEnrichmentProvider.creditUsage", () => {
     vi.stubGlobal("fetch", fetchMock);
     expect(await new ApolloEnrichmentProvider().creditUsage()).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // M1 (whole-branch review): a bare fetch with no timeout now runs on user-facing routes
+  // (Settings, credits, both enrich routes' assertCredits) and runEnrich, so a hanging Apollo
+  // response used to be able to hang all of them. Deterministic per the review note: mock
+  // AbortSignal.timeout itself (rather than depending on whether Vitest's fake timers happen to
+  // drive Node's internal AbortSignal.timeout implementation) — the signal is pre-aborted before
+  // creditUsage() is even called, so there's no race between the fetch mock attaching its "abort"
+  // listener and the abort firing (a signal that's already aborted before a listener is attached
+  // never fires that listener — mirroring real fetch()'s own "reject immediately if already
+  // aborted" contract, which is why the mock below checks `signal.aborted` up front too).
+  it("passes an AbortSignal.timeout(ENRICH_CONFIG.creditUsageTimeoutMs) signal, and resolves null (via the existing catch-all) when that signal is aborted", async () => {
+    const controller = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    try {
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+        const signal = init.signal as AbortSignal;
+        if (signal.aborted) return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      controller.abort(); // simulates the configured timeout having already fired
+      const result = await new ApolloEnrichmentProvider().creditUsage();
+      expect(result).toBeNull();
+      expect(timeoutSpy).toHaveBeenCalledWith(ENRICH_CONFIG.creditUsageTimeoutMs);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+});
+
+// L6 (whole-branch review): clearPlanBlock("apollo") is called on a Settings key save/re-enable —
+// exactly when the account behind the key may have changed. Without resetting creditUsageMemo
+// there too, a new key could keep showing the previous key's balance for up to creditUsageTtlMs
+// (5 min), since the memo is process-wide and keyed by nothing but time.
+describe("clearPlanBlock resets the creditUsage memo (L6)", () => {
+  beforeEach(() => {
+    providerConfigMock.updateMany.mockClear();
+    __resetCreditUsageForTests();
+  });
+  afterEach(() => __resetPlanBlockedForTests());
+
+  it("a memoized balance is gone after clearPlanBlock('apollo'), so the next creditUsage() call re-fetches", async () => {
+    const usageBody = {
+      credit_usage_stats: { lead_credit: { limit: 100, consumed: 0, left_over: 100 } },
+      current_credit_cycle: { start_date: "2026-09-17T00:00:00.000Z", end_date: "2026-10-17T00:00:00.000Z" },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(usageBody), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const p = new ApolloEnrichmentProvider();
+
+    const u1 = await p.creditUsage();
+    expect(u1).toMatchObject({ leftOver: 100 });
+    await p.creditUsage();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // memoized, as usual
+
+    await clearPlanBlock("apollo");
+
+    const newUsageBody = {
+      credit_usage_stats: { lead_credit: { limit: 2510, consumed: 2, left_over: 2508 } },
+      current_credit_cycle: { start_date: "2026-09-17T00:00:00.000Z", end_date: "2026-10-17T00:00:00.000Z" },
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(newUsageBody), { status: 200, headers: { "content-type": "application/json" } }));
+    const u2 = await p.creditUsage();
+    expect(fetchMock).toHaveBeenCalledTimes(2); // re-fetched instead of returning the stale memo
+    expect(u2).toMatchObject({ leftOver: 2508 }); // the new key's own balance, not the old one's
   });
 });

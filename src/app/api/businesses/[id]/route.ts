@@ -86,9 +86,11 @@ export const PATCH = handle(async (req, ctx) => {
     // add a second copy).
     const cfg = await loadConfig(actor.id);
     const key = chainKeyFor(existing.name);
-    // An empty key would match every business (hasWord(text, "") is true); refuse rather than
-    // rely on the overrides schema's falsy-entry filter to save us.
-    if (!key) throw new ApiError(400, "This business name cannot be used as a chain pattern");
+    // An empty key would match every business (hasWord(text, "") is true); a 1-2 char key (e.g.
+    // "A1 Plumbing" stripped down to "a1", or a single-letter name) is too short to be a
+    // meaningful chain signal and risks matching unrelated businesses on a common short token.
+    // Refuse both rather than rely on the overrides schema's falsy-entry filter to save us.
+    if (key.length < 3) throw new ApiError(400, "This business name cannot be used as a chain pattern");
     const chains = new Set(cfg.exclusion.chains);
     chains.add(key);
     const overrides = { ...cfg.overrides, exclusion: { ...cfg.overrides.exclusion, chains: [...chains] } };

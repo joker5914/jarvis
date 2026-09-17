@@ -37,7 +37,7 @@
 | `src/lib/config/runtime.ts` | zod ceiling for the cap |
 | `src/lib/config/exclusion.ts` | seed chain additions |
 | `src/lib/jobs/rescore.ts` (**new**) | `rescoreExclusions(ownerId)`: re-apply `scoreSmbFit` to every business after the chain list changes |
-| `src/app/api/enrichment/credits/route.ts` | returns the merged status |
+| `src/app/api/enrichment/credits/route.ts` | returns the merged status (route file itself unchanged — the shape change comes entirely from `creditStatus` in `src/lib/enrichment/credits.ts`) |
 | `src/app/api/businesses/[id]/route.ts` | PATCH gains `markAsChain` |
 | `src/components/settings/ProviderKeysCard.tsx`, `EnrichmentCard.tsx`, `types.ts` | live balance display, cap ceiling, optional renewal date |
 | `src/components/leads/LeadDetail.tsx` | "Not an SMB (chain)" action |
@@ -287,7 +287,9 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
   const stateName = stateNameFor(q.state);
   const scopes: { scope: PeopleSearchScope; loc: string }[] = [];
   if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
-  if (q.metro) scopes.push({ scope: "metro", loc: q.metro });
+  // Skip the metro scope when it's the lead's own city (a Houston lead with metro "Houston,
+  // Texas" would otherwise repeat the identical, already-empty query and waste a budget unit).
+  if (q.metro && !scopes.some((s) => s.loc.toLowerCase() === q.metro!.trim().toLowerCase())) scopes.push({ scope: "metro", loc: q.metro });
   if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
   for (const s of scopes) {
     const r = await fetchScope(s.scope, s.loc, any.totalAtDomain);
@@ -321,6 +323,8 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 **Why:** Zumiez, Pet Paradise and H&R Block escaped chain exclusion (name-list only). Apollo's `total_entries` for a domain is a free national headcount: 6,579 for hrblock.com. Franchise brands stay eligible (kidsrkids.com is 139; the local owner is a real SMB prospect), so the threshold is deliberately high.
 
+**Note on the numbers above vs. the shipped threshold:** the 6,579/139 figures here (and the 6,579/1 pair in Task 2's own "Why") are from the initial zero-credit probes, run *without* the `preferredTitles`/`seniorities` filter every People Search call actually applies. The shipped `chainHeadcountMin` (1,000) is compared against the title/seniority-*filtered* count instead — re-measured 2026-09-17 at that granularity as hrblock.com 4,753 and kidsrkids.com 31 (see `ENRICH_CONFIG.chainHeadcountMin`'s doc comment in `src/lib/config/enrichment.ts` for the full set). Both pairs tell the same story (H&R Block is a chain by either measure, Kids R Kids isn't), but don't expect the raw numbers quoted above to match a live probe against the shipped code.
+
 **Interfaces:**
 - `ENRICH_CONFIG.chainHeadcountMin = 1000` (people at the domain in Apollo, any location).
 - `src/lib/jobs/rescore.ts`:
@@ -344,7 +348,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 - [x] **Step 2: Run, expect failures.**
 
-- [x] **Step 3: Implement** as specified. Seed additions to `DEFAULT_EXCLUSION_CONFIG.chains`: `"zumiez", "pet paradise", "h&r block", "jiffy lube", "geico", "petsmart", "petco", "great clips", "supercuts", "planet fitness", "la fitness", "24 hour fitness", "aspen dental", "banfield", "vca ", "chili's", "applebee", "olive garden", "ihop", "denny's", "waffle house", "panda express", "chipotle", "five guys", "raising cane", "popeyes", "kfc", "sonic drive", "jack in the box", "dairy queen", "autozone", "o'reilly auto", "advance auto", "discount tire", "firestone", "goodyear", "mattress firm", "ross dress", "tj maxx", "marshalls", "dollar general", "dollar tree", "family dollar", "office depot", "staples", "best buy", "verizon", "at&t", "t-mobile", "spectrum", "xfinity"` (the last two are the user's own employer's brands; they are never prospects). Keep `hasWord` semantics in mind: entries are whole-word substrings of the lowercase name.
+- [x] **Step 3: Implement** as specified. Seed additions to `DEFAULT_EXCLUSION_CONFIG.chains` (as shipped after the fix round below removed several — see that section for why): `"zumiez", "pet paradise", "h&r block", "petsmart", "petco", "la fitness", "24 hour fitness", "banfield", "vca ", "chili's", "applebee", "olive garden", "ihop", "denny's", "waffle house", "panda express", "chipotle", "five guys", "raising cane", "popeyes", "kfc", "sonic drive", "jack in the box", "dairy queen", "autozone", "o'reilly auto", "advance auto", "discount tire", "mattress firm", "ross dress", "tj maxx", "marshalls", "dollar general", "dollar tree", "family dollar", "office depot", "verizon", "at&t", "t-mobile", "xfinity"` (`xfinity` is the user's own employer's brand; it is never a prospect — an earlier draft of this list also seeded `spectrum` for the same reason, but the fix round below removed it as a common-word false positive, leaving `xfinity` as the only employer-brand entry). Keep `hasWord` semantics in mind: entries are whole-word substrings of the lowercase name.
 
 `LeadDetail.tsx`: in the header block, when `b.exclusion === "none"`, a small ghost `Button` "Not an SMB (chain)" that calls PATCH with `{ markAsChain: true }`, toasts `Excluded <name> and N similar leads`, and refreshes; sentence case; fits the 375 px header stack (it joins the existing action row).
 
@@ -383,7 +387,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 - Enriching a franchise-brand lead reveals a person in the lead's city or state when Apollo has one, and the activity row says so.
 - A domain with ≥ 1,000 people in Apollo is excluded as a chain at enrichment time with no credit spent; the sweep script can do this for the whole table (dry run by default); the lead drawer has a "Not an SMB (chain)" action that also excludes look-alikes.
 - `npm run test:db` passes three consecutive full runs.
-- Live verification (coordinator, after the worker restarts on the branch): (1) Settings credit line matches the Apollo billing page; (2) `enqueueEnrich` on the Kids R Kids lead reveals a Houston-area person, not the CEO; (3) sweep dry run flags hrblock.com and zumiez.com.
+- Live verification (coordinator, after the worker restarts on the branch): (1) Settings credit line matches the Apollo billing page; (2) `enqueueEnrich` on the Kids R Kids lead reveals a Houston-area person, not the CEO; (3) the sweep flags hrblock.com (zumiez.com is 726, below `chainHeadcountMin` at this title/seniority-filtered granularity — caught instead by the seed list, not the headcount signal).
 
 ## Follow-ups (not in this plan)
 

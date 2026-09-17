@@ -156,6 +156,11 @@ describe("chainKeyFor", () => {
     ["Denny's Diner", "denny's diner"],
     ["Chick-fil-A Pearland", "chick-fil-a pearland"],
     ["Zumiez LLC", "zumiez"],
+    // L8 (whole-branch review): chainKeyFor only trims *leading/trailing* non-alphanumerics, so
+    // the trailing ")" is stripped but the "(" in the middle of the string survives unbalanced —
+    // intentional, not a bug: chainKeyFor's job is to produce a key hasWord can match against the
+    // raw name (see the describe-level comment above), not to balance punctuation, and an
+    // unbalanced "(" mid-string still matches correctly via hasWord (see the test below).
     ["Pet Paradise (Pearland)", "pet paradise (pearland"],
     ["Joe's Diner!", "joe's diner"],
     ["#1 Nails & Spa", "1 nails & spa"],

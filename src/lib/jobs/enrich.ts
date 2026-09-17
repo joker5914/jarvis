@@ -156,6 +156,15 @@ export async function runEnrich(
     // couldn't actually have matched in (a malformed/partial result) never renders as
     // "(matched in null, null)" — by construction searchPeople only ever sets a scope when the
     // corresponding location input was present, but this stays defensive rather than trusting that.
+    // L1 (whole-branch review): when the cascade actually ran (totalAtDomain > searchPageSize —
+    // the single-location-SMB short-circuit above only ever returns scope "any" for totalAtDomain
+    // <= searchPageSize, so this can't misfire on that case) but every located scope came back
+    // empty, searchPeople falls back to the unlocated page and reports scope "any" again — which
+    // otherwise looks identical to "no location info was ever available to search with." Only
+    // worth calling out when a located input actually existed to try (city+state, or metro), so a
+    // business with neither doesn't get a misleading "searched nationally" note about a cascade
+    // that never had anywhere local to look.
+    const hadLocatedInput = (city !== null && state !== null) || metro !== null;
     const scopeSuffix =
       search.scope === "city" && city && state
         ? ` (matched in ${city}, ${state})`
@@ -163,7 +172,9 @@ export async function runEnrich(
           ? ` (matched in ${metro})`
           : search.scope === "state" && state
             ? ` (matched in ${stateNameFor(state)})`
-            : "";
+            : search.scope === "any" && search.totalAtDomain !== null && search.totalAtDomain > ENRICH_CONFIG.searchPageSize && hadLocatedInput
+              ? " (no local match; searched nationally)"
+              : "";
     // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
     // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
     // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked

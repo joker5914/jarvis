@@ -37,7 +37,8 @@ function isRegeneratedByThisPass(reason: string): boolean {
  *
  * Writes `exclusion`/`exclusionReasons` only when they actually change, and logs one
  * `status_changed`-kind activity row per business whose exclusion state flips either way
- * ("Excluded as chain: <reason>" / "Exclusion lifted") — `status_changed` is the existing kind
+ * ("Excluded: <reason>" / "Exclusion lifted" — reason-agnostic since this pass can flip a
+ * business for an entity/same_name reason too, not just a chain match) — `status_changed` is the existing kind
  * ActivityLog uses for a business's status flipping (see the outreachStatus PATCH routes); there
  * is no dedicated exclusion-change kind and `kind` is a plain string column, not an enum, so this
  * reuses rather than invents one. All writes for one run land in a single transaction.
@@ -83,8 +84,11 @@ export async function rescoreExclusions(
 
     if (!wasExcluded && nextExcluded) {
       newlyExcluded++;
+      // L4 (whole-branch review): this pass can flip a business for an entity/same_name reason
+      // too, not just a chain match — "Excluded as chain: <reason>" read wrong for those, so the
+      // message is now reason-agnostic and lets the reason string itself say what kind it is.
       const reason = nextReasons.find((r) => r.startsWith("chain:")) ?? nextReasons[0] ?? "unknown";
-      activityRows.push({ ownerId, businessId: b.id, kind: "status_changed", message: `Excluded as chain: ${reason}` });
+      activityRows.push({ ownerId, businessId: b.id, kind: "status_changed", message: `Excluded: ${reason}` });
     } else if (wasExcluded && !nextExcluded) {
       restored++;
       activityRows.push({ ownerId, businessId: b.id, kind: "status_changed", message: "Exclusion lifted" });

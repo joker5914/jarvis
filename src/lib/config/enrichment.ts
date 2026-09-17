@@ -20,6 +20,12 @@ export const ENRICH_CONFIG = {
   monthlyCreditCapMax: 5000,
   /** How long ApolloEnrichmentProvider.creditUsage() memoizes a successful fetch before refetching. */
   creditUsageTtlMs: 5 * 60_000,
+  /** Whole-branch review M1: creditUsage() is a bare `fetch` with no timeout, and it now runs on
+   * user-facing routes (Settings, the credits route, both enrich routes' `assertCredits`) as well
+   * as runEnrich — a slow/hanging Apollo response used to be able to hang all of them. Passed as
+   * `signal: AbortSignal.timeout(creditUsageTimeoutMs)`; creditUsage()'s existing catch-all maps
+   * the resulting abort to `null`, same as any other failure. */
+  creditUsageTimeoutMs: 5_000,
   /**
    * Plan 9 Task 3: a domain with at least this many *decision-maker* hits in Apollo's People
    * Search — not a raw employee headcount — is a national chain, not an SMB. Every People Search
