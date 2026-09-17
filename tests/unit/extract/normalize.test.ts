@@ -33,13 +33,23 @@ describe("normalizeEmail", () => {
     // normalizeEmail only validates syntax + TLD plausibility + placeholder status; a glued local
     // part like "77581info@eatportara.com" is syntactically a valid email, so normalizeEmail
     // accepts it as-is. The scanner (website.ts) is responsible for trimming the fragment before
-    // this function ever sees it, and the cleanup script flags it separately via isGluedEmail.
+    // this function ever sees it, and the cleanup script flags it separately via isJunkEmail.
     expect(normalizeEmail("77581info@eatportara.com")).toBe("77581info@eatportara.com");
   });
 
   // Fix round (item 4): "realtor" is a real gTLD and common for small-business realtors.
   it("accepts the .realtor gTLD", () => {
     expect(normalizeEmail("jane@smith.realtor")).toBe("jane@smith.realtor");
+  });
+
+  // Task 5: platform/support addresses pass syntax, TLD, and placeholder checks but are never
+  // the business's own contact — normalizeEmail rejects them directly (see its doc comment).
+  it("rejects a booking/site-builder platform support address", () => {
+    expect(normalizeEmail("support@vagaro.com")).toBeNull();
+    expect(normalizeEmail("x@app.vagaro.com")).toBeNull();
+  });
+  it("accepts an SMB domain that merely shares a word with a platform domain", () => {
+    expect(normalizeEmail("info@vagarosalon.com")).toBe("info@vagarosalon.com");
   });
 });
 

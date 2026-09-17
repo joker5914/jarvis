@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isGluedLocalPart, isGluedEmail } from "@/lib/extract/junk";
+import { isGluedLocalPart, isGluedEmail, isJunkEmail } from "@/lib/extract/junk";
 
 // Fix round (item 3): extracted out of scripts/cleanup-invalid-emails.ts so the classifier used
 // to flag stored junk-email rows is unit-testable on its own.
@@ -37,5 +37,24 @@ describe("isGluedEmail", () => {
   it("applies isGluedLocalPart to the part before the @", () => {
     expect(isGluedEmail("77581info@eatportara.com")).toBe(true);
     expect(isGluedEmail("info@eatportara.com")).toBe(false);
+  });
+});
+
+// Task 5: the cleanup script's classifier must also flag stored platform-support rows so a
+// re-run deletes them.
+describe("isJunkEmail", () => {
+  it("flags glued-local-part rows", () => {
+    expect(isJunkEmail("77581info@eatportara.com")).toBe(true);
+  });
+
+  it("flags platform/support-domain rows even with a clean local part", () => {
+    expect(isJunkEmail("support@vagaro.com")).toBe(true);
+    expect(isJunkEmail("safeguarding@vagaro.com")).toBe(true);
+    expect(isJunkEmail("hello@booksy.com")).toBe(true);
+    expect(isJunkEmail("filler@godaddy.com")).toBe(true);
+  });
+
+  it("does not flag a clean SMB address", () => {
+    expect(isJunkEmail("info@pearlywhitespearland.com")).toBe(false);
   });
 });

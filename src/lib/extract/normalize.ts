@@ -1,4 +1,5 @@
 import { parsePhoneNumberFromString } from "libphonenumber-js";
+import { isPlatformEmail } from "./platformDomains";
 
 export type SocialType = "linkedin" | "facebook" | "instagram" | "twitter" | "yelp";
 
@@ -59,6 +60,25 @@ const PLACEHOLDER_DOMAINS = [
 const placeholderDomainAlt = PLACEHOLDER_DOMAINS.map((d) => d.replace(/\./g, "\\.")).join("|");
 export const PLACEHOLDER_EMAIL_RE = new RegExp(`@(?:[a-z0-9-]+\\.)*(?:${placeholderDomainAlt})$`, "i");
 
+/**
+ * `normalizeEmail`'s contract: given a raw candidate string (optionally a `mailto:` href with a
+ * query string), return the lowercased, canonical address, or `null` if it fails any of —
+ *   - syntax (`EMAIL_RE`),
+ *   - TLD plausibility (`isPlausibleTld`),
+ *   - looking like an image filename mistaken for an address (`IMAGE_EXT_RE`),
+ *   - a generic placeholder/example domain (`PLACEHOLDER_EMAIL_RE`), or
+ *   - a third-party platform/support domain (`isPlatformEmail` — booking/e-commerce SaaS, site
+ *     builders, delivery marketplaces, etc.; see `platformDomains.ts`) — these pass every check
+ *     above yet are never the business's own contact.
+ * It deliberately does NOT detect a syntactically valid local part that's actually a phone/zip
+ * fragment glued on by adjacent page text (e.g. "77581info@eatportara.com" — "77581" is a zip
+ * code, not part of the real local part "info"): that's the scanner's job at extraction time
+ * (`repairGluedLocal` in `website.ts`) and the cleanup script's job for rows already stored
+ * (`isGluedEmail`/`isJunkEmail` in `junk.ts`). Keeping that check out of `normalizeEmail` matters
+ * because the function is also called directly on stored values (e.g. by the cleanup script) to
+ * ask "would today's validator still accept this raw string as its own canonical form" — folding
+ * in a repair step would make it silently rewrite instead of reject.
+ */
 export function normalizeEmail(raw: string): string | null {
   let s = raw.trim().toLowerCase();
   if (s.startsWith("mailto:")) s = s.slice(7);
@@ -69,6 +89,7 @@ export function normalizeEmail(raw: string): string | null {
   if (!isPlausibleTld(tld)) return null;
   if (IMAGE_EXT_RE.test(s)) return null;
   if (PLACEHOLDER_EMAIL_RE.test(s)) return null;
+  if (isPlatformEmail(s)) return null;
   return s;
 }
 

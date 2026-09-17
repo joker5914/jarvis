@@ -2,7 +2,8 @@
 //
 // One-off cleanup for `Contact` rows of type "email" that predate the extraction boundary fix in
 // src/lib/extract/normalize.ts and src/lib/extract/website.ts. A stored value is junk when either:
-//   (a) the corrected validator rejects it (bad/implausible TLD, or a placeholder address), or
+//   (a) the corrected validator rejects it (bad/implausible TLD, a placeholder address, or a
+//       third-party booking/site-builder/support platform domain — see platformDomains.ts), or
 //   (b) it's syntactically a valid email but its local part carries a phone/zip fragment glued
 //       from adjacent page text (semantically wrong even though normalizeEmail alone can't tell).
 //
@@ -11,7 +12,7 @@
 // recover the real address.
 import { prisma } from "@/lib/db";
 import { normalizeEmail } from "@/lib/extract/normalize";
-import { isGluedEmail } from "@/lib/extract/junk";
+import { isJunkEmail } from "@/lib/extract/junk";
 
 const apply = process.argv.includes("--apply");
 
@@ -21,7 +22,7 @@ async function main() {
     select: { id: true, value: true, businessId: true, ownerId: true },
   });
 
-  const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value || isGluedEmail(r.value));
+  const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value || isJunkEmail(r.value));
 
   console.log(`${bad.length} of ${rows.length} email contacts are junk`);
   for (const r of bad.slice(0, 30)) console.log("  ", r.value);

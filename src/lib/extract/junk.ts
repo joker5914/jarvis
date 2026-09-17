@@ -1,3 +1,5 @@
+import { isPlatformEmail } from "./platformDomains";
+
 // Shared classifier for stored email `Contact.value`s whose local part carries a phone-number
 // or zip/digit-run fragment glued on from adjacent page text with no separator (e.g.
 // "77581info@eatportara.com" from a zip code, "-229-4384chefstevehaug@…" from a phone number,
@@ -22,4 +24,16 @@ export function isGluedLocalPart(local: string): boolean {
 /** Convenience for a full email address: applies `isGluedLocalPart` to the part before the `@`. */
 export function isGluedEmail(email: string): boolean {
   return isGluedLocalPart(email.split("@")[0] ?? "");
+}
+
+/**
+ * The full "this stored email row is junk" test for the cleanup script: either its local part
+ * carries glued phone/zip digits (`isGluedEmail`), or its domain is a third-party
+ * booking/site-builder/support platform rather than the business's own (`isPlatformEmail`) — a
+ * platform address is syntactically perfect and passes `normalizeEmail` on its own merits (as of
+ * this fix, `normalizeEmail` itself also rejects it going forward; this OR is what still catches
+ * platform rows stored before that check existed, or if the check is ever moved elsewhere).
+ */
+export function isJunkEmail(email: string): boolean {
+  return isGluedEmail(email) || isPlatformEmail(email);
 }

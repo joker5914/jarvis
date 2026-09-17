@@ -131,6 +131,14 @@ describe("extractFromHtml email boundary fix", () => {
     const r = extractFromHtml("<p>info@ecart-software.com.last</p>");
     expect([...r.emails]).toEqual([]);
   });
+
+  // Task 5: a business's site embeds a Vagaro booking widget whose support address ends up in
+  // the scraped text alongside the business's own real contact address. The platform address
+  // must be dropped and the SMB's own address kept.
+  it("drops a booking-platform support address embedded in a page but keeps the business's own address", () => {
+    const r = extractFromHtml("<p>Questions about booking? support@vagaro.com. Reach us directly at info@pearlywhitespearland.com.</p>");
+    expect([...r.emails]).toEqual(["info@pearlywhitespearland.com"]);
+  });
 });
 
 function fakeBody() {
