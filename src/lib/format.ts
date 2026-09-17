@@ -16,3 +16,13 @@ export function timeAgo(d: Date | string): string {
 export function titleCase(slug: string | null | undefined): string {
   return (slug ?? "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+/** Formats a `YYYY-MM-DD` local-date string as "Oct 16" without going through the viewer's own
+ * timezone (a plain `new Date("2026-10-16")` is midnight UTC, which a US timezone would render as
+ * the previous day) — forces UTC on both the parse and the format so the date never shifts.
+ * Whole-branch review L8: this used to be copy-pasted verbatim in both ProviderKeysCard.tsx and
+ * EnrichmentCard.tsx; deduped here since both settings cards need the exact same rule. */
+export function formatMonthDayUtc(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}

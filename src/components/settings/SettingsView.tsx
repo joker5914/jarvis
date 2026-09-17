@@ -120,7 +120,7 @@ export function SettingsView({ ownerId }: { ownerId?: string } = {}) {
       <CategoriesCard categories={categories} packages={data.packages} onChange={setCategories} />
       <ExclusionCard value={exclusion} onChange={setExclusion} />
       <ProjectsCard value={projects} onChange={setProjects} />
-      <EnrichmentCard value={enrichment} onChange={setEnrichment} />
+      <EnrichmentCard value={enrichment} onChange={setEnrichment} renewalHint={data.credits.apollo?.cycleEnd} />
       <div className="flex gap-2">
         <Button disabled={saving} onClick={saveConfig} data-testid="settings-config-save">
           Save configuration

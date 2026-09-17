@@ -8,8 +8,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatMonthDayUtc } from "@/lib/format";
 import type { CreditStatus, ProviderEntry } from "./types";
+
+function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
 
 const STATUS_LABEL: Record<ProviderEntry["source"], string> = {
   env: "From environment",
@@ -79,9 +83,21 @@ function ProviderRow({ p, credits, onChanged }: { p: ProviderEntry; credits?: Cr
         </span>
       </div>
       {p.provider === "apollo" && credits && (
-        <p className="text-xs text-muted-foreground" data-testid="credits-used">
-          Credits used this cycle: {credits.used}/{credits.cap} · cycle started {formatDate(credits.cycleStart)}
-        </p>
+        credits.apollo ? (
+          <div className="space-y-0.5" data-testid="credits-used">
+            <p className="text-xs text-muted-foreground">
+              Apollo account: {formatCount(credits.apollo.leftOver)} of {formatCount(credits.apollo.limit)} credits left · renews{" "}
+              {formatMonthDayUtc(credits.apollo.cycleEnd)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              This app: {credits.used} of {credits.cap} this cycle
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground" data-testid="credits-used">
+            Credits used this cycle: {credits.used}/{credits.cap} · cycle started {formatDate(credits.cycleStart)}
+          </p>
+        )
       )}
       {p.source === "env" && p.hasStoredKey && (
         <p className="text-xs text-amber-600 dark:text-amber-400">

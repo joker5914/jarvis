@@ -17,6 +17,24 @@ export const DEFAULT_EXCLUSION_CONFIG: ExclusionConfig = {
     "7-eleven", "shell", "exxon", "chevron", "buc-ee", "memorial hermann", "methodist",
     "hca ", "texas children", "kelsey-seybold", "md anderson", "st. luke", "baylor",
     "amazon", "fedex", "ups store", "bank of america", "chase", "wells fargo",
+    // Plan 9 Task 3: Zumiez, Pet Paradise and H&R Block escaped chain exclusion on the original
+    // name-only list; this batch adds the national chains the Apollo headcount signal (see
+    // ENRICH_CONFIG.chainHeadcountMin) would otherwise still have to burn a search call to catch.
+    // "snap fitness" and "state farm" are deliberately NOT here — both are franchise/agent-owned
+    // SMB storefronts, not head-office-run chains, and are real prospects. Fix round (review
+    // N7/N8) removed several entries added in the first pass: "geico", "planet fitness",
+    // "great clips", "supercuts", "jiffy lube", and "aspen dental" are the same franchise/
+    // agent-owned situation as snap fitness/state farm, so they're excluded for consistency; and
+    // "spectrum", "goodyear", "firestone", "staples", "best buy" were dropped as common-word/
+    // surname/city false positives ("Goodyear"/"Firestone" are also Texas place names; "Spectrum"/
+    // "Staples"/"Best Buy" are common business-name words unrelated to those brands).
+    "zumiez", "pet paradise", "h&r block", "petsmart", "petco", "la fitness",
+    "24 hour fitness", "banfield", "vca ", "chili's", "applebee", "olive garden", "ihop",
+    "denny's", "waffle house", "panda express", "chipotle", "five guys", "raising cane",
+    "popeyes", "kfc", "sonic drive", "jack in the box", "dairy queen", "autozone",
+    "o'reilly auto", "advance auto", "discount tire", "mattress firm", "ross dress",
+    "tj maxx", "marshalls", "dollar general", "dollar tree", "family dollar",
+    "office depot", "verizon", "at&t", "t-mobile", "xfinity",
   ],
   entityPatterns: [
     /\bisd\b/i,

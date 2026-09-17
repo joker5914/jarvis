@@ -63,3 +63,9 @@ describe("isEnrichIssueMessage: org-mismatch skip", () => {
     expect(isEnrichIssueMessage("Enrichment skipped: enriched 3 day(s) ago (use Re-enrich to refresh)")).toBe(false);
   });
 });
+
+describe("isEnrichIssueMessage: chain-headcount skip (Plan 9 Task 3)", () => {
+  it("surfaces the chain-headcount skip so LeadDetail explains why the People list is empty", () => {
+    expect(isEnrichIssueMessage("Enrichment skipped: 4753 decision-makers at hrblock.com in Apollo — not an SMB (marked as chain)")).toBe(true);
+  });
+});

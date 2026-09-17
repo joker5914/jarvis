@@ -325,13 +325,19 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
   beforeEach(async () => {
     await cleanup();
     await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    // The credits route counts every Apollo-sourced email contact for the shared `local-user`
+    // owner, and Vitest orders test files by cached duration, so a contact left behind by an
+    // inline enrich in another file (business already deleted by that file's cleanup, contact
+    // created a beat later) made this describe's first assertion fail once with used:1.
+    await prisma.contact.deleteMany({ where: { ownerId: OWNER, source: "apollo", type: "email" } });
   });
 
   it("GET /api/enrichment/credits returns the credit status for a fresh owner", async () => {
+    expect(await prisma.contact.count({ where: { ownerId: OWNER, source: "apollo", type: "email" } })).toBe(0);
     const res = await creditsGet({} as NextRequest, noCtx);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ used: 0, cap: 80, remaining: 80, maxPeople: 1 });
+    expect(body).toMatchObject({ used: 0, cap: 80, remaining: 80, maxPeople: 1, apollo: null });
     expect(body.cycleStart).toBeTruthy();
   });
 

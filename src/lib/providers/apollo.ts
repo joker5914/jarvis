@@ -4,12 +4,15 @@ import { ProviderNotConfiguredError, ProviderPlanError } from "./errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { normalizeName } from "@/lib/jobs/shared";
 import { prisma } from "@/lib/db";
-import type { EnrichPerson, EnrichmentProvider } from "./types";
+import { discardBody } from "@/lib/net/safeFetch";
+import { stateNameFor } from "@/lib/geo/usStates";
+import type { ApolloCreditUsage, EnrichPerson, EnrichmentProvider, PeopleSearchQuery, PeopleSearchResult, PeopleSearchScope } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
 export const ORG_SEARCH_PATH = "/mixed_companies/search";
 export const PEOPLE_SEARCH_PATH = "/mixed_people/api_search";
 export const PEOPLE_MATCH_PATH = "/people/match";
+export const CREDIT_USAGE_PATH = "/usage_stats/credit_usage_stats";
 
 const PLAN_BLOCK_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -32,13 +35,18 @@ function clearPlanBlockMemo(): void {
 
 /** Marks `path` blocked in this process's memo (the worker's per-call short-circuit — see
  * checkPlanBlocked) *and* persists a single provider-wide block on the ProviderConfig row, since
- * the worker process is the only one that ever calls Apollo directly (JOB_MODE=queue in
- * production): the Next.js web process's copy of `planBlockedUntil` is always empty, so the
- * routes' gate (apolloPlanBlocked) must be able to see this via the database, not just memory.
- * Upserts like withBudget() does, in case no ProviderConfig row exists yet. The persist is
- * best-effort: the caller always throws ProviderPlanError regardless of whether this write
- * lands, so a transient DB failure here never surfaces as a generic Prisma error or re-enables
- * pg-boss retries for the job that just saw the live 403.
+ * the worker process is the only one that ever calls the *credited* People Search / People
+ * Enrichment / Organization Search endpoints (JOB_MODE=queue in production) — this function is
+ * only ever reached from those calls' 403 handling. (The Next.js web process does call Apollo
+ * directly too, as of Task 1's live credit balance: creditUsage() reads usage_stats/credit_usage_
+ * stats from Settings/the credits route, uncredited and never gated by this plan-block memo — see
+ * its own doc comment. That does not change the fact this specific function only ever runs in the
+ * worker.) The Next.js web process's own copy of `planBlockedUntil` is always empty for the paths
+ * this function marks, so the routes' gate (apolloPlanBlocked) must be able to see this via the
+ * database, not just memory. Upserts like withBudget() does, in case no ProviderConfig row exists
+ * yet. The persist is best-effort: the caller always throws ProviderPlanError regardless of
+ * whether this write lands, so a transient DB failure here never surfaces as a generic Prisma
+ * error or re-enables pg-boss retries for the job that just saw the live 403.
  *
  * The in-process memo set below is NOT enough on its own to protect later calls in this process
  * if the persist fails: `checkPlanBlocked` always revalidates a memoized block against the
@@ -97,7 +105,13 @@ async function checkPlanBlocked(path: string): Promise<void> {
  * problem is resolved. Provider-neutral name/signature since Settings' PUT route is shared across
  * providers, even though only Apollo populates a block today. */
 export async function clearPlanBlock(provider: string): Promise<void> {
-  if (provider === "apollo") clearPlanBlockMemo();
+  if (provider === "apollo") {
+    clearPlanBlockMemo();
+    // L6 (whole-branch review): a key save/re-enable is exactly when the account behind the key
+    // may have changed — without this, creditUsage()'s balance memo (keyed process-wide, not per
+    // key) could keep showing the *previous* key's balance for up to creditUsageTtlMs (5 min).
+    creditUsageMemo = null;
+  }
   await prisma.providerConfig.updateMany({ where: { provider }, data: { planBlockedUntil: null, planBlockDetail: null } });
 }
 
@@ -155,6 +169,17 @@ export function __resetPlanBlockedForTests(): void {
   clearPlanBlockMemo();
 }
 
+/** Process-wide memo for creditUsage(), separate from the plan-block memo above: a successful
+ * fetch is cached for ENRICH_CONFIG.creditUsageTtlMs so Settings/route polling doesn't re-hit
+ * Apollo on every request; a failure is never memoized (see creditUsage()'s doc comment). */
+let creditUsageMemo: ApolloCreditUsage | null = null;
+
+/** Test-only: clears the creditUsage() memo. Call in beforeEach/afterEach alongside
+ * __resetPlanBlockedForTests so a memoized balance from one test doesn't leak into the next. */
+export function __resetCreditUsageForTests(): void {
+  creditUsageMemo = null;
+}
+
 type ApolloErrorBody = {
   error?: string;
   error_code?: string;
@@ -205,10 +230,17 @@ async function requireKey() {
   return key;
 }
 
-function titleRank(title: string | null | undefined): number {
+function titleRank(title: string | null | undefined, titles: readonly string[]): number {
   const t = (title ?? "").toLowerCase();
-  const i = ENRICH_CONFIG.preferredTitles.findIndex((p) => t.includes(p));
-  return i === -1 ? ENRICH_CONFIG.preferredTitles.length : i;
+  const i = titles.findIndex((p) => t.includes(p));
+  return i === -1 ? titles.length : i;
+}
+
+/** Best match first: preferred-title rank ascending, then a verified/available email ahead of
+ * none, for ties. Extracted from searchPeople (Plan 9 Task 2) so the cascade's per-scope mapping
+ * step can call it once per attempt without duplicating the sort. */
+function rank(people: EnrichPerson[], titles: readonly string[]): EnrichPerson[] {
+  return [...people].sort((a, b) => titleRank(a.title, titles) - titleRank(b.title, titles) || Number(b.hasEmail) - Number(a.hasEmail));
 }
 
 function qs(params: Record<string, string | number | boolean | string[] | undefined>): string {
@@ -283,19 +315,49 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
     return { id: org.id, primaryDomain: org.primary_domain ?? null };
   }
 
-  // `max` is accepted for interface stability (a future/other provider may use it to bound its
-  // own request page size) but unused here: People Search is free of Apollo credits, so this
-  // always fetches a full page (searchPageSize) and returns the whole ranked list — the caller
-  // (runEnrich) is the one that slices to `max` once it starts spending on paid reveals, so it
-  // can also report how many total candidates were found, not just how many it acted on.
+  /**
+   * Unlocated-first location cascade (Plan 9 Task 2, restructured in the fix round after live
+   * testing): the first call is always unfiltered by location (`scope: "any"`), a full page
+   * (searchPageSize). Its `total_entries` is `totalAtDomain` — a free national headcount that
+   * both short-circuits the common case and feeds the Task 3 chain guard. When
+   * `totalAtDomain <= searchPageSize`, every person at the org is already in that one page (a
+   * single-location SMB), so this returns immediately: one call, no cascade. Otherwise (a
+   * multi-location org, or a franchise brand whose head office would otherwise win) it cascades
+   * city → metro → state, stopping at the first scope with any candidates, so a franchise-brand
+   * domain (e.g. kidsrkids.com) surfaces the local owner/director instead of the head office.
+   * When every located scope comes back empty, falls back to the already-fetched unlocated page.
+   * `totalAtDomain` is carried through every returned result unchanged once known; it is null only
+   * when no usable total could be determined at all (no org match on the fallback branch, or a
+   * non-200/422 on the very first call — in which case there is no cascade either, since a total
+   * this function can't trust isn't a total it can compare against searchPageSize).
+   *
+   * Each attempt is one `withBudget("apollo", …)` call (People Search itself costs no Apollo
+   * credits, only counts toward the app's own daily call budget), so the cascade costs at most 4
+   * budget units (any + city + metro + state). `person_locations[]` takes natural place names
+   * ("Pearland, Texas", "Texas, United States"), verified live 2026-09-17 — see stateNameFor; the
+   * metro scope passes `q.metro` verbatim (an operator-typed Settings value, e.g. "Houston,
+   * Texas"). When `q.city` is set but `q.state` isn't, the city scope is skipped: a bare city name
+   * is ambiguous (there are many Pearlands) without a state to disambiguate it.
+   *
+   * `max` is accepted for interface stability (a future/other provider may use it to bound its
+   * own request page size) but unused here: each attempt always fetches a full page
+   * (searchPageSize) and ranks locally — the caller (runEnrich) is the one that slices to `max`
+   * once it starts spending on paid reveals, so it can also report how many total candidates were
+   * found, not just how many it acted on.
+   */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability, see comment above
-  async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
+  async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
     await checkPlanBlocked(PEOPLE_SEARCH_PATH);
     const key = await requireKey();
+    // Per-owner targeting filters, defaulting to the code constants (see PeopleSearchQuery.titles).
+    // `titles` is reused for the local ranking below so the sort order always matches the filter
+    // that produced the page.
+    const titles = q.titles ?? [...ENRICH_CONFIG.preferredTitles];
+    const seniorities = q.seniorities ?? [...ENRICH_CONFIG.seniorities];
     const base: Record<string, string | number | boolean | string[] | undefined> = {
-      person_titles: [...ENRICH_CONFIG.preferredTitles],
+      person_titles: [...titles],
       include_similar_titles: true,
-      person_seniorities: [...ENRICH_CONFIG.seniorities],
+      person_seniorities: [...seniorities],
       per_page: ENRICH_CONFIG.searchPageSize,
       page: 1,
     };
@@ -304,26 +366,59 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       filter = { q_organization_domains_list: [q.domain] };
     } else {
       const org = await this.searchOrganization(q.orgName, q.city);
-      if (!org) return [];
+      if (!org) return { people: [], totalFound: 0, totalAtDomain: null, scope: "any" };
       filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] };
     }
-    const r = await withBudget("apollo", () =>
-      post<{ people?: SearchPerson[] }>(key, PEOPLE_SEARCH_PATH, { ...base, ...filter }),
-    );
-    const people = (r.data?.people ?? []).map<EnrichPerson>((p) => ({
-      apolloId: p.id,
-      firstName: p.first_name ?? null,
-      lastName: null, // search results obfuscate last names
-      name: p.first_name ?? null,
-      title: p.title ?? null,
-      email: null,
-      emailStatus: null,
-      linkedinUrl: null,
-      hasEmail: !!p.has_email,
-      orgName: p.organization?.name ?? null,
-    }));
-    people.sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
-    return people;
+
+    // `knownTotalAtDomain` is null only for the very first (unlocated) call, which is the one
+    // that establishes it; every later cascade call already knows it (carried through from that
+    // first call) and just reports it back unchanged on its own result.
+    const fetchScope = async (scope: PeopleSearchScope, loc: string | null, knownTotalAtDomain: number | null): Promise<PeopleSearchResult> => {
+      const r = await withBudget("apollo", () =>
+        post<{ people?: SearchPerson[]; total_entries?: number }>(key, PEOPLE_SEARCH_PATH, {
+          ...base,
+          ...filter,
+          ...(loc ? { person_locations: [loc] } : {}),
+        }),
+      );
+      const people = rank((r.data?.people ?? []).map<EnrichPerson>((p) => ({
+        apolloId: p.id,
+        firstName: p.first_name ?? null,
+        lastName: null, // search results obfuscate last names
+        name: p.first_name ?? null,
+        title: p.title ?? null,
+        email: null,
+        emailStatus: null,
+        linkedinUrl: null,
+        hasEmail: !!p.has_email,
+        orgName: p.organization?.name ?? null,
+      })), titles);
+      const totalEntries = r.data?.total_entries;
+      return {
+        people,
+        totalFound: totalEntries ?? people.length,
+        totalAtDomain: knownTotalAtDomain ?? totalEntries ?? null,
+        scope,
+      };
+    };
+
+    const any = await fetchScope("any", null, null);
+    if (any.totalAtDomain !== null && any.totalAtDomain <= ENRICH_CONFIG.searchPageSize) return any; // single-location SMB: everyone's already in hand
+    if (any.totalAtDomain === null) return any; // 422/non-200 on the first call: no total to cascade against
+
+    const stateName = stateNameFor(q.state);
+    const scopes: { scope: PeopleSearchScope; loc: string }[] = [];
+    if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
+    // Skip the metro scope when it is the lead's own city (a Houston lead with metro "Houston,
+    // Texas" would otherwise repeat the identical, already-empty query and waste a budget unit).
+    if (q.metro && !scopes.some((s) => s.loc.toLowerCase() === q.metro!.trim().toLowerCase())) scopes.push({ scope: "metro", loc: q.metro });
+    if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
+
+    for (const s of scopes) {
+      const r = await fetchScope(s.scope, s.loc, any.totalAtDomain);
+      if (r.people.length > 0) return r;
+    }
+    return any;
   }
 
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
@@ -353,5 +448,54 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       hasEmail: !!p.email,
       orgName: p.organization?.name ?? null,
     };
+  }
+
+  /** Live account balance and current billing cycle from usage_stats/credit_usage_stats. Not
+   * wrapped in withBudget(): it is a status read (costs no Apollo credits and isn't gated by the
+   * app's own daily-call budget), not a data call. Not gated by checkPlanBlocked() either — a
+   * plan block on People Search/Enrichment says nothing about whether this status endpoint is
+   * reachable, so a fresh call is always attempted (subject to its own TTL memo below). Never
+   * throws: every failure path (no key, non-2xx, network error, unexpected body shape) resolves
+   * to null so Settings can render "balance unavailable" instead of an error boundary. */
+  async creditUsage(): Promise<ApolloCreditUsage | null> {
+    if (creditUsageMemo && Date.now() - creditUsageMemo.fetchedAt.getTime() < ENRICH_CONFIG.creditUsageTtlMs) {
+      return creditUsageMemo;
+    }
+    const key = await getProviderKey("apollo");
+    if (!key) return null;
+    try {
+      const res = await fetch(`${BASE}${CREDIT_USAGE_PATH}`, {
+        method: "POST",
+        headers: { accept: "application/json", "x-api-key": key },
+        // M1 (whole-branch review): this now runs on user-facing routes (Settings, credits,
+        // both enrich routes' assertCredits) and runEnrich, not just a background poll — a
+        // hanging Apollo response used to be able to hang all of them. The catch below already
+        // maps any failure (including an abort) to null.
+        signal: AbortSignal.timeout(ENRICH_CONFIG.creditUsageTimeoutMs),
+      });
+      if (!res.ok) {
+        await discardBody(res);
+        return null;
+      }
+      const body = (await res.json()) as {
+        credit_usage_stats?: { lead_credit?: { limit?: number; consumed?: number; left_over?: number } };
+        current_credit_cycle?: { start_date?: string; end_date?: string };
+      };
+      const lc = body.credit_usage_stats?.lead_credit;
+      const cy = body.current_credit_cycle;
+      if (!lc || !cy?.start_date || !cy.end_date) return null;
+      creditUsageMemo = {
+        limit: lc.limit ?? 0,
+        consumed: lc.consumed ?? 0,
+        leftOver: lc.left_over ?? 0,
+        cycleStart: new Date(cy.start_date),
+        cycleEnd: new Date(cy.end_date),
+        fetchedAt: new Date(),
+      };
+      return creditUsageMemo;
+    } catch (e) {
+      console.error("[apollo] credit usage unavailable", (e as Error).message);
+      return null;
+    }
   }
 }

@@ -8,10 +8,19 @@ import { PROJECT_CONFIG } from "./projects";
 
 const PACKAGE_SLUGS = PACKAGES.map((p) => p.slug) as [PackageSlug, ...PackageSlug[]];
 const CATEGORY_SLUGS = CATEGORIES.map((c) => c.slug) as [string, ...string[]];
+/** Apollo's `person_seniorities` values are snake_case tokens ("c_suite", "vp"). Not validated
+ * against a fixed vocabulary -- Apollo's set isn't pinned anywhere we control, and People Search
+ * costs no credits, so an unknown token costs a wasted search rather than a credit. The shape
+ * check still catches the likely operator error: typing a display label ("C Suite") instead. */
+const SENIORITY_TOKEN = /^[a-z][a-z_]*$/;
 const wordList = z
   .array(z.string().transform((s) => s.trim().toLowerCase()))
   .transform((a) => a.filter(Boolean))
   .pipe(z.array(z.string().max(80)).max(500));
+/** For a filter where an empty list is not "no opinion" but "match everything" -- dropping
+ * `person_titles[]`/`person_seniorities[]` from the Apollo query would widen the search to every
+ * employee and leave `chainHeadcountMin` counting a population it was never calibrated against. */
+const nonEmptyWordList = wordList.refine((a) => a.length > 0, { message: "must list at least one entry" });
 
 export const overridesSchema = z
   .object({
@@ -46,12 +55,23 @@ export const overridesSchema = z
     enrichment: z
       .object({
         maxPeople: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
-        monthlyCreditCap: z.number().int().min(0).max(1000).optional(),
+        monthlyCreditCap: z.number().int().min(0).max(ENRICH_CONFIG.monthlyCreditCapMax).optional(),
         cycleRenewsOn: z
           .string()
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .nullable()
           .optional(),
+        /** Operator-typed metro area (e.g. "Houston, Texas") passed verbatim as a
+         * `person_locations[]` value when the location cascade's city scope is empty or skipped —
+         * see PeopleSearchQuery.metro and ApolloEnrichmentProvider.searchPeople. Not prefilled;
+         * null (the default) means the metro scope is skipped entirely. */
+        metroLocation: z.string().trim().min(3).max(80).nullable().optional(),
+        /** Plan 9 targeting knobs, previously code constants. All three are coupled: the two
+         * filters below decide which people Apollo counts, and `chainHeadcountMin` is a threshold
+         * on that count -- see the ENRICH_CONFIG doc comments. */
+        chainHeadcountMin: z.number().int().min(1).max(ENRICH_CONFIG.chainHeadcountMinMax).optional(),
+        preferredTitles: nonEmptyWordList.optional(),
+        seniorities: nonEmptyWordList.pipe(z.array(z.string().regex(SENIORITY_TOKEN))).optional(),
       })
       .strict()
       .optional(),
@@ -65,7 +85,15 @@ export type RuntimeConfig = {
   categories: Category[];
   allCategories: (Category & { enabled: boolean; defaultPackageSlug: PackageSlug })[];
   projects: { highFitThreshold: number; mediumFitThreshold: number; backfillMonths: number };
-  enrichment: { maxPeople: number; monthlyCreditCap: number; cycleRenewsOn: string | null };
+  enrichment: {
+    maxPeople: number;
+    monthlyCreditCap: number;
+    cycleRenewsOn: string | null;
+    metroLocation: string | null;
+    chainHeadcountMin: number;
+    preferredTitles: string[];
+    seniorities: string[];
+  };
   overrides: ConfigOverrides;
 };
 
@@ -92,20 +120,111 @@ export function mergeConfig(o: ConfigOverrides): RuntimeConfig {
       maxPeople: o.enrichment?.maxPeople ?? ENRICH_CONFIG.maxPeople,
       monthlyCreditCap: o.enrichment?.monthlyCreditCap ?? ENRICH_CONFIG.monthlyCreditCapDefault,
       cycleRenewsOn: o.enrichment?.cycleRenewsOn ?? null,
+      metroLocation: o.enrichment?.metroLocation ?? null,
+      chainHeadcountMin: o.enrichment?.chainHeadcountMin ?? ENRICH_CONFIG.chainHeadcountMin,
+      preferredTitles: o.enrichment?.preferredTitles ?? [...ENRICH_CONFIG.preferredTitles],
+      seniorities: o.enrichment?.seniorities ?? [...ENRICH_CONFIG.seniorities],
     },
     overrides: o,
   };
 }
 
+/** Walk `path` from `root`, returning the object/array it lands on, or null if the path is absent
+ * or lands on a scalar. */
+function nodeAt(root: object, path: readonly PropertyKey[]): Record<PropertyKey, unknown> | null {
+  let node: unknown = root;
+  for (const key of path) {
+    if (node === null || typeof node !== "object") return null;
+    node = (node as Record<PropertyKey, unknown>)[key];
+  }
+  return node !== null && typeof node === "object" ? (node as Record<PropertyKey, unknown>) : null;
+}
+
+/** Delete the narrowest thing that owns a failing `issue.path`: normally the offending leaf field,
+ * but for an issue on an array *element* (or on a whole section, as a cross-field `.refine()`
+ * reports) the containing field, since deleting an element would leave a hole that fails again.
+ * Returns the dotted path actually removed, or null if there was nothing to remove. */
+function dropAt(root: object, path: readonly PropertyKey[]): string | null {
+  for (let end = path.length; end >= 1; end--) {
+    const parent = nodeAt(root, path.slice(0, end - 1));
+    if (!parent || Array.isArray(parent)) continue;
+    const key = path[end - 1];
+    if (key in parent) {
+      delete parent[key];
+      return path.slice(0, end).join(".");
+    }
+  }
+  return null;
+}
+
+/**
+ * Read path for a stored `AppConfig.overrides` row: salvage everything that still validates
+ * instead of discarding the row wholesale.
+ *
+ * A row is written by whichever build was deployed at the time, so a running server can meet keys
+ * its own `.strict()` schema doesn't know. That is not hypothetical: a `next start` serving a build
+ * that predated `enrichment.metroLocation` rejected the whole row over that one key and reverted
+ * *every* setting to its default -- the operator's `monthlyCreditCap: 1000` silently became 80,
+ * with only a "[config] ignoring invalid overrides" line to show for it. An unrecognized or
+ * malformed entry must cost only itself.
+ *
+ * Writes deliberately keep using `overridesSchema` directly (see `saveOverrides`), so the Settings
+ * API still rejects a typo'd key outright rather than quietly swallowing it.
+ */
+export function salvageOverrides(raw: unknown): { overrides: ConfigOverrides; dropped: string[] } {
+  const first = overridesSchema.safeParse(raw);
+  if (first.success) return { overrides: first.data, dropped: [] };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { overrides: {}, dropped: ["<root>"] };
+
+  const candidate = structuredClone(raw) as Record<PropertyKey, unknown>;
+  const dropped: string[] = [];
+
+  // Each pass removes at least one key, so the row converges; the bound is a guard against a
+  // pathological row, not an expected exit. Unrecognized keys go first and are handled separately
+  // because zod reports them as one issue *per object* (`path` = the object, `keys` = its unknown
+  // entries), unlike a value error whose `path` points at the value itself.
+  for (let pass = 0; pass < 20; pass++) {
+    const r = overridesSchema.safeParse(candidate);
+    if (r.success) return { overrides: r.data, dropped };
+
+    const unknowns = r.error.issues.filter((i) => i.code === "unrecognized_keys");
+    let removed = false;
+    for (const issue of unknowns) {
+      const parent = nodeAt(candidate, issue.path);
+      if (!parent) continue;
+      for (const key of issue.keys) {
+        if (!(key in parent)) continue;
+        delete parent[key];
+        dropped.push([...issue.path, key].join("."));
+        removed = true;
+      }
+    }
+    if (removed) continue;
+
+    // Whatever is left is a real validation failure, so drop what owns it.
+    for (const issue of r.error.issues) {
+      if (issue.path.length === 0) return { overrides: {}, dropped: [...dropped, "<root>"] };
+      const gone = dropAt(candidate, issue.path);
+      if (gone) {
+        dropped.push(gone);
+        removed = true;
+      }
+    }
+    if (!removed) return { overrides: {}, dropped: [...dropped, "<root>"] };
+  }
+  return { overrides: {}, dropped: [...dropped, "<root>"] };
+}
+
 export async function loadConfig(ownerId: string): Promise<RuntimeConfig> {
   const row = await prisma.appConfig.findUnique({ where: { ownerId } });
   if (!row) return mergeConfig({});
-  const parsed = overridesSchema.safeParse(row.overrides);
-  if (!parsed.success) {
-    console.warn(`[config] ignoring invalid AppConfig overrides for ${ownerId}: ${parsed.error.message}`);
-    return mergeConfig({});
+  const { overrides, dropped } = salvageOverrides(row.overrides);
+  if (dropped.length > 0) {
+    // Name exactly what was lost and say the rest survived -- the old wording ("ignoring invalid
+    // overrides") read as if one key had been skipped while in fact every setting had been reset.
+    console.warn(`[config] dropped unusable AppConfig entries for ${ownerId}, other settings still apply: ${dropped.join(", ")}`);
   }
-  return mergeConfig(parsed.data);
+  return mergeConfig(overrides);
 }
 
 export async function saveOverrides(ownerId: string, overrides: unknown): Promise<RuntimeConfig> {

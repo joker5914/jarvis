@@ -8,6 +8,7 @@ import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
 import { PLATFORM_EMAIL_DOMAINS } from "@/lib/extract/platformDomains";
+import { stateNameFor } from "@/lib/geo/usStates";
 import type { EnrichPerson } from "@/lib/providers/types";
 
 // Hosts that never identify a business's own domain: social/review profile pages (the original
@@ -38,16 +39,29 @@ export function domainFromUrl(url: string | null): string | null {
   }
 }
 
-export function cityFromAddress(addr: string | null): string | null {
-  if (!addr) return null;
+/**
+ * Splits a formatted street address into its city and 2-letter state code, the way Google's
+ * formatted_address strings lay them out ("street, city, ST zip[, country]"). Supersedes the
+ * plain city-only cityFromAddress (kept below as a thin wrapper — other code and tests still use
+ * it): the location cascade in searchPeople needs both to build Apollo's `person_locations[]`
+ * filter (see src/lib/providers/apollo.ts and src/lib/geo/usStates.ts).
+ */
+export function regionFromAddress(addr: string | null): { city: string | null; state: string | null } {
+  if (!addr) return { city: null, state: null };
   const parts = addr.split(",").map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return null;
-  if (parts.length === 1) return null;
+  if (parts.length <= 1) return { city: null, state: null };
   const last = parts[parts.length - 1];
   const isCountry = /^(usa|united states|us)$/i.test(last);
   const stateZipIdx = isCountry ? parts.length - 2 : parts.length - 1;
-  const city = parts[stateZipIdx - 1];
-  return city && !/\d/.test(city) ? city : null;
+  const cityRaw = parts[stateZipIdx - 1];
+  const city = cityRaw && !/\d/.test(cityRaw) ? cityRaw : null;
+  const stateZip = parts[stateZipIdx] as string | undefined;
+  const stateMatch = stateZip ? /^([A-Z]{2})\b/.exec(stateZip) : null;
+  return { city, state: stateMatch ? stateMatch[1] : null };
+}
+
+export function cityFromAddress(addr: string | null): string | null {
+  return regionFromAddress(addr).city;
 }
 
 /**
@@ -73,7 +87,7 @@ export async function runEnrich(
   ownerId: string,
   deps: JobDeps,
   opts: { force?: boolean; people?: number } = {},
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | null }> {
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
@@ -87,11 +101,24 @@ export async function runEnrich(
   }
   const cfg = await loadConfig(ownerId);
   const maxPeople = Math.min(ENRICH_CONFIG.maxPeopleLimit, Math.max(1, opts.people ?? cfg.enrichment.maxPeople));
-  const status = await creditStatus(ownerId, cfg);
+  // Reads the live Apollo balance off this run's own provider instance (deps.providers.enrichment),
+  // not creditStatus's default getProviders().enrichment: the real ApolloEnrichmentProvider's
+  // creditUsage() memo is module-scoped either way, but the fake provider's fakeCreditUsage is a
+  // per-instance property, so a test priming *this* job's fake must have that instance actually
+  // consulted rather than a fresh, unrelated one.
+  const status = await creditStatus(ownerId, cfg, new Date(), deps.providers.enrichment);
   const { used, cap } = status;
   let remaining = status.remaining;
   if (remaining <= 0) {
-    await log("Enrichment skipped: Apollo monthly credit cap reached");
+    // Task 1 follow-up: when Apollo's own account balance (not the app's cap) is the binding
+    // constraint — i.e. it's already at/below 0 regardless of what the app cap allows — say so
+    // specifically; otherwise keep the existing app-cap wording. Both cases still throw the same
+    // CreditCapReachedError (the numbers it carries describe the app's own cap either way).
+    if (status.apollo && status.apollo.leftOver <= 0) {
+      await log("Enrichment skipped: Apollo account is out of credits");
+    } else {
+      await log("Enrichment skipped: Apollo monthly credit cap reached");
+    }
     throw new CreditCapReachedError(used, cap);
   }
   let added = 0;
@@ -100,7 +127,58 @@ export async function runEnrich(
   try {
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
-    const people = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city: cityFromAddress(b.formattedAddress) }, maxPeople);
+    const { city, state } = regionFromAddress(b.formattedAddress);
+    const metro = cfg.enrichment.metroLocation ?? null;
+    const search = await deps.providers.enrichment.searchPeople(
+      { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities },
+      maxPeople,
+    );
+    // Chain-headcount guard (Plan 9 Task 3): a domain with this many *decision-maker* hits in
+    // Apollo (title/seniority-filtered by the same cfg.enrichment lists passed above — see the
+    // ENRICH_CONFIG.chainHeadcountMin doc comment for
+    // why this isn't a raw employee count), at any location, is a national chain, not an SMB
+    // prospect — reads search.totalAtDomain (the *national* count from the cascade's unlocated
+    // first call), never search.totalFound (which can be a much smaller scoped count, e.g. just a
+    // franchise's local city/metro page). Costs no credit: this runs before the reveal loop below,
+    // and returns without touching lastEnrichedAt so a later manual override (the "Restore as SMB"
+    // undo path) can still re-enrich. The persisted reason string keeps the `apollo_headcount`
+    // name (not renamed to match the "decision-makers" wording) since it's a stored, matched-on
+    // contract — see rescoreExclusions and the PATCH route's clearChain branch.
+    if (domain && search.totalAtDomain !== null && search.totalAtDomain >= cfg.enrichment.chainHeadcountMin) {
+      const reason = `chain:apollo_headcount:${search.totalAtDomain}`;
+      await prisma.business.update({
+        where: { id: businessId },
+        data: { exclusion: "enterprise", exclusionReasons: [...new Set([...b.exclusionReasons, reason])] },
+      });
+      await log(`Enrichment skipped: ${search.totalAtDomain} decision-makers at ${domain} in Apollo — not an SMB (marked as chain)`);
+      return { added: 0, updated: 0, skipped: "chain" as const };
+    }
+    const people = search.people;
+    // Named for the activity-message suffixes below only — search.totalFound/totalAtDomain (the
+    // free headcount signals) are consumed by the Task 3 chain guard, not by anything in this
+    // function. Guarded per-branch (city && state, metro non-null, state) so a scope the query
+    // couldn't actually have matched in (a malformed/partial result) never renders as
+    // "(matched in null, null)" — by construction searchPeople only ever sets a scope when the
+    // corresponding location input was present, but this stays defensive rather than trusting that.
+    // L1 (whole-branch review): when the cascade actually ran (totalAtDomain > searchPageSize —
+    // the single-location-SMB short-circuit above only ever returns scope "any" for totalAtDomain
+    // <= searchPageSize, so this can't misfire on that case) but every located scope came back
+    // empty, searchPeople falls back to the unlocated page and reports scope "any" again — which
+    // otherwise looks identical to "no location info was ever available to search with." Only
+    // worth calling out when a located input actually existed to try (city+state, or metro), so a
+    // business with neither doesn't get a misleading "searched nationally" note about a cascade
+    // that never had anywhere local to look.
+    const hadLocatedInput = (city !== null && state !== null) || metro !== null;
+    const scopeSuffix =
+      search.scope === "city" && city && state
+        ? ` (matched in ${city}, ${state})`
+        : search.scope === "metro" && metro
+          ? ` (matched in ${metro})`
+          : search.scope === "state" && state
+            ? ` (matched in ${stateNameFor(state)})`
+            : search.scope === "any" && search.totalAtDomain !== null && search.totalAtDomain > ENRICH_CONFIG.searchPageSize && hadLocatedInput
+              ? " (no local match; searched nationally)"
+              : "";
     // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
     // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
     // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked
@@ -214,12 +292,12 @@ export async function runEnrich(
       const titles = examined.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
       const noun = (n: number) => (n === 1 ? "person" : "people");
       await log(
-        checked < found
+        (checked < found
           ? `Enriched via Apollo: none of the ${checked} ${noun(checked)} checked (of ${found} found) had an email (${titles})`
-          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`,
+          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`) + scopeSuffix,
       );
     } else {
-      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated${scopeSuffix}`);
     }
     return { added, updated, skipped: null };
   } catch (e) {
@@ -242,7 +320,9 @@ export async function runEnrich(
 }
 
 /** Strips anything shaped like an "x-api-key" header value from a log message. Defense in depth
- * only — see the M3 comment at its call site for why this should never actually trigger. */
-function redactApiKeyLike(message: string): string {
+ * only — see the M3 comment at its call site for why this should never actually trigger. Exported
+ * (fix round, review N3) so scripts/chain-sweep.ts's per-business error logging reuses the exact
+ * same redaction instead of a second hand-copy of the pattern. */
+export function redactApiKeyLike(message: string): string {
   return message.replace(/x-api-key[^\s]*/gi, "[redacted]");
 }

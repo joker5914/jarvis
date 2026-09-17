@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { domainFromUrl, cityFromAddress, canonicalLinkedin } from "@/lib/jobs/enrich";
+import { domainFromUrl, cityFromAddress, canonicalLinkedin, regionFromAddress } from "@/lib/jobs/enrich";
 
 describe("domainFromUrl", () => {
   it.each([
@@ -23,6 +23,16 @@ describe("cityFromAddress", () => {
     ["Houston, TX", "Houston"],
     [null, null], ["", null],
   ])("%s → %s", (input, out) => expect(cityFromAddress(input)).toBe(out));
+});
+
+describe("regionFromAddress", () => {
+  it.each([
+    ["1820 Pearland Pkwy, Pearland, TX 77581, USA", { city: "Pearland", state: "TX" }],
+    ["500 Elm, Suite 2, Katy, TX 77450, United States", { city: "Katy", state: "TX" }],
+    ["123 Main St, Houston, TX 77084, USA", { city: "Houston", state: "TX" }],
+    ["Somewhere", { city: null, state: null }],
+    [null, { city: null, state: null }],
+  ])("%s → %o", (input, out) => expect(regionFromAddress(input)).toEqual(out));
 });
 
 describe("canonicalLinkedin", () => {

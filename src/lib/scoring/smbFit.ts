@@ -26,8 +26,35 @@ function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function hasWord(text: string, kw: string) {
+// Exported (fix round, review B2): tests assert hasWord(name, chainKeyFor(name)) directly, and
+// the route that builds chain-list entries needs the exact matching semantics scoreSmbFit uses.
+export function hasWord(text: string, kw: string) {
   return new RegExp(`\\b${escapeRe(kw)}\\b`, "i").test(text);
+}
+
+// A trailing legal-entity suffix only — "Zumiez LLC" -> strip " llc", but "Chick-fil-A Pearland"
+// keeps "pearland" (it isn't a legal suffix). Mirrors the suffix list in
+// src/lib/jobs/shared.ts's normalizeName, but trailing-only and case-insensitive on a
+// whitespace-collapsed string rather than global-replace, since chainKeyFor must NOT touch
+// internal punctuation (see the doc comment below for why).
+const TRAILING_LEGAL_SUFFIX_RE = /\b(?:llc|inc|co|corp|ltd|pllc|pc)\.?$/i;
+
+/**
+ * Fix round (review B2): the chain-list entry the "Not an SMB" PATCH action persists for a
+ * business's own name. `normalizeName` (src/lib/jobs/shared.ts) is the wrong tool here — it
+ * strips `&`, `'`, `-`, and `.`, so "H&R Block" would normalize to "h r block", which `hasWord`
+ * can never match against the raw (punctuation-intact) lowercase name `scoreSmbFit` actually
+ * scores against. `chainKeyFor` instead only lowercases, trims, collapses internal whitespace, and
+ * strips a trailing legal-entity suffix — every other character (including `&`, `'`, `-`) survives
+ * intact, so `hasWord(name.toLowerCase(), chainKeyFor(name))` is always true for the name it was
+ * built from.
+ */
+export function chainKeyFor(name: string): string {
+  const collapsed = name.trim().replace(/\s+/g, " ").toLowerCase();
+  // Also trim leading/trailing non-alphanumerics ("Pet Paradise (Pearland)", "Joe's Diner!"):
+  // hasWord's  needs a word character at both ends of the pattern, so a key that starts or ends
+  // with punctuation could never match its own name. Internal punctuation stays.
+  return collapsed.replace(TRAILING_LEGAL_SUFFIX_RE, "").trim().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
 }
 
 export type SmbFitThresholds = { highFitThreshold: number; mediumFitThreshold: number };

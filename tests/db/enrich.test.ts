@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db";
+import { saveOverrides } from "@/lib/config/runtime";
 import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
+import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import type { JobDeps } from "@/lib/jobs/shared";
 
 const OWNER = "test-enrich-owner";
@@ -47,12 +49,14 @@ describe("runEnrich", () => {
     // "out of 2 found" — the fake's searchPeople now returns its full ranked candidate list
     // (Owner + General Manager), matching real Apollo's search (free of credits, up to
     // searchPageSize); maxPeople=1 only bounds how many get a *paid* reveal, at the loop below.
-    expect(log[0].message).toBe("Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated");
+    // The fake reports scope "city" whenever both a city and a state are available (biz()'s
+    // default address has both), so the success message carries the location suffix too.
+    expect(log[0].message).toBe("Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated (matched in Houston, TX)");
   });
   it("m=0: search returns no candidates at all — names what was searched for, not a generic '0 people'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [];
+    fake.searchPeople = async () => ({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -68,10 +72,10 @@ describe("runEnrich", () => {
   it("m=2, n=0: search finds two candidates, neither has an email — names the titles instead of a generic '0 people'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-store-mgr", firstName: "Casey", lastName: null, name: "Casey", title: "Store Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
       { apolloId: "fake-barista", firstName: "Sam", lastName: null, name: "Sam", title: "Barista", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 2, totalAtDomain: 2, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -83,10 +87,10 @@ describe("runEnrich", () => {
   it("walks past a no-email candidate at rank 0 and reveals the emailed one at rank 1 within maxPeople=1 (re-review D2)", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-bellanails.com-gm", firstName: "Lee", lastName: null, name: "Lee", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
       { apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 2, totalAtDomain: 2, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r.added).toBe(1);
@@ -98,9 +102,9 @@ describe("runEnrich", () => {
   it("m=1, n=0: singular wording — 'none of 1 person found had an email'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-store-mgr", firstName: "Casey", lastName: null, name: "Casey", title: "Store Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 1, totalAtDomain: 1, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -194,13 +198,33 @@ describe("runEnrich", () => {
     expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
   });
 
+  it("passes the configured metro area to the search and names it in the activity row (Plan 9 Task 2)", async () => {
+    await saveOverrides(OWNER, { enrichment: { metroLocation: "Metro City, Texas" } });
+    try {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      let seenMetro: string | null | undefined;
+      fake.searchPeople = async (q) => {
+        seenMetro = q.metro;
+        return { people: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" }], totalFound: 1, totalAtDomain: 30, scope: "metro" };
+      };
+      const d = deps(fake);
+      await runEnrich(b.id, OWNER, d);
+      expect(seenMetro).toBe("Metro City, Texas");
+      const log = await prisma.activityLog.findFirst({ where: { businessId: b.id, kind: "enriched" }, orderBy: { createdAt: "desc" } });
+      expect(log?.message).toMatch(/ \(matched in Metro City, Texas\)$/);
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
+  });
+
   describe("enrichment targeting guard (Task 4)", () => {
     it("skips a candidate whose Apollo-reported company doesn't match the lead (e.g. a shared booking-platform page returning the platform's own staff), with one explanatory activity row, no contact created, no paid reveal, and lastEnrichedAt set (L1: so a later bulk pass doesn't re-spend the Organization Search credit on the same mismatch)", async () => {
       const b = await biz({ name: "Whiskey Blades", websiteUrl: "https://whiskeyblades.booksy.com/" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-booksy-exec", firstName: "Sam", lastName: null, name: "Sam", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Booksy" },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const d = deps(fake);
       const before = new Date();
       const r = await runEnrich(b.id, OWNER, d);
@@ -215,9 +239,9 @@ describe("runEnrich", () => {
       expect(updatedBiz.lastEnrichedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
 
       // Re-enrich with force still bypasses the recheckDays gate and retries against Apollo.
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-bella-owner", firstName: "Sam", lastName: null, name: "Sam", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Whiskey Blades" },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const forced = await runEnrich(b.id, OWNER, d, { force: true });
       expect(forced.skipped).toBeNull();
       expect(forced.added).toBe(1);
@@ -226,9 +250,9 @@ describe("runEnrich", () => {
     it("normalizes punctuation and connectors before comparing (\"Bella Nails & Spa\" vs \"Bella Nails and Spa\" is the same company)", async () => {
       const b = await biz({ name: "Bella Nails & Spa" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-bella-owner", firstName: "Linh", lastName: null, name: "Linh", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails and Spa" },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).not.toMatchObject({ skipped: "org_mismatch" });
@@ -238,9 +262,9 @@ describe("runEnrich", () => {
     it("does not apply the name guard when the search was filtered by the lead's own domain (a domain owner often trades under another name)", async () => {
       const b = await biz({ name: "Dr. Jane Smith DDS", websiteUrl: "https://www.pearlandfamilydentistry.com/" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-pfd-owner", firstName: "Jane", lastName: null, name: "Jane", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Pearland Family Dentistry" },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).not.toMatchObject({ skipped: "org_mismatch" });
@@ -250,9 +274,9 @@ describe("runEnrich", () => {
     it("proceeds when the candidate's orgName loosely matches the lead's name (case-insensitive, tolerant of a trailing legal suffix)", async () => {
       const b = await biz({ name: "ZERO Training Center" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-zerotrainingcenter.example-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Zero Training Center LLC" },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).toEqual({ added: 1, updated: 0, skipped: null });
@@ -266,13 +290,134 @@ describe("runEnrich", () => {
     it("is unaffected when candidates carry no orgName at all", async () => {
       const b = await biz();
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-noorg-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: null },
-      ];
+      ], totalFound: 1, totalAtDomain: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r.skipped).toBeNull();
       expect(r.added).toBe(1);
+    });
+  });
+
+  describe("location cascade activity message suffix (Task 2)", () => {
+    it("appends ' (matched in <city>, <state>)' to the success message when the search matched in the city scope", async () => {
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com", formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        // apolloId matches FakeEnrichmentProvider.enrichPerson's `fake-<domain>-(owner|gm)`
+        // pattern so the default fake reveal resolves an email, and this run actually adds a
+        // contact (a null reveal would make `added` 0 and never log the success message below).
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Preschool Director", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 20, totalAtDomain: 20, scope: "city" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).toMatch(/ \(matched in Pearland, TX\)$/);
+    });
+
+    // L1 (whole-branch review): the cascade ran (totalAtDomain > searchPageSize) but every
+    // located scope came back empty, so searchPeople falls back to the unlocated page and reports
+    // scope "any" again — indistinguishable from "no location info was ever available" without
+    // this suffix. 139 is below chainHeadcountMin (1000), so the chain guard doesn't fire either.
+    it("appends ' (no local match; searched nationally)' when the cascade ran but fell back to the unlocated page, and a located input (city+state) existed", async () => {
+      const b = await biz({ name: "H&R Block", websiteUrl: "https://www.hrblock.com", formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-hrblock.com-owner", firstName: "Nat", lastName: null, name: "Nat", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "H&R Block" },
+      ], totalFound: 139, totalAtDomain: 139, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).toMatch(/ \(no local match; searched nationally\)$/);
+    });
+
+    // Sanity check for the guard the previous test relies on: the short-circuit case (a
+    // single-location SMB whose whole page comes back on the unlocated call, totalAtDomain <=
+    // searchPageSize) must NOT get the "searched nationally" suffix — nothing was ever cascaded.
+    it("does not append the national-fallback suffix for a small org (totalAtDomain within searchPageSize)", async () => {
+      const b = await biz({ formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
+      ], totalFound: ENRICH_CONFIG.searchPageSize, totalAtDomain: ENRICH_CONFIG.searchPageSize, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).not.toMatch(/searched nationally/);
+    });
+  });
+
+  describe("chain-headcount guard (Task 3)", () => {
+    it("marks the business as an excluded chain and skips the reveal loop entirely when totalAtDomain meets the threshold", async () => {
+      // 4,753 is the live-measured decision-maker (title/seniority-filtered) count for
+      // hrblock.com — see the ENRICH_CONFIG.chainHeadcountMin doc comment (Plan 9 Task 3 fix
+      // round, review N1): Apollo's total_entries here is never a raw employee headcount, since
+      // every People Search call is already filtered by preferredTitles/seniorities.
+      const b = await biz({ name: "H&R Block", websiteUrl: "https://www.hrblock.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-hrblock.com-ceo", firstName: "Jamie", lastName: null, name: "Jamie", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "H&R Block" },
+      ], totalFound: 4753, totalAtDomain: 4753, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "chain" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.exclusion).toBe("enterprise");
+      expect(after.exclusionReasons).toEqual(["chain:apollo_headcount:4753"]);
+      expect(after.lastEnrichedAt).toBeNull();
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment skipped: 4753 decision-makers at hrblock.com in Apollo — not an SMB (marked as chain)");
+    });
+
+    // Plan 9: the threshold is a per-owner Settings value, not a code constant. Same headcount
+    // (31, the measured kidsrkids.com count) that passes at the 1000 default must be excluded once
+    // the owner lowers the threshold under it -- proving the guard reads config, not ENRICH_CONFIG.
+    it("uses the owner's configured threshold instead of the default", async () => {
+      await saveOverrides(OWNER, { enrichment: { chainHeadcountMin: 30 } });
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 31, totalAtDomain: 31, scope: "any" });
+      const d = deps(fake);
+      expect(await runEnrich(b.id, OWNER, d)).toEqual({ added: 0, updated: 0, skipped: "chain" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).exclusionReasons).toEqual(["chain:apollo_headcount:31"]);
+    });
+
+    // The configured targeting filters have to reach Apollo, since they are what its total_entries
+    // (and therefore the threshold above) counts.
+    it("passes the owner's configured titles and seniorities to the provider", async () => {
+      await saveOverrides(OWNER, { enrichment: { preferredTitles: ["principal"], seniorities: ["partner"] } });
+      const b = await biz({ name: "Bella Nails", websiteUrl: "https://bellanails.com" });
+      const fake = new FakeEnrichmentProvider();
+      let seen: { titles?: string[]; seniorities?: string[] } | null = null;
+      const inner = fake.searchPeople.bind(fake);
+      fake.searchPeople = async (q, max) => { seen = { titles: q.titles, seniorities: q.seniorities }; return inner(q, max); };
+      await runEnrich(b.id, OWNER, deps(fake));
+      expect(seen).toEqual({ titles: ["principal"], seniorities: ["partner"] });
+    });
+
+    it("proceeds normally when totalAtDomain is below the threshold (a franchise brand, not a chain)", async () => {
+      // 31 is the live-measured decision-maker count for kidsrkids.com — a real franchise SMB
+      // prospect (see the ENRICH_CONFIG.chainHeadcountMin doc comment).
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Preschool Director", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 31, totalAtDomain: 31, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.skipped).toBeNull();
+      expect(d.enrichment.calls.enrich).toBe(1);
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.exclusion).toBe("none");
     });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bandFor, scoreSmbFit } from "@/lib/scoring/smbFit";
+import { bandFor, chainKeyFor, hasWord, scoreSmbFit } from "@/lib/scoring/smbFit";
 
 describe("bandFor", () => {
   it("uses the default (static) thresholds when none are passed", () => {
@@ -111,4 +111,68 @@ describe("scoreSmbFit", () => {
     expect(r.band).toBe("low");
     expect(r.reasons.map((x) => x.code)).toEqual(["cost_under_250k", "soft_negative", "soft_negative"]);
   });
+
+  // Plan 9 Task 3: Zumiez, Pet Paradise and H&R Block escaped chain exclusion under the original
+  // name-list (they were never on it at all) — the headcount signal in runEnrich/chain-sweep
+  // catches them independently of this list, but the seed list itself should also know about
+  // these well-known, always-head-office-run national chains so they're excluded up front, at
+  // zip-search time.
+  it.each([["Zumiez"], ["Pet Paradise Pearland"], ["H&R Block"]])(
+    "hard-excludes the seeded chain %s",
+    (name) => {
+      const r = scoreSmbFit({ name });
+      expect(r.excluded).toBe(true);
+      expect(r.exclusionReasons[0]).toMatch(/^chain:/);
+    },
+  );
+
+  // Fix round (review N7/N8): removed from the seed list. N7 — common-word/surname/city false
+  // positives ("Spectrum" is also a common business-name word, "Goodyear" and "Firestone" are also
+  // Texas place names, "Staples"/"Best Buy" are common words/surnames). N8 — franchise/agent-owned
+  // brands, consistent with the "snap fitness"/"state farm" rule: a GEICO agent, a Great Clips or
+  // Supercuts storefront, an Aspen Dental office, and a Jiffy Lube location are independently
+  // owned SMB prospects, not head-office-run chains, even though they share a brand name.
+  it.each([
+    ["Snap Fitness Pearland"],
+    ["State Farm - Jane Smith"],
+    ["GEICO Insurance Agent"],
+    ["Jiffy Lube"],
+    ["Planet Fitness Pearland"],
+    ["Great Clips"],
+    ["Supercuts"],
+    ["Aspen Dental"],
+  ])("does not exclude the franchise/agent-owned business %s", (name) => {
+    expect(scoreSmbFit({ name }).excluded).toBe(false);
+  });
+});
+
+describe("chainKeyFor", () => {
+  // Fix round (review B2): normalizeName (src/lib/jobs/shared.ts) strips "&"/"'"/"-"/".", so
+  // "H&R Block" would normalize to "h r block" — a string hasWord can never match against the raw
+  // (punctuation-intact) lowercase name scoreSmbFit actually scores against. chainKeyFor keeps
+  // punctuation and only strips a trailing legal-entity suffix.
+  it.each([
+    ["H&R Block", "h&r block"],
+    ["Denny's Diner", "denny's diner"],
+    ["Chick-fil-A Pearland", "chick-fil-a pearland"],
+    ["Zumiez LLC", "zumiez"],
+    // L8 (whole-branch review): chainKeyFor only trims *leading/trailing* non-alphanumerics, so
+    // the trailing ")" is stripped but the "(" in the middle of the string survives unbalanced —
+    // intentional, not a bug: chainKeyFor's job is to produce a key hasWord can match against the
+    // raw name (see the describe-level comment above), not to balance punctuation, and an
+    // unbalanced "(" mid-string still matches correctly via hasWord (see the test below).
+    ["Pet Paradise (Pearland)", "pet paradise (pearland"],
+    ["Joe's Diner!", "joe's diner"],
+    ["#1 Nails & Spa", "1 nails & spa"],
+    ["LLC", ""],
+  ])("keys %s as %s", (name, key) => {
+    expect(chainKeyFor(name)).toBe(key);
+  });
+
+  it.each([["H&R Block"], ["Denny's Diner"], ["Chick-fil-A Pearland"], ["Zumiez LLC"], ["Pet Paradise (Pearland)"], ["Joe's Diner!"], ["#1 Nails & Spa"], ["Salon 5."]])(
+    "the key it produces for %s always matches that same name's lowercase text via hasWord",
+    (name) => {
+      expect(hasWord(name.toLowerCase(), chainKeyFor(name))).toBe(true);
+    },
+  );
 });

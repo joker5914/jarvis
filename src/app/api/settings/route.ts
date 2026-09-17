@@ -52,7 +52,7 @@ export const GET = handle(async () => {
       projects: cfg.projects,
       enrichment: cfg.enrichment,
     },
-    credits: { used: credits.used, cap: credits.cap, remaining: credits.remaining, cycleStart: credits.cycleStart },
+    credits: { used: credits.used, cap: credits.cap, remaining: credits.remaining, cycleStart: credits.cycleStart, apollo: credits.apollo },
     packages: PACKAGES,
     defaults: {
       exclusion: defaultExclusion,
@@ -61,7 +61,15 @@ export const GET = handle(async () => {
         mediumFitThreshold: PROJECT_CONFIG.mediumFitThreshold,
         backfillMonths: PROJECT_CONFIG.backfillMonths,
       },
-      enrichment: { maxPeople: ENRICH_CONFIG.maxPeople, monthlyCreditCap: ENRICH_CONFIG.monthlyCreditCapDefault, cycleRenewsOn: null },
+      enrichment: {
+        maxPeople: ENRICH_CONFIG.maxPeople,
+        monthlyCreditCap: ENRICH_CONFIG.monthlyCreditCapDefault,
+        cycleRenewsOn: null,
+        metroLocation: null,
+        chainHeadcountMin: ENRICH_CONFIG.chainHeadcountMin,
+        preferredTitles: [...ENRICH_CONFIG.preferredTitles],
+        seniorities: [...ENRICH_CONFIG.seniorities],
+      },
     },
   });
 });

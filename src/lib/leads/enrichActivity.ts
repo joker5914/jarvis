@@ -15,10 +15,19 @@ export type ActivityLike = { kind: string; message: string };
  * activity row at all, so LeadDetail had no way to show that a click had failed.
  */
 export function isEnrichIssueMessage(message: string): boolean {
-  // The one "skipped" message that *is* a problem worth showing: the search matched a different
-  // company, so nothing was enriched even though lastEnrichedAt is now set (so the button reads
-  // "Re-enrich" and the People list is empty — this line explains why).
-  return /^Enrichment (unavailable|paused|failed)/.test(message) || /^Enrichment skipped: Apollo matched a different company/.test(message);
+  // Two "skipped" messages that *are* worth showing even though "skipped" usually means benign:
+  //  - the search matched a different company, so nothing was enriched even though
+  //    lastEnrichedAt is now set (button reads "Re-enrich", People list is empty);
+  //  - the chain-headcount guard (Plan 9 Task 3) excluded the business instead of enriching it,
+  //    so the People list is empty for a reason that isn't the ordinary recency/disabled skips.
+  //    Fix round (review N1/N9): the guard's message counts title/seniority-filtered
+  //    decision-makers, not a raw headcount — wording (and this regex) updated to match; the
+  //    persisted `chain:apollo_headcount:<n>` reason string itself is unchanged (see enrich.ts).
+  return (
+    /^Enrichment (unavailable|paused|failed)/.test(message) ||
+    /^Enrichment skipped: Apollo matched a different company/.test(message) ||
+    /^Enrichment skipped: \d+ decision-makers at .+ in Apollo — not an SMB/.test(message)
+  );
 }
 
 /**

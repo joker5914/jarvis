@@ -17,7 +17,11 @@ import { APOLLO_PLAN_BLOCK_MESSAGE } from "@/lib/providers/errors";
 async function assertCredits(ownerId: string, cfg: Awaited<ReturnType<typeof loadConfig>>) {
   const s = await creditStatus(ownerId, cfg);
   if (s.remaining <= 0) {
-    return json({ error: `Apollo monthly credit cap reached (${s.used}/${s.cap})`, settingsHref: "/settings" }, 409);
+    // Name the binding constraint: Apollo's own balance when it is empty, otherwise this app's cap.
+    const error = s.apollo && s.apollo.leftOver <= 0
+      ? "Apollo account is out of credits (Apollo reports 0 left)"
+      : `Apollo monthly credit cap reached (${s.used}/${s.cap})`;
+    return json({ error, settingsHref: "/settings" }, 409);
   }
   return null;
 }

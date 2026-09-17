@@ -36,7 +36,16 @@ type Detail = {
 };
 
 type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
-type CreditStatus = { used: number; cap: number; remaining: number; maxPeople: number };
+type CreditStatus = {
+  used: number;
+  cap: number;
+  remaining: number;
+  maxPeople: number;
+  /** Apollo's own account-wide balance, or null when unavailable — see credits.ts's CreditStatus.
+   * M2 (whole-branch review): distinguishes "the app's own cap is the binding constraint" from
+   * "Apollo's account itself is out of credits" for the banner below. */
+  apollo: { limit: number; consumed: number; leftOver: number; cycleEnd: string } | null;
+};
 
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. */
@@ -74,6 +83,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [newTag, setNewTag] = useState("");
   const [notes, setNotes] = useState("");
   const [enriching, setEnriching] = useState(false);
+  const [chainActionPending, setChainActionPending] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
@@ -186,6 +196,52 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     }
   }
 
+  // "Not an SMB (chain)" action (Plan 9 Task 3): adds this lead's chain key to the owner's chain
+  // list and re-scores every business, so a name-alike lead (e.g. another location of the same
+  // brand) gets excluded in the same click. `rescore.newlyExcluded` (fix round: counts only
+  // businesses the PATCH route attributes to *this* chain key, not incidental unrelated flips —
+  // see route.ts's N6 comment) already includes this business itself, so the toast's "N similar
+  // leads" figure subtracts one (floored at 0).
+  async function markAsChain() {
+    if (!b) return;
+    const name = b.name;
+    setChainActionPending(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ markAsChain: true }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error ?? "Could not mark as chain"); return; }
+      // Honest zero (fix round, review N6): should be impossible after the chainKeyFor fix (the
+      // key always matches the name it was built from), but a false "Excluded" toast is worse
+      // than an extra guard if some other reason ever prevents the flip.
+      if (data.business?.exclusion === "none") { toast.error(`Could not exclude ${name}`); return; }
+      const extra = Math.max(0, (data.rescore?.newlyExcluded ?? 1) - 1);
+      toast.success(extra > 0 ? `Excluded ${name} and ${extra} similar lead${extra === 1 ? "" : "s"}` : `Excluded ${name}`);
+      await load({ quiet: true });
+      onChanged?.();
+    } finally {
+      setChainActionPending(false);
+    }
+  }
+
+  // "Restore as SMB" un-mark path (fix round): the inverse action, scoped to just this business
+  // (see the PATCH route's clearChain branch for why it doesn't cascade to look-alikes the way
+  // markAsChain's rescore does).
+  async function restoreAsSmb() {
+    if (!b) return;
+    const name = b.name;
+    setChainActionPending(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ clearChain: true }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error ?? "Could not restore as SMB"); return; }
+      toast.success(`Restored ${name}`);
+      await load({ quiet: true });
+      onChanged?.();
+    } finally {
+      setChainActionPending(false);
+    }
+  }
+
   function onNotes(v: string) {
     setNotes(v);
     if (notesTimer.current) clearTimeout(notesTimer.current);
@@ -274,15 +330,29 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                     ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
                   </span>
                 )}
+                {/* N9: disabled while enriching too — a click here mid-enrich would race the
+                    reveal loop's own exclusion checks against this button's PATCH. */}
+                <Button size="sm" variant="ghost" data-testid="mark-chain-button" disabled={enriching || chainActionPending} onClick={markAsChain}>
+                  {chainActionPending ? "Excluding…" : "Not an SMB (chain)"}
+                </Button>
               </>
             ) : (
-              <span className="text-xs text-muted-foreground" data-testid="enrich-excluded-note">
-                Excluded — not enriched
-              </span>
+              <>
+                <span className="text-xs text-muted-foreground" data-testid="enrich-excluded-note">
+                  Excluded — not enriched
+                </span>
+                {b.exclusionReasons.some((r) => r.startsWith("chain:")) && (
+                  <Button size="sm" variant="ghost" data-testid="restore-smb-button" disabled={chainActionPending} onClick={restoreAsSmb}>
+                    {chainActionPending ? "Restoring…" : "Restore as SMB"}
+                  </Button>
+                )}
+              </>
             )}
           </div>
           {b.exclusion === "none" && credits?.remaining === 0 && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {credits.apollo && credits.apollo.leftOver <= 0 ? "Apollo account is out of credits" : "Monthly Apollo credit cap reached — adjust in Settings"}
+            </p>
           )}
           {b.exclusion === "none" && lastEnrichIssue && (
             <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="enrich-last-error">{lastEnrichIssue.message}</p>
