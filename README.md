@@ -130,6 +130,21 @@ not the dev server: Playwright's `webServer` runs `npm run e2e:server`
 writes to a separate build directory (`next.config.ts` reads it into
 `distDir`) and never clobbers a `.next` build from a running `npm run dev`.
 
+### Known advisories
+
+`npm audit` reports advisories that are blocked by the version pins in this
+project:
+
+- `postcss` (high; XSS/source-map path traversal) — vendored inside
+  `next@15.5`; only exercised at build time by Next's CSS pipeline on our own
+  stylesheets, never on user input. Fix requires Next 16, which is out of
+  scope until the App Router migration is planned.
+- `deepmerge-ts` (moderate) — via `@prisma/config`, used only by the Prisma
+  CLI (migrations), not at runtime.
+
+CI fails on any **critical** advisory affecting runtime dependencies; re-run
+`npm audit --omit=dev` when bumping Next or Prisma.
+
 ## Deploy to Railway
 
 The app deploys as two Railway services (web + worker) built from the same
