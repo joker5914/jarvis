@@ -81,11 +81,27 @@ async function discover(
   const found = new Map<string, Found>();
   const toFetch = [...idsByCategory.keys()].filter((id) => !fresh.has(id));
   let n = 0;
+  // `complete` is false only when Place Details itself hits the Google daily budget partway
+  // through this loop: the caller then links/scores/scrapes/validates/quality-scores whatever
+  // is in `found` so far and pauses, resuming the remaining `toFetch` IDs later (persisted via
+  // `discoveredIds` above, so Resume never re-runs the category searches). A BudgetExhaustedError
+  // from the category-search loop above is not caught here — it still propagates to
+  // runZipSearch's outer catch, unchanged.
+  let complete = true;
   for (const id of toFetch) {
     await checkPause(deps);
     n++;
     await setProgress(searchId, { step: "details", current: n, total: toFetch.length, doneSteps: done });
-    const biz = await deps.providers.discovery.getPlaceDetails(id);
+    let biz: DiscoveredBusiness | null;
+    try {
+      biz = await deps.providers.discovery.getPlaceDetails(id);
+    } catch (e) {
+      if (e instanceof BudgetExhaustedError) {
+        complete = false;
+        break;
+      }
+      throw e;
+    }
     if (biz && biz.name) {
       found.set(id, { biz, category: idsByCategory.get(id)! });
       // Persist the Business row as soon as its details are fetched, not just after the whole
@@ -120,7 +136,11 @@ async function discover(
       );
     }
   }
-  return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
+  return {
+    found,
+    knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })),
+    complete,
+  };
 }
 
 async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[], cfg: RuntimeConfig) {
@@ -326,12 +346,17 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
 
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
+    let discoveryComplete = true;
     if (!done.includes("discover")) {
       const priorIds = (search.discoveredIds as Record<string, string> | null) ?? null;
-      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds);
+      const { found, knownFresh, complete } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds);
+      discoveryComplete = complete;
       await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
       businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh, cfg);
-      done.push("discover");
+      // Only mark "discover" done when Place Details fetched everything: a budget-interrupted
+      // run must be resumable back into discover() (via the persisted `discoveredIds`) rather
+      // than treated as already past that step.
+      if (discoveryComplete) done.push("discover");
       await prisma.search.update({ where: { id: searchId }, data: { countsFound: businessIds.length } });
       log(`search ${searchId}: ${businessIds.length} businesses`);
     } else {
@@ -393,11 +418,31 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     await setProgress(searchId, { step: "score", doneSteps: done });
     for (const id of businessIds) await recomputeContactQuality(id);
 
-    await prisma.search.update({
-      where: { id: searchId },
-      data: { status: "complete", progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue },
-    });
-    log(`search ${searchId}: complete`);
+    if (discoveryComplete) {
+      await prisma.search.update({
+        where: { id: searchId },
+        data: { status: "complete", progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue },
+      });
+      log(`search ${searchId}: complete`);
+    } else {
+      // Place Details hit the Google daily budget: everything fetched so far has still been
+      // linked, scored, scraped, validated, and quality-scored above. `error` stays null (this
+      // is not a failure state) and "discover" is absent from doneSteps so Resume re-enters
+      // discover() and fetches only the remaining persisted IDs.
+      await prisma.search.update({
+        where: { id: searchId },
+        data: {
+          status: "paused",
+          error: null,
+          progress: {
+            step: "paused",
+            message: "Discovery incomplete: Google daily budget exhausted — resume to find more businesses",
+            doneSteps: done,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      log(`search ${searchId}: paused with discovery incomplete (${businessIds.length} businesses processed)`);
+    }
   } catch (e) {
     if (e instanceof JobPausedError) {
       await prisma.search.update({ where: { id: searchId }, data: { status: "paused", progress: { step: "paused", message: "Paused by user", doneSteps: done } as Prisma.InputJsonValue } });

@@ -61,15 +61,32 @@ describe("zip search budget-pause resume", () => {
 
     const paused = await prisma.search.findUniqueOrThrow({ where: { id: search.id } });
     expect(paused.status).toBe("paused");
+    expect(paused.error).toBeNull();
+    expect((paused.progress as { message?: string }).message).toMatch(/Discovery incomplete/);
+    expect((paused.progress as { doneSteps: string[] }).doneSteps).not.toContain("discover");
     expect(limited.calls.getPlaceDetails).toBe(N);
     const persisted = await prisma.business.findMany({ where: { googleFetchedAt: { not: null } } });
     expect(persisted).toHaveLength(N);
-    // Not linked to the search yet, and no scoring/exclusion has run — that's upsertBusinesses' job.
-    expect(await prisma.searchBusiness.count({ where: { searchId: search.id } })).toBe(0);
+    // Task 2: discovery being incomplete doesn't block delivery — everything Place Details
+    // did fetch before the budget bit is linked, scored, scraped, validated, and quality-scored.
+    expect(await prisma.searchBusiness.count({ where: { searchId: search.id } })).toBe(N);
+    expect(paused.countsFound).toBe(N);
+    const scored = await prisma.business.findMany({
+      where: { ownerId: OWNER },
+      select: { id: true, primaryCategory: true, websiteCheckedAt: true, contactQualityBand: true },
+    });
+    expect(scored).toHaveLength(N);
+    expect(scored.every((b) => b.primaryCategory !== null)).toBe(true); // scored/excluded already
+    expect(scored.filter((b) => b.websiteCheckedAt !== null).length).toBeGreaterThan(0); // scraped
+    expect(await prisma.contact.count({ where: { ownerId: OWNER } })).toBeGreaterThan(0); // contacts delivered before the resume
     // R1: the "discovered" ActivityLog is written at persist time, in discover(), not deferred
     // to upsertBusinesses — so it already exists for all N places even before the search is
     // ever resumed or scored.
     expect(await prisma.activityLog.count({ where: { kind: "discovered" } })).toBe(N);
+
+    // Snapshot each business's websiteCheckedAt before resuming, to prove the resumed run
+    // doesn't re-scrape businesses already checked since the search started.
+    const checkedAtBeforeResume = new Map(scored.map((b) => [b.id, b.websiteCheckedAt]));
 
     // Resume with the budget limit removed.
     const fresh = new FakeDiscoveryProvider();
@@ -77,11 +94,21 @@ describe("zip search budget-pause resume", () => {
 
     const done = await prisma.search.findUniqueOrThrow({ where: { id: search.id } });
     expect(done.status).toBe("complete");
+    expect(fresh.calls.searchCategoryIds).toBe(0); // Task 1: IDs persisted, so resume makes zero category searches
     // Only the places that weren't already persisted from the first (interrupted) run are
     // re-fetched — the budget-exhausted attempt never got spent twice.
     expect(fresh.calls.getPlaceDetails).toBe(total - N);
     expect(done.countsFound).toBe(total);
     expect(await prisma.searchBusiness.count({ where: { searchId: search.id } })).toBe(total);
+
+    // Businesses already scraped/checked before the resume keep their websiteCheckedAt exactly
+    // (the existing `websiteCheckedAt < search.createdAt` skip rule).
+    const afterResume = await prisma.business.findMany({ where: { ownerId: OWNER }, select: { id: true, websiteCheckedAt: true } });
+    const afterById = new Map(afterResume.map((b) => [b.id, b.websiteCheckedAt]));
+    for (const [id, checkedAt] of checkedAtBeforeResume) {
+      if (checkedAt === null) continue;
+      expect(afterById.get(id)?.getTime()).toBe(checkedAt.getTime());
+    }
 
     // Same business count as an uninterrupted run of the same zip/owner combination.
     expect(await prisma.business.count({ where: { ownerId: OWNER } })).toBe(total);
@@ -96,9 +123,10 @@ describe("zip search budget-pause resume", () => {
     expect(await prisma.activityLog.count({ where: { kind: "discovered" } })).toBe(total);
 
     // R2: Starbucks (the coffee-shop category's chain fixture) is among the first N places
-    // persisted pre-pause (restaurant x2, then coffee-shop x2 + Starbucks = 5th), so it becomes
-    // `knownFresh` on resume. It must still end up scored/excluded like any other business —
-    // not stuck at the DB default `exclusion: "none"` from discover()'s unscored persist.
+    // persisted pre-pause (restaurant x2, then coffee-shop x2 + Starbucks = 5th). Since Task 2,
+    // the interrupted run itself already links/scores the fetched set, so Starbucks is scored/
+    // excluded right there — not stuck at the DB default `exclusion: "none"` from discover()'s
+    // unscored persist, and not deferred to the resumed run's `knownFresh` handling.
     const starbucks = await prisma.business.findFirstOrThrow({ where: { name: "Starbucks" } });
     expect(starbucks.exclusion).toBe("enterprise");
     expect(starbucks.exclusionReasons[0]).toMatch(/^chain:/);

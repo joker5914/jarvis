@@ -87,7 +87,11 @@ export function SearchList({ initial }: { initial: Search[] }) {
                 ) : (
                   <div className="text-sm text-neutral-600 dark:text-neutral-300">
                     {s.countsFound} found · {s.countsScraped} websites scraped
-                    {s.error && <span className="ml-2 text-red-600">{s.error}</span>}
+                    {s.error ? (
+                      <span className="ml-2 text-red-600">{s.error}</span>
+                    ) : s.status === "paused" && p.message ? (
+                      <span className="ml-2 text-amber-600 dark:text-amber-400">{p.message}</span>
+                    ) : null}
                   </div>
                 )}
               </div>
