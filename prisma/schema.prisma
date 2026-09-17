@@ -105,6 +105,10 @@ model Search {
   status         JobStatus  @default(queued)
   progress       Json?
   discoveredIds  Json?
+  /** Discovered place IDs not yet fetched via Place Details (0 = nothing pending). Set when a
+   *  Google-budget-interrupted search completes on what it captured so far; the nightly
+   *  continue-partial job re-queues any search with pendingDiscovery > 0. */
+  pendingDiscovery Int      @default(0)
   countsFound    Int        @default(0)
   countsScraped  Int        @default(0)
   countsEnriched Int        @default(0)

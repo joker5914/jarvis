@@ -91,6 +91,10 @@ export function SearchList({ initial }: { initial: Search[] }) {
                       <span className="ml-2 text-red-600">{s.error}</span>
                     ) : s.status === "paused" && p.message ? (
                       <span className="ml-2 text-amber-600 dark:text-amber-400">{p.message}</span>
+                    ) : s.status === "complete" && s.pendingDiscovery > 0 ? (
+                      <span className="ml-2 text-amber-600 dark:text-amber-400">
+                        {s.pendingDiscovery} more places to fetch (Google daily budget) · continues automatically after midnight
+                      </span>
                     ) : null}
                   </div>
                 )}
@@ -104,6 +108,10 @@ export function SearchList({ initial }: { initial: Search[] }) {
                 {s.status === "paused" ? (
                   <Button variant="outline" size="sm" onClick={() => resume(s.id)}>
                     Resume
+                  </Button>
+                ) : s.status === "complete" && s.pendingDiscovery > 0 ? (
+                  <Button variant="outline" size="sm" onClick={() => resume(s.id)}>
+                    Find more
                   </Button>
                 ) : (
                   <Button variant="ghost" size="sm" onClick={() => rerun(s.id)} disabled={running}>

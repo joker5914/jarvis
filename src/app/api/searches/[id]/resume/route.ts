@@ -8,7 +8,12 @@ export const POST = handle(async (_req, ctx) => {
   const actor = await getActor();
   const search = await prisma.search.findFirst({ where: { id, ownerId: actor.id } });
   if (!search) throw new ApiError(404, "Search not found");
-  if (search.status !== "paused") throw new ApiError(409, `Search is ${search.status}, not paused`);
+  // Resumable in two cases: a genuine pause (user-initiated, or an older-style budget pause),
+  // or a search that completed on a Google-budget interruption (status "complete" with
+  // Search.pendingDiscovery > 0 — see src/lib/jobs/zipSearch.ts) and is waiting on either the
+  // nightly continue-partial job or this "Find more" button.
+  const canResume = search.status === "paused" || (search.status === "complete" && search.pendingDiscovery > 0);
+  if (!canResume) throw new ApiError(409, `Search is ${search.status}, not paused`);
   const origin = search.origin === "scanner" ? "scanner" : "manual";
   if (origin === "scanner") {
     // Re-queueing a scanner-origin search while the Scanner itself is still pause-requested

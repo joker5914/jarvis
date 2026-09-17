@@ -26,10 +26,34 @@ export { JobPausedError, normalizeName };
 const SCRAPE_HARD_TIMEOUT_MS = 90_000;
 const SCRAPE_CONCURRENCY = 4;
 
-type Progress = { step: string; current?: number; total?: number; message?: string; doneSteps: string[] };
+type Progress = {
+  step: string;
+  current?: number;
+  total?: number;
+  message?: string;
+  doneSteps: string[];
+  /** Slugs of categories whose searchCategoryIds call has already completed, persisted only
+   *  while the category-search loop itself is mid-run (see discover()'s category-phase budget
+   *  handling below) — undefined/absent means either "never started" or "fully done", both of
+   *  which behave identically (skip re-running the category loop) on the next resume. */
+  categoriesDone?: string[];
+  /** True on the terminal "complete" progress written when a Google-budget-interrupted search
+   *  finishes on what it captured so far (Search.pendingDiscovery > 0). */
+  partial?: boolean;
+  /** Same value as Search.pendingDiscovery at the moment this progress was written. */
+  remaining?: number;
+};
 
 async function setProgress(searchId: string, p: Progress) {
   await prisma.search.update({ where: { id: searchId }, data: { progress: p as Prisma.InputJsonValue } });
+}
+
+/** The Search.progress.message a Google-budget-interrupted search completes with (Search.status
+ *  stays "complete", Search.pendingDiscovery holds `pending`). The nightly continue-partial job
+ *  (src/lib/jobs/continuePartial.ts) is what actually resumes it — this message just explains
+ *  that to anyone looking at the row directly. */
+export function pendingDiscoveryMessage(pending: number): string {
+  return `${pending} more places found but not yet fetched (Google daily budget) — continues automatically after midnight`;
 }
 
 export async function recomputeContactQuality(businessId: string) {
@@ -45,6 +69,21 @@ export async function recomputeContactQuality(businessId: string) {
 type Found = { biz: DiscoveredBusiness; category: string };
 type KnownFresh = { placeId: string; category: string };
 
+/** Returns the count of ids in `idsByCategory` that are not "fresh" (fetched within
+ *  DISCOVERY_CONFIG.detailsRefreshDays) — i.e. how many Place Details calls a resume would
+ *  still need to make. Used to report `pending` when the category-search loop itself is
+ *  interrupted, before the details phase (and its own `existing`/`fresh` lookup) ever runs. */
+async function countUnfetched(ownerId: string, idsByCategory: Map<string, string>): Promise<number> {
+  if (idsByCategory.size === 0) return 0;
+  const refreshBefore = new Date(Date.now() - DISCOVERY_CONFIG.detailsRefreshDays * 86_400_000);
+  const existing = await prisma.business.findMany({
+    where: { ownerId, googlePlaceId: { in: [...idsByCategory.keys()] } },
+    select: { googlePlaceId: true, googleFetchedAt: true },
+  });
+  const fresh = new Set(existing.filter((b) => b.googleFetchedAt && b.googleFetchedAt > refreshBefore).map((b) => b.googlePlaceId!));
+  return [...idsByCategory.keys()].filter((id) => !fresh.has(id)).length;
+}
+
 /** Per category: IDs-only search; details only for places we don't have or haven't refreshed recently. */
 async function discover(
   searchId: string,
@@ -56,20 +95,81 @@ async function discover(
   done: string[],
   categories: Category[],
   priorIds: Record<string, string> | null,
+  priorCategoriesDone: string[] | null,
 ) {
   const idsByCategory = new Map<string, string>(); // placeId -> first surfacing category
+
+  /** Runs searchCategoryIds for `toSearch`, adding ids into `idsByCategory` as it goes.
+   *  `startAt` is only for progress reporting (current/total against the full `categories`
+   *  list, not just `toSearch`). On BudgetExhaustedError, persists `discoveredIds` and
+   *  `progress.categoriesDone` (the slugs of `alreadyDone` plus whichever of `toSearch`
+   *  completed before the error) immediately — not just at runZipSearch's end — matching the
+   *  "persist as you go" approach the details phase below already uses for Business rows. */
+  async function runCategorySearches(toSearch: Category[], alreadyDone: string[], startAt: number) {
+    const finishedSlugs = [...alreadyDone];
+    for (let i = 0; i < toSearch.length; i++) {
+      await checkPause(deps);
+      const c = toSearch[i];
+      await setProgress(searchId, { step: "discover", current: startAt + i + 1, total: categories.length, message: c.label, doneSteps: done });
+      let ids: string[];
+      try {
+        ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius, DISCOVERY_CONFIG.maxPlacesPerCategory);
+      } catch (e) {
+        if (e instanceof BudgetExhaustedError) {
+          await prisma.search.update({
+            where: { id: searchId },
+            data: {
+              discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue,
+              progress: { step: "discover", categoriesDone: finishedSlugs, doneSteps: done } as Prisma.InputJsonValue,
+            },
+          });
+          return { interrupted: true as const, categoriesDone: finishedSlugs };
+        }
+        throw e;
+      }
+      for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+      finishedSlugs.push(c.slug);
+    }
+    return { interrupted: false as const, categoriesDone: finishedSlugs };
+  }
+
+  let categorySearchResult: { interrupted: boolean; categoriesDone: string[] } | null = null;
+
   if (priorIds && Object.keys(priorIds).length > 0) {
     for (const [id, slug] of Object.entries(priorIds)) idsByCategory.set(id, slug);
-    await setProgress(searchId, { step: "discover", current: categories.length, total: categories.length, message: "Using previously discovered places", doneSteps: done });
-  } else {
-    for (let i = 0; i < categories.length; i++) {
-      await checkPause(deps);
-      const c = categories[i];
-      await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
-      const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius, DISCOVERY_CONFIG.maxPlacesPerCategory);
-      for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+    // Only re-enter the category loop when a PRIOR run's category-search phase was itself
+    // interrupted by the budget (progress.categoriesDone shorter than the full category list).
+    // A missing/undefined categoriesDone means the category loop either never started this
+    // search (impossible once priorIds exist) or already ran to completion in an earlier run —
+    // both cases behave identically here: skip straight to Place Details, as today.
+    const remaining = priorCategoriesDone && priorCategoriesDone.length < categories.length ? categories.filter((c) => !priorCategoriesDone.includes(c.slug)) : [];
+    if (remaining.length > 0) {
+      categorySearchResult = await runCategorySearches(remaining, priorCategoriesDone!, priorCategoriesDone!.length);
+      if (!categorySearchResult.interrupted) {
+        await prisma.search.update({ where: { id: searchId }, data: { discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue } });
+      }
+    } else {
+      await setProgress(searchId, { step: "discover", current: categories.length, total: categories.length, message: "Using previously discovered places", doneSteps: done });
     }
-    await prisma.search.update({ where: { id: searchId }, data: { discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue } });
+  } else {
+    categorySearchResult = await runCategorySearches(categories, [], 0);
+    if (!categorySearchResult.interrupted) {
+      await prisma.search.update({ where: { id: searchId }, data: { discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue } });
+    }
+  }
+
+  if (categorySearchResult?.interrupted) {
+    // The Google daily budget is already exhausted for this run: don't attempt any Place
+    // Details calls at all. Everything discovered so far (idsByCategory) is left unlinked and
+    // unscored — the caller (runZipSearch) completes on nothing new this run and reports
+    // `pending` places waiting on the next (category-search) continuation.
+    return {
+      found: new Map<string, Found>(),
+      knownFresh: [] as KnownFresh[],
+      complete: false,
+      pending: await countUnfetched(ownerId, idsByCategory),
+      categoriesDone: categorySearchResult.categoriesDone,
+    };
   }
 
   const refreshBefore = new Date(Date.now() - DISCOVERY_CONFIG.detailsRefreshDays * 86_400_000);
@@ -82,18 +182,20 @@ async function discover(
 
   const found = new Map<string, Found>();
   const toFetch = [...idsByCategory.keys()].filter((id) => !fresh.has(id));
-  let n = 0;
+  // `fetchedOk` counts ids for which getPlaceDetails actually returned (whether or not the
+  // result had a usable name) — i.e. ids that won't need re-fetching on a resume. `pending`
+  // (toFetch.length - fetchedOk) is reported back to runZipSearch as Search.pendingDiscovery.
+  let fetchedOk = 0;
   // `complete` is false only when Place Details itself hits the Google daily budget partway
   // through this loop: the caller then links/scores/scrapes/validates/quality-scores whatever
-  // is in `found` so far and pauses, resuming the remaining `toFetch` IDs later (persisted via
-  // `discoveredIds` above, so Resume never re-runs the category searches). A BudgetExhaustedError
-  // from the category-search loop above is not caught here — it still propagates to
-  // runZipSearch's outer catch, unchanged.
+  // is in `found` so far and completes on that, resuming the remaining `toFetch` IDs later
+  // (persisted via `discoveredIds` above, so a continuation never re-runs the category
+  // searches). A BudgetExhaustedError from the category-search loop above is handled inside
+  // runCategorySearches instead and never reaches here.
   let complete = true;
   for (const id of toFetch) {
     await checkPause(deps);
-    n++;
-    await setProgress(searchId, { step: "details", current: n, total: toFetch.length, doneSteps: done });
+    await setProgress(searchId, { step: "details", current: fetchedOk + 1, total: toFetch.length, doneSteps: done });
     let biz: DiscoveredBusiness | null;
     try {
       biz = await deps.providers.discovery.getPlaceDetails(id);
@@ -104,6 +206,7 @@ async function discover(
       }
       throw e;
     }
+    fetchedOk++;
     if (biz && biz.name) {
       found.set(id, { biz, category: idsByCategory.get(id)! });
       // Persist the Business row as soon as its details are fetched, not just after the whole
@@ -142,6 +245,8 @@ async function discover(
     found,
     knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })),
     complete,
+    pending: toFetch.length - fetchedOk,
+    categoriesDone: undefined as string[] | undefined,
   };
 }
 
@@ -331,8 +436,10 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
   const search = await prisma.search.findUnique({ where: { id: searchId } });
   if (!search) return;
   const ownerId = search.ownerId;
-  const prior = (search.progress as Progress | null)?.doneSteps ?? [];
+  const priorProgress = (search.progress as Progress | null) ?? null;
+  const prior = priorProgress?.doneSteps ?? [];
   const done = [...prior];
+  const priorCategoriesDone = priorProgress?.categoriesDone ?? null;
 
   try {
     await prisma.search.update({ where: { id: searchId }, data: { status: "running", error: null } });
@@ -356,10 +463,14 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
     let discoveryComplete = true;
+    let pendingDiscoveryCount = 0;
+    let categoriesDoneForProgress: string[] | undefined;
     if (!done.includes("discover")) {
       const priorIds = (search.discoveredIds as Record<string, string> | null) ?? null;
-      const { found, knownFresh, complete } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds);
+      const { found, knownFresh, complete, pending, categoriesDone } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds, priorCategoriesDone);
       discoveryComplete = complete;
+      pendingDiscoveryCount = pending;
+      categoriesDoneForProgress = categoriesDone;
       await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
       businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh, cfg);
       // Only mark "discover" done when Place Details fetched everything: a budget-interrupted
@@ -430,27 +541,42 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     if (discoveryComplete) {
       await prisma.search.update({
         where: { id: searchId },
-        data: { status: "complete", progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue },
+        data: {
+          status: "complete",
+          pendingDiscovery: 0,
+          progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue,
+        },
       });
       log(`search ${searchId}: complete`);
     } else {
-      // Place Details hit the Google daily budget: everything fetched so far has still been
-      // linked, scored, scraped, validated, and quality-scored above. `error` stays null (this
-      // is not a failure state) and "discover" is absent from doneSteps so Resume re-enters
-      // discover() and fetches only the remaining persisted IDs.
+      // The Google daily budget was exhausted (either in the category-search loop or the Place
+      // Details loop — see discover()). Everything fetched so far has still been linked, scored,
+      // scraped, validated, and quality-scored above, so the search finishes as "complete" on
+      // that: `error` stays null (this is not a failure state), Search.pendingDiscovery records
+      // how many discovered places are still unfetched, and "discover" is absent from doneSteps
+      // so the next run re-enters discover() instead of treating discovery as already done. The
+      // nightly continue-partial job (src/lib/jobs/continuePartial.ts) is what actually queues
+      // that next run automatically. `categoriesDoneForProgress` (set only when this run's
+      // interruption happened in the category-search loop) is carried into this progress object
+      // so a later resume still knows which categories are already done — it would otherwise be
+      // lost, since this write replaces the whole progress JSON.
       await prisma.search.update({
         where: { id: searchId },
         data: {
-          status: "paused",
+          status: "complete",
+          pendingDiscovery: pendingDiscoveryCount,
           error: null,
           progress: {
-            step: "paused",
-            message: "Discovery incomplete: Google daily budget exhausted — resume to find more businesses",
+            step: "complete",
+            partial: true,
+            remaining: pendingDiscoveryCount,
+            message: pendingDiscoveryMessage(pendingDiscoveryCount),
             doneSteps: done,
+            ...(categoriesDoneForProgress ? { categoriesDone: categoriesDoneForProgress } : {}),
           } as Prisma.InputJsonValue,
         },
       });
-      log(`search ${searchId}: paused with discovery incomplete (${businessIds.length} businesses processed)`);
+      log(`search ${searchId}: complete with ${pendingDiscoveryCount} places still pending discovery (${businessIds.length} businesses processed)`);
     }
   } catch (e) {
     if (e instanceof JobPausedError) {
