@@ -21,33 +21,58 @@ const planBlockedUntil = new Map<string, number>();
  * planBlockedUntil so apolloPlanBlocked() can surface it without a network call. */
 const planBlockedDetail = new Map<string, string>();
 
+/** Drops this process's plan-block memo entirely (all paths). The block is provider-wide, not
+ * per-endpoint, so a clear always clears everything, whether it was discovered by
+ * checkPlanBlocked() revalidating a stale memo against the DB or by an explicit
+ * clearPlanBlock()/test reset. */
+function clearPlanBlockMemo(): void {
+  planBlockedUntil.clear();
+  planBlockedDetail.clear();
+}
+
 /** Marks `path` blocked in this process's memo (the worker's per-call short-circuit — see
  * checkPlanBlocked) *and* persists a single provider-wide block on the ProviderConfig row, since
  * the worker process is the only one that ever calls Apollo directly (JOB_MODE=queue in
  * production): the Next.js web process's copy of `planBlockedUntil` is always empty, so the
  * routes' gate (apolloPlanBlocked) must be able to see this via the database, not just memory.
- * Upserts like withBudget() does, in case no ProviderConfig row exists yet. */
+ * Upserts like withBudget() does, in case no ProviderConfig row exists yet. The persist is
+ * best-effort: the in-process memo above (which is what actually protects this process from
+ * re-hitting a blocked endpoint) is already set by the time this runs, and the caller always
+ * throws ProviderPlanError regardless of whether this write lands — a transient DB failure here
+ * must not surface as a generic Prisma error and re-enable pg-boss retries. */
 async function markPlanBlocked(path: string, detail: string): Promise<void> {
   const until = Date.now() + PLAN_BLOCK_TTL_MS;
   planBlockedUntil.set(path, until);
   planBlockedDetail.set(path, detail);
-  await prisma.providerConfig.upsert({
-    where: { provider: "apollo" },
-    update: { planBlockedUntil: new Date(until), planBlockDetail: detail },
-    create: { provider: "apollo", planBlockedUntil: new Date(until), planBlockDetail: detail },
-  });
+  try {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(until), planBlockDetail: detail },
+      create: { provider: "apollo", planBlockedUntil: new Date(until), planBlockDetail: detail },
+    });
+  } catch (e) {
+    console.error("[apollo] failed to persist plan block (memo still set; classification unaffected)", e);
+  }
 }
 
 /** Throws ProviderPlanError with no network call when `path` was recently 403'd as
- * plan-inaccessible; a no-op otherwise (including once the 6h memo has expired). Memo-only (no DB
- * read) — this runs on the hot path inside searchOrganization/searchPeople/enrichPerson, which
- * only the worker process calls, so its own memo (set by throwFor403 in the same process) is
- * always up to date for it. */
-function checkPlanBlocked(path: string): void {
+ * plan-inaccessible; a no-op otherwise (including once the 6h memo has expired) — zero extra
+ * reads on that common unblocked path. When the memo *does* say blocked, revalidates against the
+ * persisted row before throwing: the worker and the Next.js web process are separate processes
+ * (JOB_MODE=queue in production), so `clearPlanBlock()` running in the web process on a Settings
+ * key save clears the DB row and its own memo but has no way to reach the worker's in-memory
+ * `planBlockedUntil` — without this check the worker would keep refusing for up to the full 6h
+ * TTL even after the operator "fixed" it. A cleared/expired row drops the whole memo (the block
+ * is provider-wide, not per-path) and lets the call proceed normally. */
+async function checkPlanBlocked(path: string): Promise<void> {
   const until = planBlockedUntil.get(path);
-  if (until !== undefined && until > Date.now()) {
-    throw new ProviderPlanError("apollo", path, planBlockedDetail.get(path) ?? "API_INACCESSIBLE");
+  if (until === undefined || until <= Date.now()) return;
+  const cfg = await prisma.providerConfig.findUnique({ where: { provider: "apollo" }, select: { planBlockedUntil: true } });
+  if (!cfg?.planBlockedUntil || cfg.planBlockedUntil.getTime() <= Date.now()) {
+    clearPlanBlockMemo();
+    return;
   }
+  throw new ProviderPlanError("apollo", path, planBlockedDetail.get(path) ?? "API_INACCESSIBLE");
 }
 
 /** Clears a plan block, in this process's memo and on the persisted ProviderConfig row, for the
@@ -56,12 +81,7 @@ function checkPlanBlocked(path: string): void {
  * problem is resolved. Provider-neutral name/signature since Settings' PUT route is shared across
  * providers, even though only Apollo populates a block today. */
 export async function clearPlanBlock(provider: string): Promise<void> {
-  if (provider === "apollo") {
-    for (const path of [PEOPLE_SEARCH_PATH, ORG_SEARCH_PATH, PEOPLE_MATCH_PATH]) {
-      planBlockedUntil.delete(path);
-      planBlockedDetail.delete(path);
-    }
-  }
+  if (provider === "apollo") clearPlanBlockMemo();
   await prisma.providerConfig.updateMany({ where: { provider }, data: { planBlockedUntil: null, planBlockDetail: null } });
 }
 
@@ -103,8 +123,7 @@ export function __setPlanBlockedForTests(path: string, untilEpochMs: number, det
 /** Test-only: clears the plan-block memo entirely (all paths). Call in afterEach/afterAll so a
  * forced block from one test doesn't leak into the next. */
 export function __resetPlanBlockedForTests(): void {
-  planBlockedUntil.clear();
-  planBlockedDetail.clear();
+  clearPlanBlockMemo();
 }
 
 type ApolloErrorBody = { error?: string; error_code?: string };
@@ -197,7 +216,7 @@ function orgNameMatches(requested: string, found: string): boolean {
 
 export class ApolloEnrichmentProvider implements EnrichmentProvider {
   async searchOrganization(name: string, city: string | null): Promise<{ id: string; primaryDomain: string | null } | null> {
-    checkPlanBlocked(ORG_SEARCH_PATH);
+    await checkPlanBlocked(ORG_SEARCH_PATH);
     const key = await requireKey();
     const r = await withBudget("apollo", () =>
       post<OrgSearchResponse>(key, ORG_SEARCH_PATH, {
@@ -214,7 +233,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
   }
 
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
-    checkPlanBlocked(PEOPLE_SEARCH_PATH);
+    await checkPlanBlocked(PEOPLE_SEARCH_PATH);
     const key = await requireKey();
     const base: Record<string, string | number | boolean | string[] | undefined> = {
       person_titles: [...ENRICH_CONFIG.preferredTitles],
@@ -250,7 +269,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
   }
 
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
-    checkPlanBlocked(PEOPLE_MATCH_PATH);
+    await checkPlanBlocked(PEOPLE_MATCH_PATH);
     const key = await requireKey();
     const url = new URL(`${BASE}${PEOPLE_MATCH_PATH}`);
     url.searchParams.set("id", apolloId);

@@ -138,7 +138,17 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
   beforeEach(() => {
     providerConfigMock.upsert.mockClear();
     providerConfigMock.findUnique.mockClear();
-    providerConfigMock.findUnique.mockResolvedValue(null);
+    // Default: simulate a persisted row that agrees with whatever this process's own memo says
+    // (i.e. "still blocked, far in the future"). checkPlanBlocked() only ever reads this when the
+    // memo itself already says blocked (see its "zero extra reads on the unblocked path"
+    // contract), so most tests below never hit this at all; the ones that do (e.g. a second call
+    // within the TTL window) expect the row to still agree with the memo, matching what a real
+    // markPlanBlocked() would have persisted. Tests exercising the D1 "row was cleared out from
+    // under the memo" path override this per-call with mockResolvedValueOnce/mockRejectedValueOnce.
+    providerConfigMock.findUnique.mockImplementation(async () => ({
+      planBlockedUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      planBlockDetail: "API_INACCESSIBLE",
+    }));
   });
   afterEach(() => __resetPlanBlockedForTests());
 
@@ -217,6 +227,64 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() - 1000);
     providerConfigMock.findUnique.mockResolvedValue(null);
     expect(await apolloPlanBlocked()).toEqual({ blocked: false });
+  });
+
+  describe("D1: checkPlanBlocked revalidates a memoized block against the persisted row", () => {
+    it("memo says blocked but the row was cleared (e.g. a Settings key save in the web process): the call proceeds to the network, and the memo is dropped entirely", async () => {
+      __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000);
+      providerConfigMock.findUnique.mockResolvedValueOnce(null); // row cleared
+      mockFetch(() => json({ total_entries: 0, people: [] }));
+      const provider = new ApolloEnrichmentProvider();
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      expect(calls).toHaveLength(1); // proceeded to the network instead of throwing
+      expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1); // exactly one revalidation read
+
+      // The memo was dropped entirely (the block is provider-wide, not per-path): a further call
+      // takes checkPlanBlocked's "memo empty" fast path, so no additional DB read happens even
+      // though findUnique's mock is still wired up.
+      mockFetch(() => json({ total_entries: 0, people: [] }));
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it("memo says blocked and the row still is: revalidation confirms the block and throws without any network call", async () => {
+      __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
+      providerConfigMock.findUnique.mockResolvedValueOnce({ planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" });
+      mockFetch(() => { throw new Error("should not fetch: still blocked"); });
+      await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+        ProviderPlanError,
+      );
+      expect(calls).toHaveLength(0);
+      expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it("the unblocked path (memo never set) makes zero extra ProviderConfig reads", async () => {
+      mockFetch(() => json({ total_entries: 0, people: [] }));
+      await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+      expect(providerConfigMock.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("D2: a failed persist must not change classification", () => {
+    it("markPlanBlocked's upsert rejecting still throws ProviderPlanError and still sets the memo", async () => {
+      providerConfigMock.upsert.mockRejectedValueOnce(new Error("connection reset"));
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
+        const provider = new ApolloEnrichmentProvider();
+        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+        expect(calls).toHaveLength(1);
+        expect(consoleErrorSpy).toHaveBeenCalled(); // logged, not silently swallowed
+
+        // Memo still set despite the failed persist: the next call short-circuits (via the
+        // revalidation read, which the describe's default mock reports as "still blocked")
+        // instead of re-hitting the network.
+        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+        expect(calls).toHaveLength(1);
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
   });
 });
 
