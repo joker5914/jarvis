@@ -27,7 +27,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/lib/providers/apollo.ts` | Apollo HTTP contract: people search (now a result object + location cascade), reveal, org search, plan-block memo, **new** `fetchApolloCreditUsage` |
+| `src/lib/providers/apollo.ts` | Apollo HTTP contract: people search (now a result object + location cascade), reveal, org search, plan-block memo, **new** `creditUsage()` |
 | `src/lib/providers/types.ts` | `EnrichmentProvider` interface; **new** `PeopleSearchResult`, `PeopleSearchQuery`, `ApolloCreditUsage` |
 | `src/lib/providers/fake.ts` | Fake counterparts (deterministic `totalFound`, `scope`, credit usage) |
 | `src/lib/geo/usStates.ts` (**new**) | `US_STATE_NAMES` abbreviation→name map, `stateNameFor(abbr)` |
@@ -200,9 +200,9 @@ export async function creditStatus(
 ```
 `localDateString(d, tz)` reuses `localYmd` in the same file → `YYYY-MM-DD`. Note: Apollo's `end_date` `2026-10-17T04:58:17Z` is Oct 16 11:58 PM in America/Chicago, which is the date the Apollo UI shows; the local-date conversion is what makes them agree.
 
-Route: unchanged shape plus `apollo`. `assertCredits` in both enrich routes already uses `remaining`, so a zero live balance now blocks with the existing 409 message; change that message to `Apollo credits exhausted (${s.used}/${s.cap} this cycle; Apollo reports ${s.apollo?.leftOver ?? "?"} left)` when `apollo` is present.
+Route: unchanged shape plus `apollo`. `assertCredits` in both enrich routes already uses `remaining`, so a zero live balance now blocks with the existing 409 message; change that message to `Apollo account is out of credits (Apollo reports 0 left)` only when `apollo.leftOver <= 0` is the binding constraint; otherwise keep the app-cap wording.
 
-UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists: `Apollo account: 2,508 of 2,510 credits left · renews Oct 16` and `This app: 2 of 500 this cycle`; otherwise the existing single line. `EnrichmentCard.tsx`: cap input `max={ENRICH_CONFIG.monthlyCreditCapMax}` (import the constant); renewal date label gets helper text `Leave blank to use Apollo's cycle` and shows the live date as placeholder when available (pass `credits?.apollo?.cycleEnd` down from `SettingsView`). `src/components/settings/types.ts` `CreditStatus` gains `apollo`.
+UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists: `Apollo account: 2,508 of 2,510 credits left · renews Oct 16` and `This app: 2 of 500 this cycle`; otherwise the existing single line. `EnrichmentCard.tsx`: cap input `max={ENRICH_CONFIG.monthlyCreditCapMax}` (import the constant); renewal date label gets helper text `Leave blank to use Apollo's cycle (renews <date>)` with the live date from `credits?.apollo?.cycleEnd` passed down from `SettingsView` (a `placeholder` on a date input never renders). `src/components/settings/types.ts` `CreditStatus` gains `apollo`.
 
 - [x] **Step 4: Run** `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run test:db` — all exit 0.
 - [x] **Step 5: Commit** `feat(credits): live Apollo balance and cycle in Settings; cap ceiling 5000; remaining = min(app cap, Apollo balance)`.

@@ -64,10 +64,9 @@ export function EnrichmentCard({
             type="date"
             value={value.cycleRenewsOn ?? ""}
             onChange={(e) => onChange({ ...value, cycleRenewsOn: e.target.value || null })}
-            placeholder={renewalPlaceholder ?? undefined}
             data-testid="enrichment-renews"
           />
-          <p className="text-xs text-muted-foreground">Leave blank to use Apollo&apos;s cycle</p>
+          <p className="text-xs text-muted-foreground">Leave blank to use Apollo&apos;s cycle{renewalPlaceholder ? ` (renews ${renewalPlaceholder})` : ""}</p>
         </div>
       </CardContent>
     </Card>

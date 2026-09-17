@@ -22,8 +22,9 @@ const bodySchema = z.object({
 async function assertCredits(ownerId: string, cfg: Awaited<ReturnType<typeof loadConfig>>) {
   const s = await creditStatus(ownerId, cfg);
   if (s.remaining <= 0) {
-    const error = s.apollo
-      ? `Apollo credits exhausted (${s.used}/${s.cap} this cycle; Apollo reports ${s.apollo.leftOver} left)`
+    // Name the binding constraint: Apollo's own balance when it is empty, otherwise this app's cap.
+    const error = s.apollo && s.apollo.leftOver <= 0
+      ? "Apollo account is out of credits (Apollo reports 0 left)"
       : `Apollo monthly credit cap reached (${s.used}/${s.cap})`;
     return json({ error, settingsHref: "/settings" }, 409);
   }
