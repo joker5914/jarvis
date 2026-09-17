@@ -8,8 +8,11 @@ SDR can triage and track outreach from one leads table.
 
 This is Plan 1 of the project: zip-code search and the leads table, detail
 drawer, and CSV export. Plan 2 (below) adds TDLR construction-project intel.
-Plan 3 (below) adds the always-on Scanner. Apollo enrichment and a
-settings/API-key UI are upcoming plans, not yet built.
+Plan 3 (below) adds the always-on Scanner. Plan 4 adds Apollo enrichment
+(owner/GM contact search and match) and a Settings page for pasting API
+keys. Apollo enrichment normally searches people by the business's website
+domain; businesses without a usable website domain cost one extra Apollo
+credit for an Organization Search before the people lookup.
 
 ## Prerequisites
 
@@ -127,6 +130,22 @@ not the dev server: Playwright's `webServer` runs `npm run e2e:server`
 writes to a separate build directory (`next.config.ts` reads it into
 `distDir`) and never clobbers a `.next` build from a running `npm run dev`.
 
+### Known advisories
+
+`npm audit` reports advisories that are blocked by the version pins in this
+project:
+
+- `postcss` (high; XSS/source-map path traversal) — vendored inside
+  `next@15.5`; only exercised at build time by Next's CSS pipeline on our own
+  stylesheets, never on user input. Fix requires Next 16, which is out of
+  scope until the App Router migration is planned.
+- `deepmerge-ts` (high; stack exhaustion when merging recursive object
+  graphs) — via `@prisma/config`, used only by the Prisma CLI (migrations),
+  not at runtime.
+
+CI fails on any **critical** advisory affecting runtime dependencies; re-run
+`npm audit --omit=dev` when bumping Next or Prisma.
+
 ## Deploy to Railway
 
 The app deploys as two Railway services (web + worker) built from the same
@@ -194,6 +213,13 @@ queued for it), then remove the variable.
   outbound requests from Railway's own egress IPs; if a target site
   allowlists or geofences traffic, allow Railway's IP ranges (see Railway's
   docs for the current list) rather than your own.
+- **Pinned base image.** The `Dockerfile`'s `FROM` lines pin
+  `node:22.22.3-bookworm-slim` to a specific digest (both stages carry the
+  same one) so the runner isn't rebuilt against a base image that changed
+  underneath it, and it runs as the image's built-in non-root `node` user
+  (uid 1000). To bump the pin: `docker pull node:<tag>`, then
+  `docker image inspect node:<tag> --format '{{index .RepoDigests 0}}'`, and
+  paste the printed `node@sha256:…` into both `FROM` lines.
 
 ## More detail
 

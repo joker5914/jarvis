@@ -2,6 +2,7 @@ import { withBudget } from "./budget";
 import { getProviderKey } from "./keys";
 import { ProviderNotConfiguredError } from "./errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { normalizeName } from "@/lib/jobs/shared";
 import type { EnrichPerson, EnrichmentProvider } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
@@ -21,32 +22,92 @@ function titleRank(title: string | null | undefined): number {
   return i === -1 ? ENRICH_CONFIG.preferredTitles.length : i;
 }
 
+function qs(params: Record<string, string | number | boolean | string[] | undefined>): string {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined) continue;
+    if (Array.isArray(v)) for (const item of v) u.append(`${k}[]`, item);
+    else u.set(k, String(v));
+  }
+  return u.toString();
+}
+
+async function post<T>(key: string, path: string, params: Record<string, string | number | boolean | string[] | undefined>): Promise<{ status: number; data: T | null }> {
+  const res = await fetch(`${BASE}${path}?${qs(params)}`, {
+    method: "POST",
+    headers: { accept: "application/json", "x-api-key": key },
+  });
+  if (res.status === 422) return { status: 422, data: null };
+  if (!res.ok) throw new Error(`Apollo ${path} HTTP ${res.status}`);
+  return { status: res.status, data: (await res.json()) as T };
+}
+
+type OrgSearchResponse = { organizations?: { id: string; name?: string | null; primary_domain?: string | null }[] };
+
+/**
+ * normalizeName already strips "&" (a non-alphanumeric char) but leaves the word "and" alone,
+ * so "Bella Nails & Spa" and "Bella Nails and Spa" normalize to different strings. Fold both
+ * tokens out here so the two spellings compare equal.
+ */
+function normalizeForOrgCompare(name: string): string {
+  return normalizeName(name)
+    .replace(/\band\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Guards against Apollo's org search returning a plausible-looking but different organization
+ * (e.g. request "Joe's" matching org "Joe's Crab Shack" on naive substring containment). Accept
+ * only an exact match, or a containment where the shorter side has at least two words — a
+ * single-word request must match exactly.
+ */
+function orgNameMatches(requested: string, found: string): boolean {
+  if (!requested || !found) return false;
+  if (requested === found) return true;
+  const [shorter, longer] = requested.length <= found.length ? [requested, found] : [found, requested];
+  const shorterWordCount = shorter.split(" ").filter(Boolean).length;
+  return shorterWordCount >= 2 && longer.includes(shorter);
+}
+
 export class ApolloEnrichmentProvider implements EnrichmentProvider {
+  async searchOrganization(name: string, city: string | null): Promise<{ id: string; primaryDomain: string | null } | null> {
+    const key = await requireKey();
+    const r = await withBudget("apollo", () =>
+      post<OrgSearchResponse>(key, "/mixed_companies/search", {
+        q_organization_name: name,
+        organization_locations: city ? [city] : undefined,
+        per_page: 1,
+        page: 1,
+      }),
+    );
+    const org = r.data?.organizations?.[0];
+    if (!org) return null;
+    if (!orgNameMatches(normalizeForOrgCompare(name), normalizeForOrgCompare(org.name ?? ""))) return null;
+    return { id: org.id, primaryDomain: org.primary_domain ?? null };
+  }
+
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
     const key = await requireKey();
-    const body: Record<string, unknown> = {
+    const base: Record<string, string | number | boolean | string[] | undefined> = {
       person_titles: [...ENRICH_CONFIG.preferredTitles],
       include_similar_titles: true,
       person_seniorities: [...ENRICH_CONFIG.seniorities],
       per_page: max,
       page: 1,
     };
-    if (q.domain) body.q_organization_domains_list = [q.domain];
-    else {
-      body.q_keywords = q.orgName;
-      if (q.city) body.organization_locations = [q.city];
+    let filter: Record<string, string | number | boolean | string[] | undefined>;
+    if (q.domain) {
+      filter = { q_organization_domains_list: [q.domain] };
+    } else {
+      const org = await this.searchOrganization(q.orgName, q.city);
+      if (!org) return [];
+      filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] };
     }
-    const data = await withBudget("apollo", async () => {
-      const res = await fetch(`${BASE}/mixed_people/api_search`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json", "x-api-key": key },
-        body: JSON.stringify(body),
-      });
-      if (res.status === 422) return { people: [] as SearchPerson[] };
-      if (!res.ok) throw new Error(`Apollo search HTTP ${res.status}`);
-      return (await res.json()) as { people?: SearchPerson[] };
-    });
-    const people = (data.people ?? []).map<EnrichPerson>((p) => ({
+    const r = await withBudget("apollo", () =>
+      post<{ people?: SearchPerson[] }>(key, "/mixed_people/api_search", { ...base, ...filter }),
+    );
+    const people = (r.data?.people ?? []).map<EnrichPerson>((p) => ({
       apolloId: p.id,
       firstName: p.first_name ?? null,
       lastName: null, // search results obfuscate last names

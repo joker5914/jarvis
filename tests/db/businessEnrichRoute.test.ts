@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
 import type { ProviderConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
@@ -107,6 +107,48 @@ describe("enrich routes: disabled provider (M3)", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toBe("Apollo is disabled in Settings");
+    expect(body.settingsHref).toBe("/settings");
+  });
+});
+
+describe("enrich routes: not-configured provider (real mode, no key)", () => {
+  let prevJobMode: string | undefined;
+  let apolloSnapshot: ProviderConfig | null;
+  let prevApolloKey: string | undefined;
+
+  beforeAll(async () => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+    vi.stubEnv("PROVIDER_MODE", "real");
+    prevApolloKey = process.env.APOLLO_API_KEY;
+    delete process.env.APOLLO_API_KEY;
+    apolloSnapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    // No stored key: clear any encryptedKey so isProviderConfigured() falls through to "not configured".
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { encryptedKey: null },
+      create: { provider: "apollo" },
+    });
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    vi.unstubAllEnvs();
+    if (prevApolloKey !== undefined) process.env.APOLLO_API_KEY = prevApolloKey;
+    await cleanup();
+    if (apolloSnapshot) {
+      await prisma.providerConfig.update({ where: { provider: "apollo" }, data: apolloSnapshot });
+    } else {
+      await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/bulk enrich returns 409 with settingsHref when Apollo is not configured", async () => {
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Apollo API key is not configured");
     expect(body.settingsHref).toBe("/settings");
   });
 });

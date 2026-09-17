@@ -26,7 +26,9 @@ export const POST = handle(async (req) => {
 
   if (body.enrich) {
     if (ids.length > 200) throw new ApiError(400, "Enrich at most 200 leads per action");
-    if (!(await isProviderConfigured("apollo"))) throw new ApiError(409, "Apollo API key is not configured");
+    if (!(await isProviderConfigured("apollo"))) {
+      return json({ error: "Apollo API key is not configured", settingsHref: "/settings" }, 409);
+    }
     if (!(await isProviderEnabled("apollo"))) {
       return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
     }

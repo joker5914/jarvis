@@ -35,6 +35,7 @@ jobs:
           node-version: 22.22.3
           cache: npm
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=critical
       - run: psql "$DATABASE_URL" -c "CREATE DATABASE sdr_test;"
       - run: npx prisma generate
       - run: npx prisma migrate deploy

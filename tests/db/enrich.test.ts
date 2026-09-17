@@ -33,7 +33,7 @@ describe("runEnrich", () => {
     const d = deps();
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 2, updated: 0, skipped: null });
-    expect(d.enrichment.calls).toEqual({ search: 1, enrich: 2 });
+    expect(d.enrichment.calls).toEqual({ search: 1, enrich: 2, orgSearch: 0 });
     const contacts = await prisma.contact.findMany({ where: { businessId: b.id }, orderBy: { value: "asc" } });
     const email = contacts.find((c) => c.type === "email");
     expect(email).toMatchObject({ value: "owner@bellanails.com", source: "apollo", personName: "Maria Lopez", personTitle: "Owner", validationStatus: "valid" });
