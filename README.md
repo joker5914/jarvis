@@ -139,8 +139,9 @@ project:
   `next@15.5`; only exercised at build time by Next's CSS pipeline on our own
   stylesheets, never on user input. Fix requires Next 16, which is out of
   scope until the App Router migration is planned.
-- `deepmerge-ts` (moderate) — via `@prisma/config`, used only by the Prisma
-  CLI (migrations), not at runtime.
+- `deepmerge-ts` (high; stack exhaustion when merging recursive object
+  graphs) — via `@prisma/config`, used only by the Prisma CLI (migrations),
+  not at runtime.
 
 CI fails on any **critical** advisory affecting runtime dependencies; re-run
 `npm audit --omit=dev` when bumping Next or Prisma.
