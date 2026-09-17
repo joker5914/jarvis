@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { safeFetch, readCapped } from "@/lib/net/safeFetch";
+import { safeFetch, readCapped, pinnedDispatcher, type PinnedDispatcher } from "@/lib/net/safeFetch";
 import { UnsafeUrlError } from "@/lib/net/ssrf";
 
 const pub = async () => ["93.184.216.34"];
@@ -63,5 +63,76 @@ describe("safeFetch", () => {
     }) as unknown as typeof fetch;
     await safeFetch("http://93.184.216.34/", {}, { fetchImpl: f });
     expect(seen).toBeUndefined();
+  });
+  it("closes the dispatcher when the underlying fetch rejects", async () => {
+    let seen: unknown;
+    const f = vi.fn(async (_u: string, init: RequestInit & { dispatcher?: unknown }) => {
+      seen = init.dispatcher;
+      throw new Error("connection refused");
+    }) as unknown as typeof fetch;
+    await expect(
+      safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f }),
+    ).rejects.toThrow(/connection refused/);
+    const d = seen as PinnedDispatcher;
+    expect(d.closed).toBe(true);
+  });
+  it("does not lock the body stream out from res.text() when a dispatcher is pinned", async () => {
+    // Regression guard: an earlier attempt closed the dispatcher by acquiring our
+    // own res.body.getReader() to watch for completion, which locked the stream
+    // and broke res.text() with "Body has already been read". safeFetch must not
+    // interfere with whichever body-consumption method the caller uses.
+    const f = vi.fn(async () => new Response("hi there", { status: 200 })) as unknown as typeof fetch;
+    const res = await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+    await expect(res.text()).resolves.toBe("hi there");
+  });
+  it("still lets readCapped read the body via res.body.getReader() when a dispatcher is pinned", async () => {
+    const f = vi.fn(async () => new Response("hello world", { status: 200 })) as unknown as typeof fetch;
+    const res = await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+    await expect(readCapped(res, 1_000)).resolves.toBe("hello world");
+  });
+  it("closes the final-hop dispatcher via a bounded backstop when the body is never explicitly drained", async () => {
+    vi.useFakeTimers();
+    try {
+      let seen: unknown;
+      const f = vi.fn(async (_u: string, init: RequestInit & { dispatcher?: unknown }) => {
+        seen = init.dispatcher;
+        return new Response("hello world", { status: 200 });
+      }) as unknown as typeof fetch;
+      await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+      const d = seen as PinnedDispatcher;
+      expect(d.closed).toBe(false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(d.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("closes the final-hop dispatcher immediately when there is no body to consume", async () => {
+    let seen: unknown;
+    const f = vi.fn(async (_u: string, init: RequestInit & { dispatcher?: unknown }) => {
+      seen = init.dispatcher;
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+    const d = seen as PinnedDispatcher;
+    expect(d.closed).toBe(true);
+  });
+  it("closes each redirect hop's dispatcher before opening the next hop's", async () => {
+    const seenByUrl: Record<string, PinnedDispatcher> = {};
+    const f = vi.fn(async (u: string, init: RequestInit & { dispatcher?: unknown }) => {
+      seenByUrl[u] = init.dispatcher as PinnedDispatcher;
+      if (u === "https://example.com/") {
+        return new Response(null, { status: 302, headers: { location: "https://example.com/home" } });
+      }
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    await safeFetch("https://example.com/", {}, { resolve: async () => ["93.184.216.34"], fetchImpl: f });
+    expect(seenByUrl["https://example.com/"].closed).toBe(true);
+    expect(seenByUrl["https://example.com/home"]).not.toBe(seenByUrl["https://example.com/"]);
+  });
+  it("builds the pinned Agent with a tight keep-alive/connection budget", async () => {
+    const d = pinnedDispatcher("example.com", ["93.184.216.34"]);
+    expect(d.options).toEqual({ keepAliveTimeout: 1, keepAliveMaxTimeout: 1, connections: 1, pipelining: 0 });
+    await d.close();
   });
 });

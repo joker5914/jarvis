@@ -1,12 +1,29 @@
 import { isIP } from "node:net";
-import { Agent, fetch as undiciFetch, type Dispatcher } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import { assertSafeUrl, type Resolver } from "./ssrf";
 
 export type SafeFetchOptions = { maxRedirects?: number; resolve?: Resolver; timeoutMs?: number; fetchImpl?: typeof fetch };
 
 const REDIRECT = new Set([301, 302, 303, 307, 308]);
 
-export type PinnedDispatcher = Dispatcher & { lookupFor: (h: string) => Promise<{ address: string; family: number }[]> };
+// A single pinned dispatcher exists for exactly one hop's one request: no benefit to
+// pipelining or keeping a socket warm, and every millisecond it might idle after we
+// forget to (or cannot) close it explicitly is a millisecond a leaked Agent could be
+// reused for something it was never validated for. Keeping these at their tightest
+// legal values (undici requires keepAliveTimeout/keepAliveMaxTimeout > 0) means an
+// unclosed dispatcher's socket is evicted by undici's own timers almost immediately,
+// independent of the explicit-close logic in safeFetch below.
+const PINNED_DISPATCHER_OPTIONS = {
+  keepAliveTimeout: 1,
+  keepAliveMaxTimeout: 1,
+  connections: 1,
+  pipelining: 0,
+} as const;
+
+export type PinnedDispatcher = Agent & {
+  lookupFor: (h: string) => Promise<{ address: string; family: number }[]>;
+  options: typeof PINNED_DISPATCHER_OPTIONS;
+};
 
 /**
  * An undici Agent whose DNS lookup answers only for the one hostname it was
@@ -25,6 +42,7 @@ export function pinnedDispatcher(hostname: string, addresses: string[]): PinnedD
     return answer;
   };
   const agent = new Agent({
+    ...PINNED_DISPATCHER_OPTIONS,
     connect: {
       lookup: (h, opts, cb) => {
         lookupFor(h).then(
@@ -41,7 +59,39 @@ export function pinnedDispatcher(hostname: string, addresses: string[]): PinnedD
       },
     },
   });
-  return Object.assign(agent, { lookupFor });
+  return Object.assign(agent, { lookupFor, options: PINNED_DISPATCHER_OPTIONS });
+}
+
+const DISPATCHER_CLOSE_BACKSTOP_MS = 30_000;
+
+/**
+ * Closes `dispatcher` for the final hop's response. If there is no body at
+ * all (e.g. a HEAD response), there is nothing to wait for, so we close now.
+ *
+ * Otherwise we deliberately do *not* try to observe "the body has been fully
+ * read" by acquiring our own `res.body.getReader()`: a stream can only ever
+ * be locked by one reader, and grabbing one here to watch for completion
+ * would starve any caller that instead consumes the response via
+ * `res.text()`/`res.json()`/`res.arrayBuffer()` (those need their own
+ * internal reader on that same stream, and fail with "Body has already been
+ * read" once we've taken it) or via a fresh `res.body.getReader()` of their
+ * own (which would throw "ReadableStream is locked"). safeFetch's own tests
+ * exercise both `res.text()` and `readCapped`'s `res.body.getReader()`
+ * against its return value, so both must keep working. Instead, a bounded
+ * backstop timer closes the dispatcher later. This is not a security
+ * weakening: PINNED_DISPATCHER_OPTIONS already gives this Agent a 1ms
+ * keepAliveTimeout, so undici itself evicts the idle socket almost
+ * immediately once the response is drained, regardless of when this backstop
+ * gets around to closing the (by then inert) Agent object. The backstop's
+ * only job is to reclaim that Agent handle within a bounded time instead of
+ * waiting on GC.
+ */
+function closeDispatcherWithBody(res: Response, dispatcher: PinnedDispatcher): void {
+  if (!res.body) {
+    void dispatcher.close();
+    return;
+  }
+  setTimeout(() => void dispatcher.close(), DISPATCHER_CLOSE_BACKSTOP_MS).unref?.();
 }
 
 /** fetch with manual redirects; every hop must pass assertSafeUrl and connects only to its validated address. */
@@ -67,6 +117,12 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
         signal: init.signal ?? ctrl.signal,
         ...(dispatcher ? { dispatcher } : {}),
       } as RequestInit);
+    } catch (e) {
+      // The fetch itself failed (timeout abort, connection refused, TLS failure, ...):
+      // the dispatcher's Agent was never handed back to a caller, so nobody else will
+      // ever close it. Close it here before propagating the error.
+      if (dispatcher) await dispatcher.close().catch(() => {});
+      throw e;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -79,12 +135,10 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
           // res.url is a read-only getter on a real Response; nothing to do.
         }
       }
-      // Final hop: the caller (readCapped or a direct res.text()/.json()) still needs
-      // to read the body over this dispatcher's connection, so it is deliberately left
-      // open here. undici recycles/closes idle keep-alive sockets on its own timers,
-      // and the Agent itself becomes unreferenced once the response and this function's
-      // local `dispatcher` binding go out of scope, so GC reclaims it; there is no
-      // handle leak to close explicitly.
+      // Final hop: the caller (readCapped, or a direct res.text()/.json()) still needs
+      // to read the body, so the dispatcher can't be closed synchronously here — see
+      // closeDispatcherWithBody for why it's closed on a bounded backstop instead.
+      if (dispatcher) closeDispatcherWithBody(res, dispatcher);
       return res;
     }
     const loc = res.headers.get("location");
