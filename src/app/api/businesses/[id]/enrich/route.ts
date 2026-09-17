@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { ApiError, handle, json } from "@/lib/api";
@@ -7,10 +8,16 @@ import { creditStatus, estimateCredits } from "@/lib/enrichment/credits";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
 import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
 
+const bodySchema = z.object({
+  force: z.boolean().optional(),
+  people: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
+});
+
 /** Refuses at the monthly Apollo credit cap before any provider call is queued, shared by the
- * single-business and bulk enrich routes. Returns null when there is remaining budget. */
-async function assertCredits(ownerId: string) {
-  const cfg = await loadConfig(ownerId);
+ * single-business and bulk enrich routes. Takes an already-loaded config so callers that also
+ * need it (e.g. for the default `people` count) don't load it twice. Returns null when there is
+ * remaining budget. */
+async function assertCredits(ownerId: string, cfg: Awaited<ReturnType<typeof loadConfig>>) {
   const s = await creditStatus(ownerId, cfg);
   if (s.remaining <= 0) {
     return json({ error: `Apollo monthly credit cap reached (${s.used}/${s.cap})`, settingsHref: "/settings" }, 409);
@@ -32,25 +39,20 @@ export const POST = handle(async (req, ctx) => {
   if (!(await isProviderEnabled("apollo"))) {
     return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
   }
-  // Body is optional (a plain "Enrich" click sends no body at all); force/people default accordingly.
-  let force = false;
-  let people: number | undefined;
+  // Body is optional (a plain "Enrich" click sends no body at all); an absent/unparsable body is
+  // treated as `{}` so force/people fall back to their defaults, but a present-and-invalid
+  // `people` (e.g. 0 or 6) fails validation with a 400 via the schema below.
+  let raw: unknown = {};
   try {
-    const body: unknown = await req.json();
-    if (body && typeof body === "object") {
-      if ("force" in body) force = Boolean((body as { force?: unknown }).force);
-      if ("people" in body) {
-        const p = Number((body as { people?: unknown }).people);
-        if (Number.isInteger(p)) people = p;
-      }
-    }
+    raw = await req.json();
   } catch {
-    // no body, or not JSON — fine, force/people stay at their defaults
+    raw = {};
   }
-  const capError = await assertCredits(actor.id);
-  if (capError) return capError;
+  const body = bodySchema.parse(raw ?? {});
   const cfg = await loadConfig(actor.id);
-  const resolvedPeople = Math.min(ENRICH_CONFIG.maxPeopleLimit, Math.max(1, people ?? cfg.enrichment.maxPeople));
-  const queued = await enqueueEnrich(b.id, actor.id, { force, people });
+  const capError = await assertCredits(actor.id, cfg);
+  if (capError) return capError;
+  const resolvedPeople = body.people ?? cfg.enrichment.maxPeople;
+  const queued = await enqueueEnrich(b.id, actor.id, { force: body.force, people: body.people });
   return json({ queued, estimatedCredits: estimateCredits(1, resolvedPeople) }, 202);
 });

@@ -194,6 +194,26 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     expect(body2.estimatedCredits).toBe(3);
   });
 
+  it("POST /businesses/:id/enrich validates `people` with zod: out-of-range is a 400, absent body still queues", async () => {
+    const bTooHigh = await biz("none");
+    const resTooHigh = await enrichPost(jsonReq({ people: 6 }), ctxFor(bTooHigh.id));
+    expect(resTooHigh.status).toBe(400);
+    const bodyTooHigh = await resTooHigh.json();
+    expect(bodyTooHigh.issues?.[0]?.message).toMatch(/<=\s*5/i);
+    const afterTooHigh = await prisma.business.findUniqueOrThrow({ where: { id: bTooHigh.id } });
+    expect(afterTooHigh.lastEnrichedAt).toBeNull();
+
+    const bTooLow = await biz("none");
+    const resTooLow = await enrichPost(jsonReq({ people: 0 }), ctxFor(bTooLow.id));
+    expect(resTooLow.status).toBe(400);
+
+    const bAbsent = await biz("none");
+    const resAbsent = await enrichPost({ json: async () => { throw new Error("no body"); } } as unknown as NextRequest, ctxFor(bAbsent.id));
+    expect(resAbsent.status).toBe(202);
+    const bodyAbsent = await resAbsent.json();
+    expect(bodyAbsent.estimatedCredits).toBe(1);
+  });
+
   it("POST /businesses/:id/enrich returns 409 with settingsHref at the credit cap", async () => {
     await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
     const b = await biz("none");

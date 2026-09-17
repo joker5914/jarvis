@@ -9,9 +9,10 @@ import { enqueueEnrich } from "@/lib/jobs/enqueue";
 import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
 
 /** Refuses at the monthly Apollo credit cap before any provider call is queued, shared by the
- * single-business and bulk enrich routes. Returns null when there is remaining budget. */
-async function assertCredits(ownerId: string) {
-  const cfg = await loadConfig(ownerId);
+ * single-business and bulk enrich routes. Takes an already-loaded config so callers that also
+ * need it (e.g. for the default `people` count) don't load it twice. Returns null when there is
+ * remaining budget. */
+async function assertCredits(ownerId: string, cfg: Awaited<ReturnType<typeof loadConfig>>) {
   const s = await creditStatus(ownerId, cfg);
   if (s.remaining <= 0) {
     return json({ error: `Apollo monthly credit cap reached (${s.used}/${s.cap})`, settingsHref: "/settings" }, 409);
@@ -48,9 +49,9 @@ export const POST = handle(async (req) => {
     if (!(await isProviderEnabled("apollo"))) {
       return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
     }
-    const capError = await assertCredits(actor.id);
-    if (capError) return capError;
     const cfg = await loadConfig(actor.id);
+    const capError = await assertCredits(actor.id, cfg);
+    if (capError) return capError;
     const people = body.people ?? cfg.enrichment.maxPeople;
     estimatedCredits = estimateCredits(ids.length, people);
   }
