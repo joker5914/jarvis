@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { formatMonthDayUtc } from "@/lib/format";
+import { useLineListBuffer } from "./useLineListBuffer";
 import type { EnrichmentConfig } from "./types";
 
 const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
@@ -15,7 +15,6 @@ const MAX_PEOPLE_OPTIONS = [1, 2, 3, 4, 5];
 // <Select.Value> otherwise resolves labels only from <Select.Item>s that have already mounted
 // in the (portalled, closed-by-default) popup.
 const MAX_PEOPLE_ITEMS = MAX_PEOPLE_OPTIONS.map((n) => ({ value: String(n), label: `${n} ${n === 1 ? "person" : "people"}` }));
-const linesToArray = (v: string) => v.split("\n").map((s) => s.trim()).filter(Boolean);
 
 export function EnrichmentCard({
   value,
@@ -28,19 +27,12 @@ export function EnrichmentCard({
    * Settings hasn't set one explicitly — see credits.apollo.cycleEnd. */
   renewalHint?: string | null;
 }) {
-  // Same raw-text buffering as ExclusionCard: keep the typed text locally so a newline isn't
-  // collapsed by re-deriving `join("\n")` on every keystroke, and resync only when `value`
-  // changes identity from outside (e.g. a reload after save).
-  const [titlesText, setTitlesText] = useState(value.preferredTitles.join("\n"));
-  const [senioritiesText, setSenioritiesText] = useState(value.seniorities.join("\n"));
-  const lastValue = useRef(value);
-  useEffect(() => {
-    if (lastValue.current !== value) {
-      lastValue.current = value;
-      setTitlesText(value.preferredTitles.join("\n"));
-      setSenioritiesText(value.seniorities.join("\n"));
-    }
-  }, [value]);
+  // Same raw-text buffering as ExclusionCard: keep the typed text locally so a space or newline
+  // isn't collapsed by re-deriving `join("\n")` on every keystroke, and resync only when the
+  // list's *content* changes from outside this component (e.g. a reload after save) -- see
+  // useLineListBuffer.
+  const [titlesText, setTitlesText] = useLineListBuffer(value.preferredTitles, (preferredTitles) => onChange({ ...value, preferredTitles }));
+  const [senioritiesText, setSenioritiesText] = useLineListBuffer(value.seniorities, (seniorities) => onChange({ ...value, seniorities }));
 
   return (
     <Card>
@@ -130,10 +122,7 @@ export function EnrichmentCard({
               data-testid="enrichment-titles"
               rows={7}
               value={titlesText}
-              onChange={(e) => {
-                setTitlesText(e.target.value);
-                onChange({ ...value, preferredTitles: linesToArray(e.target.value) });
-              }}
+              onChange={(e) => setTitlesText(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">Most-wanted first &mdash; the order also ranks which contact is revealed first. Similar titles are matched too</p>
           </div>
@@ -144,10 +133,7 @@ export function EnrichmentCard({
               data-testid="enrichment-seniorities"
               rows={7}
               value={senioritiesText}
-              onChange={(e) => {
-                setSenioritiesText(e.target.value);
-                onChange({ ...value, seniorities: linesToArray(e.target.value) });
-              }}
+              onChange={(e) => setSenioritiesText(e.target.value)}
             />
             <p className="text-xs text-muted-foreground">Apollo&apos;s own seniority codes, lowercase with underscores &mdash; e.g. owner, founder, c_suite, vp, director, manager</p>
           </div>

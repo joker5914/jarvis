@@ -122,6 +122,54 @@ describe("salvageOverrides", () => {
     salvageOverrides(raw);
     expect(raw.enrichment.futureSetting).toBe("x");
   });
+
+  // Post-merge audit finding B1: two zod issues in one pass naming the SAME field used to make
+  // `dropAt` climb past an already-removed key and delete the whole parent section, losing valid
+  // siblings. Each of these has two independently-failing entries in the same list/array.
+  it("drops seniorities only once for two malformed elements in the same pass, keeping siblings", () => {
+    const r = salvageOverrides({
+      enrichment: { seniorities: ["C Suite", "V P"], monthlyCreditCap: 1000, maxPeople: 3 },
+      projects: { highFitThreshold: 75 },
+    });
+    expect(r.overrides.enrichment?.seniorities).toBeUndefined();
+    expect(r.overrides.enrichment?.monthlyCreditCap).toBe(1000);
+    expect(r.overrides.enrichment?.maxPeople).toBe(3);
+    expect(r.overrides.projects?.highFitThreshold).toBe(75);
+    expect(r.dropped).toEqual(["enrichment.seniorities"]);
+  });
+
+  it("drops chains only once for two over-long entries in the same pass, keeping costHardLimit", () => {
+    const r = salvageOverrides({
+      exclusion: { chains: ["x".repeat(81), "y".repeat(81)], costHardLimit: 5 },
+    });
+    expect(r.overrides.exclusion).toEqual({ costHardLimit: 5 });
+    expect(r.dropped).toEqual(["exclusion.chains"]);
+  });
+
+  it("drops chains only once for multiple wrong-typed elements in the same pass, keeping costHardLimit", () => {
+    const r = salvageOverrides({
+      exclusion: { chains: [1, { a: 2 }, "ok"], costHardLimit: 5 },
+    });
+    expect(r.overrides.exclusion).toEqual({ costHardLimit: 5 });
+    expect(r.dropped).toEqual(["exclusion.chains"]);
+  });
+
+  it("drops only a scalar-typed section, not the rest of the row", () => {
+    const r = salvageOverrides({ enrichment: "nope", projects: { highFitThreshold: 75 } });
+    expect(r.overrides.enrichment).toBeUndefined();
+    expect(r.overrides.projects?.highFitThreshold).toBe(75);
+    expect(r.dropped).toEqual(["enrichment"]);
+  });
+
+  it("drops two bad fields in different sections independently, leaving both sections intact", () => {
+    const r = salvageOverrides({
+      enrichment: { seniorities: ["C Suite"], monthlyCreditCap: 1000 },
+      exclusion: { chains: ["x".repeat(81)], costHardLimit: 5 },
+    });
+    expect(r.overrides.enrichment).toEqual({ monthlyCreditCap: 1000 });
+    expect(r.overrides.exclusion).toEqual({ costHardLimit: 5 });
+    expect(r.dropped.sort()).toEqual(["enrichment.seniorities", "exclusion.chains"]);
+  });
 });
 
 describe("targeting overrides (chainHeadcountMin, preferredTitles, seniorities)", () => {
@@ -147,10 +195,16 @@ describe("targeting overrides (chainHeadcountMin, preferredTitles, seniorities)"
   // An empty title/seniority list would drop the filter from the Apollo query entirely, so the
   // search would match every employee and the chain threshold would be counting a different
   // population than it was calibrated against. Refuse it rather than silently widen targeting.
-  it("refuses an empty title or seniority list", () => {
+  it("refuses an empty title or seniority list, naming the field in the message", () => {
     expect(() => overridesSchema.parse({ enrichment: { preferredTitles: [] } })).toThrow();
     expect(() => overridesSchema.parse({ enrichment: { seniorities: [] } })).toThrow();
     expect(() => overridesSchema.parse({ enrichment: { preferredTitles: ["  ", ""] } })).toThrow();
+    const titles = overridesSchema.safeParse({ enrichment: { preferredTitles: [] } });
+    expect(titles.success).toBe(false);
+    if (!titles.success) expect(titles.error.issues[0].message).toBe("Titles: must list at least one entry");
+    const seniorities = overridesSchema.safeParse({ enrichment: { seniorities: [] } });
+    expect(seniorities.success).toBe(false);
+    if (!seniorities.success) expect(seniorities.error.issues[0].message).toBe("Seniorities: must list at least one entry");
   });
 
   it("refuses a seniority that is not an Apollo-shaped token", () => {
