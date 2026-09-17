@@ -11,6 +11,10 @@ export class BuiltinValidationProvider implements ValidationProvider {
       if (res.status === 405 || res.status === 403) {
         res = await safeFetch(url, { method: "GET", headers: { "user-agent": USER_AGENT } }, { timeoutMs: REQUEST_TIMEOUT_MS });
       }
+      // Neither the HEAD response nor the GET fallback's body is ever read here — only the
+      // status is checked — so release it explicitly rather than leaving it for the pinned
+      // Agent's backstop timer.
+      void res.body?.cancel().catch(() => {});
       return res.ok ? { reachable: true } : { reachable: false, error: `HTTP ${res.status}` };
     } catch (e) {
       const err = e as Error;

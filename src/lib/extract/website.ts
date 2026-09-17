@@ -28,9 +28,15 @@ export const defaultFetcher: PageFetcher = async (url) => {
       { headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" } },
       { timeoutMs: REQUEST_TIMEOUT_MS },
     );
-    if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+    if (!res.ok) {
+      void res.body?.cancel().catch(() => {});
+      return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+    }
     const ct = res.headers.get("content-type") ?? "";
-    if (!/text\/html|application\/xhtml/i.test(ct)) return { ok: true, status: res.status, html: "", finalUrl: res.url };
+    if (!/text\/html|application\/xhtml/i.test(ct)) {
+      void res.body?.cancel().catch(() => {});
+      return { ok: true, status: res.status, html: "", finalUrl: res.url };
+    }
     const html = await readCapped(res, MAX_HTML_BYTES);
     return { ok: true, status: res.status, html, finalUrl: res.url };
   } catch (e) {
