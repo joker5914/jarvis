@@ -88,10 +88,10 @@ const DISPATCHER_CLOSE_BACKSTOP_MS = 30_000;
  */
 function closeDispatcherWithBody(res: Response, dispatcher: PinnedDispatcher): void {
   if (!res.body) {
-    void dispatcher.close();
+    void dispatcher.close().catch(() => {});
     return;
   }
-  setTimeout(() => void dispatcher.close(), DISPATCHER_CLOSE_BACKSTOP_MS).unref?.();
+  setTimeout(() => void dispatcher.close().catch(() => {}), DISPATCHER_CLOSE_BACKSTOP_MS).unref?.();
 }
 
 /** fetch with manual redirects; every hop must pass assertSafeUrl and connects only to its validated address. */
