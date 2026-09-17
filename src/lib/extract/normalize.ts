@@ -2,18 +2,73 @@ import { parsePhoneNumberFromString } from "libphonenumber-js";
 
 export type SocialType = "linkedin" | "facebook" | "instagram" | "twitter" | "yelp";
 
-const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+// Syntax check only; TLD plausibility is validated separately via `isPlausibleTld` so a mangled
+// TLD (e.g. "comsubmitthanks") is rejected instead of silently accepted as a long generic TLD.
+const EMAIL_RE = /^([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})$/;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|svg|webp|ico)$/;
-const JUNK_DOMAINS = ["example.com", "example.org", "sentry.io", "wixpress.com", "domain.com", "email.com", "yourdomain.com"];
+
+// Country-code TLDs (always 2 letters) are covered by the length check in `isPlausibleTld`; this
+// set is the generic/gTLD allow-list for everything else, including small-business-relevant gTLDs
+// (a real address can legitimately end in ".style", ".shop", etc.).
+export const KNOWN_TLDS = new Set(
+  (
+    "com net org edu gov mil biz info io co us name pro mobi asia " +
+    "app dev tech online site store shop xyz me tv cc style studio salon dental clinic cafe pizza " +
+    "restaurant bar beer coffee fitness yoga photography design law legal realty homes house auto cars " +
+    "repair services solutions group llc inc ltd health care vet pet dog kids school academy church farm " +
+    "garden florist boutique fashion hair beauty spa nails tattoo ink art gallery music events wedding " +
+    "photo media news blog live life world city agency company center email cloud digital global network " +
+    "systems software team tools works zone club fun games plus one today now best top new " +
+    // ".test" is IANA/RFC 2606 reserved for testing and can never be a real business's TLD; it's
+    // included so the existing test-fixture convention (e.g. "*.fake.test" in
+    // src/lib/providers/fake.ts and tests/db/*.test.ts) keeps validating as before.
+    "test"
+  ).split(" "),
+);
+
+export function isPlausibleTld(tld: string): boolean {
+  const t = tld.toLowerCase();
+  return t.length === 2 || KNOWN_TLDS.has(t);
+}
+
+/**
+ * Given a TLD that already failed `isPlausibleTld` (i.e. it's neither a 2-letter code nor in
+ * `KNOWN_TLDS` as-is), find the longest leading prefix that IS in `KNOWN_TLDS` — e.g.
+ * "comsubmitthanks" -> "com", "stylestore" -> "style". Deliberately does not fall back to the
+ * 2-letter shortcut here: that shortcut exists for genuine ccTLDs, not for chopping arbitrary
+ * junk down to a fake 2-letter code ("notatld" must not resolve to "no").
+ */
+export function longestPlausibleTldPrefix(tld: string): string | null {
+  const t = tld.toLowerCase();
+  for (let len = Math.min(t.length, 24) - 1; len >= 2; len--) {
+    const prefix = t.slice(0, len);
+    if (KNOWN_TLDS.has(prefix)) return prefix;
+  }
+  return null;
+}
+
+// Domains that are always junk regardless of local part: generic examples/docs domains and
+// known site-builder/ESP domains that leak into scraped markup (e.g. "filler@godaddy.com" left
+// over from an unfinished GoDaddy site builder template).
+const PLACEHOLDER_DOMAINS = [
+  "example.com", "example.org", "example.net", "domain.com", "email.com",
+  "yourdomain.com", "yourcompany.com", "company.com", "test.com",
+  "sentry.io", "wixpress.com", "squarespace.com", "godaddy.com",
+  "mysite.com", "website.com",
+];
+const placeholderDomainAlt = PLACEHOLDER_DOMAINS.map((d) => d.replace(/\./g, "\\.")).join("|");
+export const PLACEHOLDER_EMAIL_RE = new RegExp(`@(?:[a-z0-9-]+\\.)*(?:${placeholderDomainAlt})$`, "i");
 
 export function normalizeEmail(raw: string): string | null {
   let s = raw.trim().toLowerCase();
   if (s.startsWith("mailto:")) s = s.slice(7);
   s = s.split("?")[0];
-  if (!EMAIL_RE.test(s)) return null;
+  const m = EMAIL_RE.exec(s);
+  if (!m) return null;
+  const tld = m[3];
+  if (!isPlausibleTld(tld)) return null;
   if (IMAGE_EXT_RE.test(s)) return null;
-  const domain = s.split("@")[1];
-  if (JUNK_DOMAINS.some((j) => domain === j || domain.endsWith(`.${j}`))) return null;
+  if (PLACEHOLDER_EMAIL_RE.test(s)) return null;
   return s;
 }
 

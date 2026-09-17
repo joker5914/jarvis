@@ -10,6 +10,32 @@ describe("normalizeEmail", () => {
     expect(normalizeEmail("user@example.com")).toBeNull();
     expect(normalizeEmail("not-an-email")).toBeNull();
   });
+
+  it("rejects an address with text glued past the top-level domain", () => {
+    expect(normalizeEmail("a@gmail.comsubmitthanks")).toBeNull();
+  });
+  it("accepts a clean two/three-letter generic TLD", () => {
+    expect(normalizeEmail("a@gmail.com")).toBe("a@gmail.com");
+  });
+  it("accepts a listed small-business gTLD", () => {
+    expect(normalizeEmail("a@shop.online")).toBe("a@shop.online");
+  });
+  it("accepts a two-letter country-code TLD", () => {
+    expect(normalizeEmail("a@x.zz")).toBe("a@x.zz");
+  });
+  it("rejects an implausible made-up TLD", () => {
+    expect(normalizeEmail("a@x.notatld")).toBeNull();
+  });
+  it("rejects a known site-builder placeholder address", () => {
+    expect(normalizeEmail("filler@godaddy.com")).toBeNull();
+  });
+  it("rejects live-junk local-part phone/zip fragments (syntactically valid, semantically wrong) only via the cleanup script, not normalizeEmail alone", () => {
+    // normalizeEmail only validates syntax + TLD plausibility + placeholder status; a glued local
+    // part like "77581info@eatportara.com" is syntactically a valid email, so normalizeEmail
+    // accepts it as-is. The scanner (website.ts) is responsible for trimming the fragment before
+    // this function ever sees it, and the cleanup script flags it separately via GLUED_LOCAL.
+    expect(normalizeEmail("77581info@eatportara.com")).toBe("77581info@eatportara.com");
+  });
 });
 
 describe("normalizePhone", () => {

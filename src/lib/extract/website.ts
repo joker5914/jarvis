@@ -4,6 +4,8 @@ import { safeFetch, readCapped, discardBody } from "@/lib/net/safeFetch";
 import { UnsafeUrlError } from "@/lib/net/ssrf";
 import {
   classifySocialUrl,
+  isPlausibleTld,
+  longestPlausibleTldPrefix,
   normalizeEmail,
   normalizePhone,
   normalizeWebsiteUrl,
@@ -57,10 +59,27 @@ export type ExtractedContacts = {
 };
 
 const CONTACT_LINK_RE = /contact|about|reach|team|staff|location/i;
-const EMAIL_SCAN_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+// Bounded on both sides: the lookbehind/lookahead stop the local part and TLD from swallowing
+// adjacent glued text (they use [a-z] rather than the full local charset so digits right after
+// the TLD still terminate the match). The TLD group allows up to 24 letters so a glued suffix
+// like "comsubmitthanks" is captured whole and can then be trimmed to its longest plausible
+// prefix, rather than being accepted outright as a long TLD.
+const EMAIL_SCAN_RE = /(?<![a-z0-9._%+-])([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})(?![a-z])/gi;
 const OBFUSCATED_RE =
   /([a-z0-9._%+-]+)\s*(?:\[at\]|\(at\)|\{at\})\s*([a-z0-9.-]+)\s*(?:\[dot\]|\(dot\)|\{dot\})\s*([a-z]{2,})/gi;
 const PHONE_SCAN_RE = /(?:\+?1[\s.-]?)?\(?\b[2-9]\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g;
+// A local part that begins with a phone-number or zip-code fragment glued on by adjacent page
+// text with no separator (e.g. "77581info@…" from a zip code, "-229-4384chefstevehaug@…" from a
+// phone number). Trimmed to the part after the fragment when what's left is plausibly a real
+// local part (>= 2 chars, starts with a letter); otherwise the whole match is dropped.
+const GLUED_LOCAL_RE = /^(?:-?\d{3}-\d{4}|\d{5})([a-z].*)$/i;
+
+function repairGluedLocal(local: string): string | null {
+  const m = GLUED_LOCAL_RE.exec(local);
+  if (!m) return local;
+  const rest = m[1];
+  return rest.length >= 2 ? rest : null;
+}
 
 export function pickCandidatePages(baseUrl: string, html: string, max = MAX_EXTRA_PAGES): string[] {
   const base = new URL(baseUrl);
@@ -109,11 +128,21 @@ export function extractFromHtml(html: string): PageExtract {
     }
   });
 
-  $("script, style, noscript").remove();
-  const text = $("body").text().replace(/\s+/g, " ").trim();
+  // Scan text from a separately-parsed DOM with a separator inserted at every tag boundary, so
+  // adjacent text nodes (e.g. neighboring table cells or spans with no whitespace between them
+  // in the source HTML) never fuse into one glued token — this is how "77581" + "info@…" became
+  // "77581info@…" in the wild. The href-based extraction above still uses the original `$`.
+  const $text = cheerio.load(html.replace(/>/g, "> "));
+  $text("script, style, noscript").remove();
+  const text = $text("body").text().replace(/\s+/g, " ").trim();
 
   for (const m of text.matchAll(EMAIL_SCAN_RE)) {
-    const e = normalizeEmail(m[0]);
+    const [, rawLocal, domain, rawTld] = m;
+    const tld = isPlausibleTld(rawTld) ? rawTld.toLowerCase() : longestPlausibleTldPrefix(rawTld);
+    if (!tld) continue;
+    const local = repairGluedLocal(rawLocal.toLowerCase());
+    if (!local) continue;
+    const e = normalizeEmail(`${local}@${domain.toLowerCase()}.${tld}`);
     if (e) emails.add(e);
   }
   for (const m of text.matchAll(OBFUSCATED_RE)) {
