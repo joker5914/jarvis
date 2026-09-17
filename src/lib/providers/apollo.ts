@@ -2,6 +2,7 @@ import { withBudget } from "./budget";
 import { getProviderKey } from "./keys";
 import { ProviderNotConfiguredError } from "./errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { normalizeName } from "@/lib/jobs/shared";
 import type { EnrichPerson, EnrichmentProvider } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
@@ -41,7 +42,33 @@ async function post<T>(key: string, path: string, params: Record<string, string 
   return { status: res.status, data: (await res.json()) as T };
 }
 
-type OrgSearchResponse = { organizations?: { id: string; primary_domain?: string | null }[] };
+type OrgSearchResponse = { organizations?: { id: string; name?: string | null; primary_domain?: string | null }[] };
+
+/**
+ * normalizeName already strips "&" (a non-alphanumeric char) but leaves the word "and" alone,
+ * so "Bella Nails & Spa" and "Bella Nails and Spa" normalize to different strings. Fold both
+ * tokens out here so the two spellings compare equal.
+ */
+function normalizeForOrgCompare(name: string): string {
+  return normalizeName(name)
+    .replace(/\band\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Guards against Apollo's org search returning a plausible-looking but different organization
+ * (e.g. request "Joe's" matching org "Joe's Crab Shack" on naive substring containment). Accept
+ * only an exact match, or a containment where the shorter side has at least two words — a
+ * single-word request must match exactly.
+ */
+function orgNameMatches(requested: string, found: string): boolean {
+  if (!requested || !found) return false;
+  if (requested === found) return true;
+  const [shorter, longer] = requested.length <= found.length ? [requested, found] : [found, requested];
+  const shorterWordCount = shorter.split(" ").filter(Boolean).length;
+  return shorterWordCount >= 2 && longer.includes(shorter);
+}
 
 export class ApolloEnrichmentProvider implements EnrichmentProvider {
   async searchOrganization(name: string, city: string | null): Promise<{ id: string; primaryDomain: string | null } | null> {
@@ -55,7 +82,9 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       }),
     );
     const org = r.data?.organizations?.[0];
-    return org ? { id: org.id, primaryDomain: org.primary_domain ?? null } : null;
+    if (!org) return null;
+    if (!orgNameMatches(normalizeForOrgCompare(name), normalizeForOrgCompare(org.name ?? ""))) return null;
+    return { id: org.id, primaryDomain: org.primary_domain ?? null };
   }
 
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {

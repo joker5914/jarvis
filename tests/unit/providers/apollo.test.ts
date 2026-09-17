@@ -85,6 +85,30 @@ describe("ApolloEnrichmentProvider.searchOrganization", () => {
     mockFetch(() => json({ error: "bad" }, 422));
     expect(await new ApolloEnrichmentProvider().searchOrganization("Nope", null)).toBeNull();
   });
+
+  it("accepts when normalized names match after folding '&' and 'and' to the same token", async () => {
+    mockFetch(() => json({ organizations: [{ id: "org1", name: "Bella Nails and Spa", primary_domain: "bellanails.com" }] }));
+    const org = await new ApolloEnrichmentProvider().searchOrganization("Bella Nails & Spa", null);
+    expect(org).toEqual({ id: "org1", primaryDomain: "bellanails.com" });
+  });
+
+  it("rejects a single-word request that is merely a substring of a differently-named org, with no follow-up call", async () => {
+    mockFetch(() => json({ organizations: [{ id: "org1", name: "Joe's Crab Shack", primary_domain: "joescrabshack.com" }] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Joe's", city: null }, 5);
+    expect(people).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("accepts a shorter request (>= 2 words) contained in a longer org name", async () => {
+    mockFetch(() => json({ organizations: [{ id: "org1", name: "Bella Nails Katy", primary_domain: "bellanailskaty.com" }] }));
+    const org = await new ApolloEnrichmentProvider().searchOrganization("Bella Nails", null);
+    expect(org).toEqual({ id: "org1", primaryDomain: "bellanailskaty.com" });
+  });
+
+  it("rejects an unrelated org name", async () => {
+    mockFetch(() => json({ organizations: [{ id: "org1", name: "Katy Dental", primary_domain: "katydental.com" }] }));
+    expect(await new ApolloEnrichmentProvider().searchOrganization("Bella Nails", null)).toBeNull();
+  });
 });
 
 describe("ApolloEnrichmentProvider.enrichPerson", () => {
