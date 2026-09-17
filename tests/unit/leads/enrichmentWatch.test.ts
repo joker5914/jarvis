@@ -69,6 +69,29 @@ describe("watchEnrichment", () => {
     await expect(promise).resolves.toBe("timeout");
   });
 
+  // C1: a poll failing (transient 5xx, offline, a rejected fetchDetail) must not blow up the
+  // whole watch — the caller (LeadDetail) has no catch around this promise.
+  it('a fetchDetail that rejects on every call still resolves "timeout" (kept polling, at least 2 attempts)', async () => {
+    const fetchDetail = vi.fn(async () => { throw new Error("network down"); });
+    const promise = watchEnrichment({ businessId: "b1", since: SINCE, fetchDetail, intervalMs: 1000, timeoutMs: 3000 });
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(promise).resolves.toBe("timeout");
+    expect(fetchDetail.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a fetchDetail that rejects once then returns a completed run resolves "done"', async () => {
+    let calls = 0;
+    const fetchDetail = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new Error("transient 503");
+      return detail({ lastEnrichedAt: new Date(SINCE.getTime() + 500).toISOString() });
+    });
+    const promise = watchEnrichment({ businessId: "b1", since: SINCE, fetchDetail, intervalMs: 1000, timeoutMs: 90_000 });
+    await vi.advanceTimersByTimeAsync(1000); // the failed first poll still schedules a retry
+    await expect(promise).resolves.toBe("done");
+    expect(fetchDetail).toHaveBeenCalledTimes(2);
+  });
+
   it("stops polling and resolves \"timeout\" as soon as the signal is aborted", async () => {
     const controller = new AbortController();
     const fetchDetail = vi.fn(async () => detail());

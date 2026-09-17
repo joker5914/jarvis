@@ -120,6 +120,9 @@ export class FakeValidationProvider implements ValidationProvider {
 
 export class FakeEnrichmentProvider implements EnrichmentProvider {
   calls = { search: 0, enrich: 0, orgSearch: 0 };
+  // `max` unused (see EnrichmentProvider.searchPeople's doc comment): the fake mirrors Apollo's
+  // real behavior of returning the full ranked page and leaving the `max` slice to the caller.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
     this.calls.search++;
     const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;
@@ -127,11 +130,10 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
     // flow), so orgNameMatches always accepts these by default — tests that want to exercise the
     // targeting guard (Task 4) override searchPeople directly with a mismatched orgName, the same
     // way other tests already override it to simulate provider errors.
-    const people: EnrichPerson[] = [
+    return [
       { apolloId: `fake-${domain}-owner`, firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: q.orgName },
       { apolloId: `fake-${domain}-gm`, firstName: "Lee", lastName: null, name: "Lee", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: q.orgName },
     ];
-    return people.slice(0, max);
   }
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
     this.calls.enrich++;

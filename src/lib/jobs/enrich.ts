@@ -189,12 +189,17 @@ export async function runEnrich(
     await recomputeContactQuality(businessId);
     await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
     const found = people.length;
-    if (found > 0 && withEmail === 0) {
+    if (found === 0) {
+      // Search itself came back empty (no domain/name match at all) — distinct from "found
+      // candidates but none had an email" below, and worth naming what was searched for since
+      // there's nothing else (no titles) to show.
+      await log(`Enriched via Apollo: no people found for ${domain ?? b.name}`);
+    } else if (withEmail === 0) {
       // Search found candidates but none had (or yielded, on reveal) a verified email — worth
       // explaining which titles came back empty-handed rather than just "0 people" (the live bug
       // this task fixes: the best candidate used to never even be fetched).
       const titles = people.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
-      await log(`Enriched via Apollo: none of ${found} people found had an email (${titles})`);
+      await log(`Enriched via Apollo: none of ${found} ${found === 1 ? "person" : "people"} found had an email (${titles})`);
     } else {
       await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
     }

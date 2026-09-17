@@ -104,11 +104,13 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/429/);
   });
 
-  // Live bug (Plan 8 Task 7): searchPeople used to request per_page: max (often 1), so Apollo's
-  // own row ordering decided who was ever seen — the best candidate could be sitting further down
-  // the page and never come back at all. Fetching a full page (searchPageSize) and ranking
-  // locally means the caller's `max` only controls the final slice, not what Apollo returns.
-  it("requests a full page (searchPageSize) even when max is small, and ranks the best candidate to the top before slicing", async () => {
+  // Live bug (Plan 8 Task 7): searchPeople used to request per_page: max (often 1) AND slice its
+  // own result to max, so Apollo's own row ordering decided who was ever seen — the best
+  // candidate could be sitting further down the page and never come back at all. Fetching a full
+  // page (searchPageSize) and returning the whole ranked list (not sliced to `max`) means the
+  // caller (runEnrich) sees every candidate Apollo found and decides for itself how many to spend
+  // paid reveals on — `max` no longer bounds what searchPeople itself returns.
+  it("requests a full page (searchPageSize) even when max is small, and returns the whole list ranked with the best candidate first", async () => {
     mockFetch(() => json({ total_entries: 5, people: [
       { id: "p1", first_name: "Sam", title: "Barista", has_email: false },
       { id: "p2", first_name: "Alex", title: "Barista", has_email: false },
@@ -119,7 +121,7 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 1);
     const u = new URL(calls[0].url);
     expect(u.searchParams.get("per_page")).toBe("10"); // requests the full page, not max=1
-    expect(people).toHaveLength(1);
+    expect(people).toHaveLength(5); // not sliced to max=1 — the caller decides how many to act on
     expect(people[0]).toMatchObject({ apolloId: "p5", title: "Owner" }); // title rank wins outright
   });
 

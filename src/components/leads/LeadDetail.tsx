@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
-import { latestEnrichIssue } from "@/lib/leads/enrichActivity";
+import { isEnrichIssueMessage, latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
 import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
@@ -80,12 +80,23 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   // different lead) so a stale timer never touches this component's state after it's gone.
   const enrichWatchController = useRef<AbortController | null>(null);
   // Aborts on a different lead being shown (the drawer can swap `id` without fully unmounting
-  // LeadDetail) as well as on real unmount, so a watch started for one lead never lands on
-  // another's state.
-  useEffect(() => () => enrichWatchController.current?.abort(), [id]);
+  // LeadDetail — see also the `key={id}` belt-and-braces fix on LeadDrawer) as well as on real
+  // unmount, so a watch started for one lead never lands on another's state. Also resets
+  // `enriching` here (not just in enrich()'s finally): the component is still mounted across an
+  // id swap, so the *next* lead's button must not be stuck reading "Enriching…" from the old
+  // one's in-flight watch, which resolves "timeout" (aborted) and — by design — skips touching
+  // state itself once it sees its own controller was aborted.
+  useEffect(() => {
+    return () => {
+      enrichWatchController.current?.abort();
+      setEnriching(false);
+    };
+  }, [id]);
 
-  async function load(): Promise<Detail | null> {
-    setB(null);
+  async function load(opts: { quiet?: boolean } = {}): Promise<Detail | null> {
+    // `quiet` skips the `setB(null)` blank-out: used after watchEnrichment resolves, so the
+    // drawer doesn't flash back to "Loading…" once enrichment has already finished rendering.
+    if (!opts.quiet) setB(null);
     const res = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
     if (!res.ok) { toast.error("Could not load lead"); return null; }
     const { business } = await res.json();
@@ -134,12 +145,22 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
       toast.success("Enrichment queued");
       onChanged?.();
-      const since = new Date();
+      // Server-time baseline, not browser time: the newest enriched activity (or lastEnrichedAt)
+      // from the detail already loaded before this click, so "newer than since" compares two
+      // server timestamps instead of a client clock against a server one. A lead that has never
+      // been enriched has neither, so epoch always counts as "before".
+      const priorEnriched = b?.activity.find((a) => a.kind === "enriched");
+      const since = priorEnriched
+        ? new Date(priorEnriched.createdAt)
+        : b?.lastEnrichedAt
+          ? new Date(b.lastEnrichedAt)
+          : new Date(0);
       const result = await watchEnrichment({
         businessId: id,
         since,
         fetchDetail: async (): Promise<WatchableDetail> => {
           const r = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
+          if (!r.ok) throw new Error(`Could not load lead (HTTP ${r.status})`); // treated as a failed poll — watchEnrichment keeps retrying
           const { business } = await r.json();
           return business as WatchableDetail;
         },
@@ -148,12 +169,15 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         signal: controller.signal,
       });
       if (controller.signal.aborted) return; // unmounted/switched leads mid-watch — don't touch state
-      const fresh = await load();
+      const fresh = await load({ quiet: true }); // avoid re-blanking a drawer that's already rendered
       await loadCredits();
       onChanged?.();
       if (result === "done") {
         const newest = fresh?.activity.find((a) => a.kind === "enriched");
-        toast.success(newest?.message ?? "Enrichment finished");
+        // An unavailable/paused/failed/org-mismatch outcome already surfaces as the amber
+        // `lastEnrichIssue` line below the button (from the same activity row) — toasting it too
+        // would just duplicate that message.
+        if (newest && !isEnrichIssueMessage(newest.message)) toast.success(newest.message);
       } else {
         toast("Still working — check the activity log in a minute");
       }

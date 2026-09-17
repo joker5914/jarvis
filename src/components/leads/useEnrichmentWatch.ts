@@ -36,15 +36,17 @@ export type WatchEnrichmentOptions = {
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    // `onAbort` closes over `timer` before `timer` is assigned — fine, since onAbort only ever
+    // runs later (async, from the "abort" event), by which point the assignment below has run.
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -63,8 +65,17 @@ export async function watchEnrichment(opts: WatchEnrichmentOptions): Promise<Wat
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (signal?.aborted) return "timeout";
-    const detail = await fetchDetail();
-    if (reflectsCompletedRun(detail, since)) return "done";
+    // A single poll failing (transient 5xx, offline, a bad response the caller's fetchDetail
+    // turned into a rejection) must not tear down the whole watch — the caller has no `catch`
+    // around this promise, so an unguarded rejection here would escape all the way out of
+    // LeadDetail's enrich() and skip its finally block. Treat a failed poll like "not done yet"
+    // and keep trying until timeoutMs.
+    try {
+      const detail = await fetchDetail();
+      if (reflectsCompletedRun(detail, since)) return "done";
+    } catch {
+      // fall through to the sleep/retry below
+    }
     if (signal?.aborted) return "timeout";
     const remaining = deadline - Date.now();
     if (remaining <= 0) return "timeout";

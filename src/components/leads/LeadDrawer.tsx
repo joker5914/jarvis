@@ -25,7 +25,10 @@ export function LeadDrawer({ id, onClose, onChanged }: { id: string | null; onCl
               </SheetClose>
             </div>
             <div className="p-5">
-              <LeadDetail id={id} onChanged={onChanged} />
+              {/* key={id}: belt-and-braces alongside LeadDetail's own id-effect cleanup — forces a
+                  fresh mount per lead so an in-flight enrich watch for the previous lead can
+                  never leave its state (e.g. a stuck "Enriching…" button) on the next one. */}
+              <LeadDetail key={id} id={id} onChanged={onChanged} />
             </div>
           </>
         )}
