@@ -101,6 +101,17 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     mockFetch(() => json({ error: "slow down" }, 429));
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/429/);
   });
+
+  it("maps organization.name to orgName, and null when organization (or its name) is absent", async () => {
+    mockFetch(() => json({ total_entries: 2, people: [
+      { id: "p1", first_name: "Sam", title: "Owner", has_email: true, organization: { name: "Booksy" } },
+      { id: "p2", first_name: "Lee", title: "Manager", has_email: true, organization: {} },
+    ] }));
+    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+    const byId = Object.fromEntries(people.map((p) => [p.apolloId, p]));
+    expect(byId.p1.orgName).toBe("Booksy");
+    expect(byId.p2.orgName).toBeNull();
+  });
 });
 
 describe("ApolloEnrichmentProvider.searchOrganization", () => {

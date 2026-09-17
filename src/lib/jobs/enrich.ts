@@ -6,9 +6,21 @@ import { loadConfig } from "@/lib/config/runtime";
 import { creditStatus } from "@/lib/enrichment/credits";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
+import { orgNameMatches } from "@/lib/providers/apollo";
 import type { EnrichPerson } from "@/lib/providers/types";
 
-const SOCIAL_HOSTS = ["facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com", "sites.google.com", "business.site", "wixsite.com", "squarespace.com", "godaddysites.com"];
+// Hosts that never identify a business's own domain: social/review profile pages (the original
+// set) plus, per live zero-credit probes, booking/scheduling/ordering platforms whose page for a
+// lead (e.g. a Booksy or Clover storefront) makes Apollo's People Search return the *platform's*
+// executives instead of the lead's — see orgNameMatches below for the second half of that guard.
+const SHARED_HOSTS = [
+  "facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com",
+  "sites.google.com", "business.site", "wixsite.com", "squarespace.com", "godaddysites.com",
+  "booksy.com", "clover.com", "square.site", "squareup.com", "weebly.com", "linktr.ee",
+  "toasttab.com", "vagaro.com", "fresha.com", "styleseat.com", "mindbodyonline.com",
+  "schedulicity.com", "zocdoc.com", "doordash.com", "ubereats.com", "grubhub.com",
+  "myshopify.com", "wix.com", "jimdosite.com", "webnode.page", "carrd.co", "bio.site",
+];
 
 export function domainFromUrl(url: string | null): string | null {
   if (!url) return null;
@@ -16,7 +28,7 @@ export function domainFromUrl(url: string | null): string | null {
   try {
     const host = new URL(raw).hostname.toLowerCase().replace(/^www\./, "");
     if (!host.includes(".")) return null;
-    if (SOCIAL_HOSTS.some((s) => host === s || host.endsWith(`.${s}`))) return null;
+    if (SHARED_HOSTS.some((s) => host === s || host.endsWith(`.${s}`))) return null;
     return host;
   } catch {
     return null;
@@ -58,7 +70,7 @@ export async function runEnrich(
   ownerId: string,
   deps: JobDeps,
   opts: { force?: boolean; people?: number } = {},
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | null }> {
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
@@ -86,8 +98,20 @@ export async function runEnrich(
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
     const people = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city: cityFromAddress(b.formattedAddress) }, maxPeople);
+    // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
+    // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
+    // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked
+    // across the whole loop so a business where *every* candidate mismatches gets one explanatory
+    // activity row (below) instead of the generic "0 people" success message.
+    let skippedOrg: string | null = null;
     for (const p of people.slice(0, maxPeople)) {
       await checkPause(deps);
+      // Apollo's obfuscated search rows carry `organization.name` but no domain, so a name check
+      // is the only guard available here — reject before spending a credit on a wrong-company hit.
+      if (p.orgName && !orgNameMatches(p.orgName.toLowerCase(), b.name.toLowerCase())) {
+        skippedOrg = p.orgName;
+        continue;
+      }
       // Apollo's search never returns emails (see EnrichmentProvider.searchPeople); a hit it
       // already flags as having no email would never yield one from a paid reveal either, so
       // skip it before spending a credit. `p.email` is checked too for a fake/future provider
@@ -129,6 +153,15 @@ export async function runEnrich(
       }
       if (personAdded) added++;
       if (personUpdated) updated++;
+    }
+    if (added === 0 && updated === 0 && skippedOrg) {
+      // Every candidate that reached the org-name guard mismatched, and nothing else was added
+      // or updated either: this is a targeting failure, not a "found nobody" success, so it gets
+      // its own message and returns before validateEmails/recomputeContactQuality/lastEnrichedAt
+      // — matching how the other early-return skip reasons above (excluded/not_found/recent)
+      // never touch those either.
+      await log(`Enrichment skipped: Apollo matched a different company (${skippedOrg})`);
+      return { added: 0, updated: 0, skipped: "org_mismatch" as const };
     }
     await validateEmails([businessId], deps);
     await recomputeContactQuality(businessId);

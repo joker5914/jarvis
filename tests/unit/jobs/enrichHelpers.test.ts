@@ -7,6 +7,12 @@ describe("domainFromUrl", () => {
     ["http://cafe.example", "cafe.example"],
     ["bellanails.com", "bellanails.com"],
     [null, null], ["not a url", null], ["https://facebook.com/bella", null], ["https://sites.google.com/x", null],
+    // Booking/scheduling/ordering platforms (Task 4): a lead's page on one of these is not the
+    // lead's own domain, so treating it as one would make People Search return the platform's
+    // own staff (e.g. Booksy's) instead of the lead's.
+    ["https://whiskeyblades.booksy.com/", null],
+    ["https://clover.com/online-ordering/whiskey-blades", null],
+    ["https://www.zerotrainingcenter.com/", "zerotrainingcenter.com"],
   ])("%s → %s", (input, out) => expect(domainFromUrl(input)).toBe(out));
 });
 

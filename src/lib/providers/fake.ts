@@ -123,9 +123,13 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
   async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
     this.calls.search++;
     const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;
+    // Defaults to the queried org name (i.e. the real business's own name in the normal runEnrich
+    // flow), so orgNameMatches always accepts these by default — tests that want to exercise the
+    // targeting guard (Task 4) override searchPeople directly with a mismatched orgName, the same
+    // way other tests already override it to simulate provider errors.
     const people: EnrichPerson[] = [
-      { apolloId: `fake-${domain}-owner`, firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true },
-      { apolloId: `fake-${domain}-gm`, firstName: "Lee", lastName: null, name: "Lee", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false },
+      { apolloId: `fake-${domain}-owner`, firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: q.orgName },
+      { apolloId: `fake-${domain}-gm`, firstName: "Lee", lastName: null, name: "Lee", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: q.orgName },
     ];
     return people.slice(0, max);
   }
@@ -134,8 +138,8 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
     const m = apolloId.match(/^fake-(.+)-(owner|gm)$/);
     if (!m) return null;
     const [, domain, role] = m;
-    if (role === "gm") return { apolloId, firstName: "Lee", lastName: "Tran", name: "Lee Tran", title: "General Manager", email: null, emailStatus: null, linkedinUrl: "https://www.linkedin.com/in/lee-tran-fake", hasEmail: false };
-    return { apolloId, firstName: "Maria", lastName: "Lopez", name: "Maria Lopez", title: "Owner", email: `owner@${domain}`, emailStatus: "verified", linkedinUrl: "https://www.linkedin.com/in/maria-lopez-fake", hasEmail: true };
+    if (role === "gm") return { apolloId, firstName: "Lee", lastName: "Tran", name: "Lee Tran", title: "General Manager", email: null, emailStatus: null, linkedinUrl: "https://www.linkedin.com/in/lee-tran-fake", hasEmail: false, orgName: null };
+    return { apolloId, firstName: "Maria", lastName: "Lopez", name: "Maria Lopez", title: "Owner", email: `owner@${domain}`, emailStatus: "verified", linkedinUrl: "https://www.linkedin.com/in/maria-lopez-fake", hasEmail: true, orgName: null };
   }
 }
 

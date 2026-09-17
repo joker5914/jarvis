@@ -117,4 +117,51 @@ describe("runEnrich", () => {
     expect(logs[0].message).toMatch(/\(API_INACCESSIBLE\)$/);
     expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
   });
+
+  describe("enrichment targeting guard (Task 4)", () => {
+    it("skips a candidate whose Apollo-reported company doesn't match the lead (e.g. a shared booking-platform page returning the platform's own staff), with one explanatory activity row, no contact created, no paid reveal, and lastEnrichedAt left null", async () => {
+      const b = await biz({ name: "Whiskey Blades", websiteUrl: "https://whiskeyblades.booksy.com/" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => [
+        { apolloId: "fake-booksy-exec", firstName: "Sam", lastName: null, name: "Sam", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Booksy" },
+      ];
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "org_mismatch" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(0);
+      const logs = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+      expect(logs).toHaveLength(1);
+      expect(logs[0].message).toBe("Enrichment skipped: Apollo matched a different company (Booksy)");
+      expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
+    });
+
+    it("proceeds when the candidate's orgName loosely matches the lead's name (case-insensitive, tolerant of a trailing legal suffix)", async () => {
+      const b = await biz({ name: "ZERO Training Center" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => [
+        { apolloId: "fake-zerotrainingcenter.example-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Zero Training Center LLC" },
+      ];
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).toEqual({ added: 1, updated: 0, skipped: null });
+      expect(d.enrichment.calls.enrich).toBe(1);
+      const contacts = await prisma.contact.findMany({ where: { businessId: b.id, type: "email" } });
+      expect(contacts).toHaveLength(1);
+      expect(contacts[0].value).toBe("owner@zerotrainingcenter.example");
+      expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).not.toBeNull();
+    });
+
+    it("is unaffected when candidates carry no orgName at all", async () => {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => [
+        { apolloId: "fake-noorg-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: null },
+      ];
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.skipped).toBeNull();
+      expect(r.added).toBe(1);
+    });
+  });
 });

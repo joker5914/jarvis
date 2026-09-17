@@ -150,8 +150,8 @@ async function throwFor403(path: string, res: Response): Promise<never> {
   throw new Error(`Apollo ${path} HTTP 403`);
 }
 
-type SearchPerson = { id: string; first_name?: string | null; last_name_obfuscated?: string | null; title?: string | null; has_email?: boolean | null };
-type MatchPerson = { id: string; first_name?: string | null; last_name?: string | null; name?: string | null; title?: string | null; email?: string | null; email_status?: string | null; linkedin_url?: string | null; match_confidence?: string | null };
+type SearchPerson = { id: string; first_name?: string | null; last_name_obfuscated?: string | null; title?: string | null; has_email?: boolean | null; organization?: { name?: string | null } | null };
+type MatchPerson = { id: string; first_name?: string | null; last_name?: string | null; name?: string | null; title?: string | null; email?: string | null; email_status?: string | null; linkedin_url?: string | null; match_confidence?: string | null; organization?: { name?: string | null } | null };
 
 async function requireKey() {
   const key = await getProviderKey("apollo");
@@ -206,7 +206,7 @@ function normalizeForOrgCompare(name: string): string {
  * only an exact match, or a containment where the shorter side has at least two words — a
  * single-word request must match exactly.
  */
-function orgNameMatches(requested: string, found: string): boolean {
+export function orgNameMatches(requested: string, found: string): boolean {
   if (!requested || !found) return false;
   if (requested === found) return true;
   const [shorter, longer] = requested.length <= found.length ? [requested, found] : [found, requested];
@@ -263,6 +263,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       emailStatus: null,
       linkedinUrl: null,
       hasEmail: !!p.has_email,
+      orgName: p.organization?.name ?? null,
     }));
     people.sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
     return people.slice(0, max);
@@ -293,6 +294,7 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       emailStatus: p.email_status ?? null,
       linkedinUrl: p.linkedin_url ?? null,
       hasEmail: !!p.email,
+      orgName: p.organization?.name ?? null,
     };
   }
 }

@@ -114,6 +114,11 @@ export type EnrichPerson = {
   emailStatus: string | null;
   linkedinUrl: string | null;
   hasEmail: boolean;
+  /** The employer name Apollo attached to this search hit (`person.organization.name`), or null
+   * when Apollo didn't return one. Lets runEnrich guard against a shared booking/ordering
+   * platform's own staff (e.g. "Booksy") coming back for a lead whose website is really just a
+   * page hosted on that platform — see orgNameMatches in src/lib/providers/apollo.ts. */
+  orgName: string | null;
 };
 
 export interface EnrichmentProvider {
