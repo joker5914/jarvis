@@ -170,6 +170,42 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Task 3: Apollo plan-block detection (hotfix, done)
+
+Landed as commits 19440c7 and 1727419 during live testing: `ProviderPlanError` + `APOLLO_PLAN_BLOCK_MESSAGE`
+(`src/lib/providers/errors.ts`), 403 `API_INACCESSIBLE` detection with a 6-hour memo persisted on
+`ProviderConfig.planBlockedUntil`/`planBlockDetail` (migration `20260917045519_provider_plan_block`),
+one "Enrichment unavailable: …" activity row, skipped-not-retried in `handleEnrichJob`, 409 gates on
+both enrich routes, block cleared when a key is saved, `src/lib/leads/enrichActivity.ts` for the
+LeadDetail line, README note. See the ledger for the review rounds.
+
+### Task 4: Enrichment targeting guard (do not spend credits on the wrong company)
+
+**Why:** live zero-credit probes on real leads showed two credit sinks. (1) A lead whose website
+is a shared platform page (`whiskeyblades.booksy.com`, `clover.com` ordering page) makes People
+Search return the platform's executives: `person.organization.name` was "Booksy". (2) The search
+response for a domain returns people whose `organization.name` may not be the business at all.
+Apollo's obfuscated search rows carry `organization: { name }` only (no domain), so the guard is a
+name check, reusing `orgNameMatches` from `src/lib/providers/apollo.ts`.
+
+**Files:**
+- Modify: `src/lib/jobs/enrich.ts` (`SOCIAL_HOSTS` → rename `SHARED_HOSTS`, extend; candidate loop)
+- Modify: `src/lib/providers/apollo.ts` (`SearchPerson` gains `organization?: { name?: string | null } | null`; `EnrichPerson` gains `orgName: string | null`; export `orgNameMatches`)
+- Modify: `src/lib/providers/types.ts` (`EnrichPerson.orgName`), `src/lib/providers/fake.ts` (fake fills `orgName` with the queried `orgName`)
+- Test: `tests/unit/providers/apollo.test.ts`, `tests/db/enrich.test.ts`, `tests/unit/jobs/domainFromUrl.test.ts` (create if absent)
+
+**Interfaces:**
+- Consumes: `orgNameMatches(a: string, b: string): boolean` (existing, currently module-private); `EnrichPerson` (`src/lib/providers/types.ts`).
+- Produces: `EnrichPerson.orgName: string | null`; activity message `Enrichment skipped: Apollo matched a different company (<org name>)`.
+
+- [ ] **Step 1: Failing tests.** (a) `apollo.test.ts`: `searchPeople` maps `organization.name` → `orgName` (and `null` when absent). (b) `tests/db/enrich.test.ts`: with a fake provider returning one person whose `orgName` is "Booksy" for business "Whiskey Blades", `runEnrich` calls `enrichPerson` zero times, creates no contact, writes exactly one activity row `Enrichment skipped: Apollo matched a different company (Booksy)`, and leaves `lastEnrichedAt` null; with `orgName` "Zero Training Center LLC" for business "ZERO Training Center" enrichment proceeds. (c) `domainFromUrl("https://whiskeyblades.booksy.com/…")` and `("https://clover.com/online-ordering/…")` return `null`; `("https://www.zerotrainingcenter.com/")` returns `zerotrainingcenter.com`.
+- [ ] **Step 2: Run them, expect failures** (`npm test -- apollo`, `npm run test:db -- enrich`).
+- [ ] **Step 3: Implement.** Extend the host list with: `booksy.com`, `clover.com`, `square.site`, `squareup.com`, `weebly.com`, `linktr.ee`, `toasttab.com`, `vagaro.com`, `fresha.com`, `styleseat.com`, `mindbodyonline.com`, `schedulicity.com`, `zocdoc.com`, `doordash.com`, `ubereats.com`, `grubhub.com`, `myshopify.com`, `wix.com`, `jimdosite.com`, `webnode.page`, `carrd.co`, `bio.site`. In `searchPeople` map `p.organization?.name ?? null` → `orgName`. In `runEnrich`'s candidate loop, before the `hasEmail` check: `if (p.orgName && !orgNameMatches(p.orgName, b.name)) { skippedOrg = p.orgName; continue; }`; after the loop, if nothing was enriched and `skippedOrg` is set, write the single activity row above and return without touching `lastEnrichedAt`. A business whose people all lack `orgName` is unaffected.
+- [ ] **Step 4: Run tests, tsc, lint** — all exit 0.
+- [ ] **Step 5: Commit** `feat(enrich): skip Apollo people whose company does not match the lead; treat booking/ordering platforms as non-domains`.
+
+**Known limitation (follow-up, not this task):** national chains that escaped chain exclusion (e.g. Zumiez) match by name and domain and will spend a credit on HQ staff; and franchise brand domains return HQ people — People Search supports `person_locations[]`, to be used in a later task to prefer people in the business's city.
+
 ## Done criteria for Plan 8
 
 - Drawer: "Open full page" and the close button sit on one chrome row without overlap on phone and desktop.
