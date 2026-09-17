@@ -74,6 +74,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [newTag, setNewTag] = useState("");
   const [notes, setNotes] = useState("");
   const [enriching, setEnriching] = useState(false);
+  const [markingChain, setMarkingChain] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
@@ -186,6 +187,27 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     }
   }
 
+  // "Not an SMB (chain)" action (Plan 9 Task 3): adds this lead's name to the owner's chain list
+  // and re-scores every business, so a name-alike lead (e.g. another location of the same brand)
+  // gets excluded in the same click. `rescore.newlyExcluded` counts this business too, so the
+  // toast's "N similar leads" figure subtracts one (floored at 0) for the business just clicked.
+  async function markAsChain() {
+    if (!b) return;
+    const name = b.name;
+    setMarkingChain(true);
+    try {
+      const res = await fetch(`/api/businesses/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ markAsChain: true }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error ?? "Could not mark as chain"); return; }
+      const extra = Math.max(0, (data.rescore?.newlyExcluded ?? 1) - 1);
+      toast.success(extra > 0 ? `Excluded ${name} and ${extra} similar lead${extra === 1 ? "" : "s"}` : `Excluded ${name}`);
+      await load({ quiet: true });
+      onChanged?.();
+    } finally {
+      setMarkingChain(false);
+    }
+  }
+
   function onNotes(v: string) {
     setNotes(v);
     if (notesTimer.current) clearTimeout(notesTimer.current);
@@ -274,6 +296,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                     ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
                   </span>
                 )}
+                <Button size="sm" variant="ghost" data-testid="mark-chain-button" disabled={markingChain} onClick={markAsChain}>
+                  {markingChain ? "Excluding…" : "Not an SMB (chain)"}
+                </Button>
               </>
             ) : (
               <span className="text-xs text-muted-foreground" data-testid="enrich-excluded-note">

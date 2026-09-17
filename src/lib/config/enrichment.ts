@@ -20,6 +20,11 @@ export const ENRICH_CONFIG = {
   monthlyCreditCapMax: 5000,
   /** How long ApolloEnrichmentProvider.creditUsage() memoizes a successful fetch before refetching. */
   creditUsageTtlMs: 5 * 60_000,
+  /** Plan 9 Task 3: a domain with at least this many people in Apollo (any location — the
+   * unlocated first call's total_entries, i.e. searchPeople's totalAtDomain) is a national chain,
+   * not an SMB — deliberately high so a franchise brand (kidsrkids.com: 139) stays eligible while
+   * a true national head office (hrblock.com: 6,579) is excluded before a credit is spent. */
+  chainHeadcountMin: 1000,
   preferredTitles: ["owner", "founder", "general manager", "office manager", "president", "ceo", "manager"],
   seniorities: ["owner", "founder", "c_suite", "vp", "director", "manager"],
   /** Skip a paid re-enrich (and the provider calls it would cost) within this many days of the last successful run, unless forced. */

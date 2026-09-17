@@ -332,7 +332,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 - PATCH `/api/businesses/:id` body gains `markAsChain: z.literal(true).optional()`: appends `normalizeName(name)` (from `src/lib/jobs/shared.ts`) to `overrides.exclusion.chains` (dedupe, lowercase, via `saveOverrides`), then `rescoreExclusions`; response `{ business, rescore: { newlyExcluded } }`.
 - `scripts/chain-sweep.ts`: `node --env-file=.env --import=tsx scripts/chain-sweep.ts [--apply] [--limit N]` — for each non-excluded business with a domain (skip `SHARED_HOSTS`), one People Search with no location and `per_page: 1` through the provider (so `withBudget` and the plan-block memo apply), print `domain  total  → chain?`; with `--apply`, mark as in `runEnrich`. Prints a reminder that the Apollo daily budget in Settings bounds the sweep (raise it to ≥ the business count first) and stops cleanly on `BudgetExhaustedError`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/unit/scoring/smbFit.test.ts`: `"Zumiez"`, `"Pet Paradise Pearland"`, `"H&R Block"`, `"Jiffy Lube"`, `"GEICO Insurance Agent"` are excluded with a `chain:` reason; `"Snap Fitness Pearland"` and `"State Farm - Jane Smith"` are NOT (franchise/agent-owned SMBs).
 
@@ -342,14 +342,14 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 `tests/db/businessPatchRoute.test.ts`: `markAsChain: true` on "Zumiez" → 200, `rescore.newlyExcluded ≥ 1`, `AppConfig.overrides.exclusion.chains` contains `"zumiez"`; a second call is idempotent (no duplicate entry).
 
-- [ ] **Step 2: Run, expect failures.**
+- [x] **Step 2: Run, expect failures.**
 
-- [ ] **Step 3: Implement** as specified. Seed additions to `DEFAULT_EXCLUSION_CONFIG.chains`: `"zumiez", "pet paradise", "h&r block", "jiffy lube", "geico", "petsmart", "petco", "great clips", "supercuts", "planet fitness", "la fitness", "24 hour fitness", "aspen dental", "banfield", "vca ", "chili's", "applebee", "olive garden", "ihop", "denny's", "waffle house", "panda express", "chipotle", "five guys", "raising cane", "popeyes", "kfc", "sonic drive", "jack in the box", "dairy queen", "autozone", "o'reilly auto", "advance auto", "discount tire", "firestone", "goodyear", "mattress firm", "ross dress", "tj maxx", "marshalls", "dollar general", "dollar tree", "family dollar", "office depot", "staples", "best buy", "verizon", "at&t", "t-mobile", "spectrum", "xfinity"` (the last two are the user's own employer's brands; they are never prospects). Keep `hasWord` semantics in mind: entries are whole-word substrings of the lowercase name.
+- [x] **Step 3: Implement** as specified. Seed additions to `DEFAULT_EXCLUSION_CONFIG.chains`: `"zumiez", "pet paradise", "h&r block", "jiffy lube", "geico", "petsmart", "petco", "great clips", "supercuts", "planet fitness", "la fitness", "24 hour fitness", "aspen dental", "banfield", "vca ", "chili's", "applebee", "olive garden", "ihop", "denny's", "waffle house", "panda express", "chipotle", "five guys", "raising cane", "popeyes", "kfc", "sonic drive", "jack in the box", "dairy queen", "autozone", "o'reilly auto", "advance auto", "discount tire", "firestone", "goodyear", "mattress firm", "ross dress", "tj maxx", "marshalls", "dollar general", "dollar tree", "family dollar", "office depot", "staples", "best buy", "verizon", "at&t", "t-mobile", "spectrum", "xfinity"` (the last two are the user's own employer's brands; they are never prospects). Keep `hasWord` semantics in mind: entries are whole-word substrings of the lowercase name.
 
 `LeadDetail.tsx`: in the header block, when `b.exclusion === "none"`, a small ghost `Button` "Not an SMB (chain)" that calls PATCH with `{ markAsChain: true }`, toasts `Excluded <name> and N similar leads`, and refreshes; sentence case; fits the 375 px header stack (it joins the existing action row).
 
-- [ ] **Step 4: tsc, lint, unit, db exit 0.** Then run the sweep dry-run against the dev DB with `--limit 50` and paste the top of its output in the task report (no `--apply`).
-- [ ] **Step 5: Commit** `feat(exclusion): Apollo headcount marks national chains before a credit is spent; chain sweep script; seed chains; "Not an SMB" action with re-score`.
+- [x] **Step 4: tsc, lint, unit, db exit 0.** Then run the sweep dry-run against the dev DB with `--limit 50` and paste the top of its output in the task report (no `--apply`).
+- [x] **Step 5: Commit** `feat(exclusion): Apollo headcount marks national chains before a credit is spent; chain sweep script; seed chains; "Not an SMB" action with re-score`.
 
 ---
 

@@ -111,4 +111,29 @@ describe("scoreSmbFit", () => {
     expect(r.band).toBe("low");
     expect(r.reasons.map((x) => x.code)).toEqual(["cost_under_250k", "soft_negative", "soft_negative"]);
   });
+
+  // Plan 9 Task 3: Zumiez, Pet Paradise and H&R Block escaped chain exclusion under the original
+  // name-list (they were never on it at all) — the headcount signal in runEnrich/chain-sweep
+  // catches them independently of this list, but the seed list itself should also know about
+  // these well-known national chains so they're excluded up front, at zip-search time.
+  it.each([
+    ["Zumiez"],
+    ["Pet Paradise Pearland"],
+    ["H&R Block"],
+    ["Jiffy Lube"],
+    ["GEICO Insurance Agent"],
+  ])("hard-excludes the seeded chain %s", (name) => {
+    const r = scoreSmbFit({ name });
+    expect(r.excluded).toBe(true);
+    expect(r.exclusionReasons[0]).toMatch(/^chain:/);
+  });
+
+  // Franchise/agent-owned storefronts are real SMB prospects, not head-office-run chains, and are
+  // deliberately kept off the seed list even though they share a brand name with a franchisor.
+  it.each([["Snap Fitness Pearland"], ["State Farm - Jane Smith"]])(
+    "does not exclude the franchise/agent-owned business %s",
+    (name) => {
+      expect(scoreSmbFit({ name }).excluded).toBe(false);
+    },
+  );
 });

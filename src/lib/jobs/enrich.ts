@@ -87,7 +87,7 @@ export async function runEnrich(
   ownerId: string,
   deps: JobDeps,
   opts: { force?: boolean; people?: number } = {},
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | null }> {
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
@@ -101,11 +101,24 @@ export async function runEnrich(
   }
   const cfg = await loadConfig(ownerId);
   const maxPeople = Math.min(ENRICH_CONFIG.maxPeopleLimit, Math.max(1, opts.people ?? cfg.enrichment.maxPeople));
-  const status = await creditStatus(ownerId, cfg);
+  // Reads the live Apollo balance off this run's own provider instance (deps.providers.enrichment),
+  // not creditStatus's default getProviders().enrichment: the real ApolloEnrichmentProvider's
+  // creditUsage() memo is module-scoped either way, but the fake provider's fakeCreditUsage is a
+  // per-instance property, so a test priming *this* job's fake must have that instance actually
+  // consulted rather than a fresh, unrelated one.
+  const status = await creditStatus(ownerId, cfg, new Date(), deps.providers.enrichment);
   const { used, cap } = status;
   let remaining = status.remaining;
   if (remaining <= 0) {
-    await log("Enrichment skipped: Apollo monthly credit cap reached");
+    // Task 1 follow-up: when Apollo's own account balance (not the app's cap) is the binding
+    // constraint — i.e. it's already at/below 0 regardless of what the app cap allows — say so
+    // specifically; otherwise keep the existing app-cap wording. Both cases still throw the same
+    // CreditCapReachedError (the numbers it carries describe the app's own cap either way).
+    if (status.apollo && status.apollo.leftOver <= 0) {
+      await log("Enrichment skipped: Apollo account is out of credits");
+    } else {
+      await log("Enrichment skipped: Apollo monthly credit cap reached");
+    }
     throw new CreditCapReachedError(used, cap);
   }
   let added = 0;
@@ -117,6 +130,21 @@ export async function runEnrich(
     const { city, state } = regionFromAddress(b.formattedAddress);
     const metro = cfg.enrichment.metroLocation ?? null;
     const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state, metro }, maxPeople);
+    // Chain-headcount guard (Plan 9 Task 3): a domain with this many people in Apollo, at any
+    // location, is a national chain, not an SMB prospect — reads search.totalAtDomain (the
+    // *national* headcount from the cascade's unlocated first call), never search.totalFound
+    // (which can be a much smaller scoped count, e.g. just a franchise's local city/metro page).
+    // Costs no credit: this runs before the reveal loop below, and returns without touching
+    // lastEnrichedAt so a later manual override (the "Not an SMB" undo path) can still re-enrich.
+    if (domain && search.totalAtDomain !== null && search.totalAtDomain >= ENRICH_CONFIG.chainHeadcountMin) {
+      const reason = `chain:apollo_headcount:${search.totalAtDomain}`;
+      await prisma.business.update({
+        where: { id: businessId },
+        data: { exclusion: "enterprise", exclusionReasons: [...new Set([...b.exclusionReasons, reason])] },
+      });
+      await log(`Enrichment skipped: ${search.totalAtDomain} people at ${domain} in Apollo — not an SMB (marked as chain)`);
+      return { added: 0, updated: 0, skipped: "chain" as const };
+    }
     const people = search.people;
     // Named for the activity-message suffixes below only — search.totalFound/totalAtDomain (the
     // free headcount signals) are consumed by the Task 3 chain guard, not by anything in this

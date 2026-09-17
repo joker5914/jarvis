@@ -316,4 +316,39 @@ describe("runEnrich", () => {
       expect(log[0].message).toMatch(/ \(matched in Pearland, TX\)$/);
     });
   });
+
+  describe("chain-headcount guard (Task 3)", () => {
+    it("marks the business as an excluded chain and skips the reveal loop entirely when totalAtDomain meets the threshold", async () => {
+      const b = await biz({ name: "H&R Block", websiteUrl: "https://www.hrblock.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-hrblock.com-ceo", firstName: "Jamie", lastName: null, name: "Jamie", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "H&R Block" },
+      ], totalFound: 6579, totalAtDomain: 6579, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "chain" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.exclusion).toBe("enterprise");
+      expect(after.exclusionReasons).toEqual(["chain:apollo_headcount:6579"]);
+      expect(after.lastEnrichedAt).toBeNull();
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment skipped: 6579 people at hrblock.com in Apollo — not an SMB (marked as chain)");
+    });
+
+    it("proceeds normally when totalAtDomain is below the threshold (a franchise brand, not a chain)", async () => {
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Preschool Director", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 139, totalAtDomain: 139, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.skipped).toBeNull();
+      expect(d.enrichment.calls.enrich).toBe(1);
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.exclusion).toBe("none");
+    });
+  });
 });

@@ -76,6 +76,29 @@ describe("runEnrich: Apollo credit policy", () => {
     expect(status).toMatchObject({ used: 1, cap: 1, remaining: 0 });
   });
 
+  // Task 1 follow-up: when Apollo's own account balance is the binding constraint (already at/below
+  // 0, independent of what the app cap would otherwise allow), the activity row should say so
+  // specifically rather than blaming "the monthly credit cap" — which reads as an app-side setting
+  // the user could just raise, when actually Apollo itself has nothing left this cycle.
+  it("logs 'Apollo account is out of credits' (not the generic cap message) when Apollo's live balance is the binding constraint", async () => {
+    const fake = new FakeEnrichmentProvider();
+    fake.fakeCreditUsage = {
+      limit: 2510,
+      consumed: 2510,
+      leftOver: 0,
+      cycleStart: new Date("2026-09-01T00:00:00Z"),
+      cycleEnd: new Date("2026-10-01T00:00:00Z"),
+      fetchedAt: new Date(),
+    };
+    const b = await biz();
+    const d = deps(fake);
+    await expect(runEnrich(b.id, OWNER, d)).rejects.toBeInstanceOf(CreditCapReachedError);
+    expect(d.enrichment.calls).toEqual({ search: 0, enrich: 0, orgSearch: 0 });
+    const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+    expect(log).toHaveLength(1);
+    expect(log[0].message).toBe("Enrichment skipped: Apollo account is out of credits");
+  });
+
   it("stops mid-run when the cap is hit between people (people=2, cap=1) and still finishes the business", async () => {
     await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 1 } });
     const b = await biz();
