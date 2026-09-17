@@ -73,12 +73,19 @@ const PHONE_SCAN_RE = /(?:\+?1[\s.-]?)?\(?\b[2-9]\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{4
 // phone number). Trimmed to the part after the fragment when what's left is plausibly a real
 // local part (>= 2 chars, starts with a letter); otherwise the whole match is dropped.
 const GLUED_LOCAL_RE = /^(?:-?\d{3}-\d{4}|\d{5})([a-z].*)$/i;
+// Guards the trimmed remainder: stripping one leading fragment isn't enough when a second
+// fragment is glued further in (e.g. "77584phone832-295-3350emailamericanailspearland" strips
+// the zip but leaves "832-295-3350" — a phone number — embedded in what's left). Rather than
+// guess where inside the remainder the real local part starts, the whole candidate is dropped.
+const EMBEDDED_DIGIT_GLUE_RE = /\d{3}-\d{4}|\d{5,}/;
 
 function repairGluedLocal(local: string): string | null {
   const m = GLUED_LOCAL_RE.exec(local);
   if (!m) return local;
   const rest = m[1];
-  return rest.length >= 2 ? rest : null;
+  if (rest.length < 2) return null;
+  if (EMBEDDED_DIGIT_GLUE_RE.test(rest)) return null;
+  return rest;
 }
 
 export function pickCandidatePages(baseUrl: string, html: string, max = MAX_EXTRA_PAGES): string[] {

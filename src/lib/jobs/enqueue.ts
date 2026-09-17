@@ -107,7 +107,22 @@ export async function enqueueEnrich(businessId: string, ownerId: string, opts: {
   return id !== null;
 }
 
-export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: string): Promise<boolean> {
+const DEFAULT_WEBSITE_RECHECK_SINGLETON_KEY = "website-recheck";
+
+/**
+ * `singletonKey` defaults to the fixed `"website-recheck"` key the scanner tick (`tick.ts`)
+ * relies on: that queue is `policy: "exclusive"` (one job queued-or-active per key), which is
+ * exactly the dedupe the tick wants — it never passes `opts`, so it keeps the shared key.
+ * A caller that needs to queue more than one batch at a time (e.g. the cleanup script firing
+ * several batches back to back) must pass a unique `singletonKey` per batch, or every batch
+ * after the first will silently no-op (return `false`) under the shared key.
+ */
+export async function enqueueWebsiteRecheck(
+  businessIds: string[],
+  ownerId: string,
+  opts: { singletonKey?: string } = {},
+): Promise<boolean> {
+  const singletonKey = opts.singletonKey ?? DEFAULT_WEBSITE_RECHECK_SINGLETON_KEY;
   if (process.env.JOB_MODE === "inline") {
     // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc comment);
     // a pause is expected/normal here, not a bug, so it's logged quietly rather than as an error.
@@ -119,7 +134,7 @@ export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: stri
   }
   const boss = await getBoss();
   const data: WebsiteRecheckJobData = { businessIds, ownerId };
-  const id = await boss.send(QUEUES.websiteRecheck, data, { retryLimit: 1, retryDelay: 60, priority: SCANNER_PRIORITY, singletonKey: "website-recheck" });
+  const id = await boss.send(QUEUES.websiteRecheck, data, { retryLimit: 1, retryDelay: 60, priority: SCANNER_PRIORITY, singletonKey });
   return id !== null;
 }
 

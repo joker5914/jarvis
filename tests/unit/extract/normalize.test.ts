@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEmail, normalizePhone, classifySocialUrl, normalizeWebsiteUrl } from "@/lib/extract/normalize";
+import { normalizeEmail, normalizePhone, classifySocialUrl, normalizeWebsiteUrl, PLACEHOLDER_EMAIL_RE } from "@/lib/extract/normalize";
 
 describe("normalizeEmail", () => {
   it("lowercases and strips mailto and query", () => {
@@ -33,8 +33,28 @@ describe("normalizeEmail", () => {
     // normalizeEmail only validates syntax + TLD plausibility + placeholder status; a glued local
     // part like "77581info@eatportara.com" is syntactically a valid email, so normalizeEmail
     // accepts it as-is. The scanner (website.ts) is responsible for trimming the fragment before
-    // this function ever sees it, and the cleanup script flags it separately via GLUED_LOCAL.
+    // this function ever sees it, and the cleanup script flags it separately via isGluedEmail.
     expect(normalizeEmail("77581info@eatportara.com")).toBe("77581info@eatportara.com");
+  });
+
+  // Fix round (item 4): "realtor" is a real gTLD and common for small-business realtors.
+  it("accepts the .realtor gTLD", () => {
+    expect(normalizeEmail("jane@smith.realtor")).toBe("jane@smith.realtor");
+  });
+});
+
+describe("PLACEHOLDER_EMAIL_RE", () => {
+  // Fix round (item 5a): the placeholder-domain match must be precise about the domain
+  // boundary — "mysitecleaners.com" merely starts with the letters of "mysite" but is not the
+  // placeholder domain "mysite.com" or a subdomain of it, so it must NOT match.
+  it("does not match a domain that only shares a substring with a placeholder domain", () => {
+    expect(PLACEHOLDER_EMAIL_RE.test("info@mysitecleaners.com")).toBe(false);
+    expect(normalizeEmail("info@mysitecleaners.com")).toBe("info@mysitecleaners.com");
+  });
+
+  it("matches the actual placeholder domain", () => {
+    expect(PLACEHOLDER_EMAIL_RE.test("info@mysite.com")).toBe(true);
+    expect(normalizeEmail("info@mysite.com")).toBeNull();
   });
 });
 

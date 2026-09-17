@@ -18,7 +18,7 @@ export const KNOWN_TLDS = new Set(
     "repair services solutions group llc inc ltd health care vet pet dog kids school academy church farm " +
     "garden florist boutique fashion hair beauty spa nails tattoo ink art gallery music events wedding " +
     "photo media news blog live life world city agency company center email cloud digital global network " +
-    "systems software team tools works zone club fun games plus one today now best top new " +
+    "systems software team tools works zone club fun games plus one today now best top new realtor " +
     // ".test" is IANA/RFC 2606 reserved for testing and can never be a real business's TLD; it's
     // included so the existing test-fixture convention (e.g. "*.fake.test" in
     // src/lib/providers/fake.ts and tests/db/*.test.ts) keeps validating as before.

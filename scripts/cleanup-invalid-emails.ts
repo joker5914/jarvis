@@ -11,10 +11,9 @@
 // recover the real address.
 import { prisma } from "@/lib/db";
 import { normalizeEmail } from "@/lib/extract/normalize";
+import { isGluedEmail } from "@/lib/extract/junk";
 
 const apply = process.argv.includes("--apply");
-
-const GLUED_LOCAL = /^(-?\d{3}-\d{4}|\d{5})[a-z]/i;
 
 async function main() {
   const rows = await prisma.contact.findMany({
@@ -22,7 +21,7 @@ async function main() {
     select: { id: true, value: true, businessId: true, ownerId: true },
   });
 
-  const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value || GLUED_LOCAL.test(r.value.split("@")[0]));
+  const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value || isGluedEmail(r.value));
 
   console.log(`${bad.length} of ${rows.length} email contacts are junk`);
   for (const r of bad.slice(0, 30)) console.log("  ", r.value);
@@ -39,12 +38,25 @@ async function main() {
     const { recomputeContactQuality } = await import("@/lib/jobs/zipSearch");
     const { enqueueWebsiteRecheck } = await import("@/lib/jobs/enqueue");
 
+    // enqueueWebsiteRecheck's queue policy is "exclusive" (one job queued-or-active per
+    // singletonKey); its default key is the fixed "website-recheck" string the scanner tick
+    // relies on. Calling it more than once with that default key means every call after the
+    // first silently no-ops (boss.send returns null -> false), so each batch here gets its own
+    // unique key instead — the tick's call sites are untouched and keep the shared default.
+    const runTimestamp = new Date().toISOString();
     for (const [ownerId, ids] of byOwner) {
       for (const id of ids) await recomputeContactQuality(id);
       // Re-scrape with the fixed extractor so the real addresses come back (batches of 25, like the Scanner).
       const list = [...ids];
-      for (let i = 0; i < list.length; i += 25) await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId);
-      console.log(`owner ${ownerId}: re-scored ${ids.size} businesses, queued ${Math.ceil(list.length / 25)} re-check batches`);
+      const batches = Math.ceil(list.length / 25);
+      let queued = 0;
+      for (let i = 0, batchIndex = 0; i < list.length; i += 25, batchIndex++) {
+        const singletonKey = `website-recheck:cleanup:${runTimestamp}:${batchIndex}`;
+        const ok = await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId, { singletonKey });
+        if (ok) queued++;
+        else console.warn(`  owner ${ownerId}: batch ${batchIndex} (${singletonKey}) was NOT queued (boss.send returned null)`);
+      }
+      console.log(`owner ${ownerId}: re-scored ${ids.size} businesses, queued ${queued}/${batches} re-check batches`);
     }
 
     console.log(`deleted ${bad.length}`);
