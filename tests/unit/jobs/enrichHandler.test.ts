@@ -8,10 +8,10 @@ const data = { businessId: "b1", ownerId: "o1" };
 
 describe("handleEnrichJob", () => {
   it("returns done on success", async () => {
-    expect(await handleEnrichJob(data, deps, async () => ({ added: 1, updated: 0, skipped: null }))).toBe("done");
+    expect(await handleEnrichJob(data, deps, async () => ({ added: 1, updated: 0, skipped: null }))).toEqual({ result: "done" });
   });
-  it.each([new BudgetExhaustedError("apollo"), new ProviderNotConfiguredError("apollo"), new ProviderDisabledError("apollo")])("swallows %s as skipped", async (err) => {
-    expect(await handleEnrichJob(data, deps, async () => { throw err; })).toBe("skipped");
+  it.each([new BudgetExhaustedError("apollo"), new ProviderNotConfiguredError("apollo"), new ProviderDisabledError("apollo")])("swallows %s as skipped, with its message as the reason", async (err) => {
+    expect(await handleEnrichJob(data, deps, async () => { throw err; })).toEqual({ result: "skipped", reason: err.message });
   });
   it("rethrows other errors so pg-boss retries", async () => {
     await expect(handleEnrichJob(data, deps, async () => { throw new Error("network"); })).rejects.toThrow("network");

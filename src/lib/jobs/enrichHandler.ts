@@ -13,14 +13,16 @@ import { ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/provide
  * are swallowed and reported as "skipped" rather than rethrown, keeping pg-boss from retrying
  * into a duplicate activity row. Any other error propagates to pg-boss's retry policy.
  */
-export async function handleEnrichJob(data: EnrichJobData, deps: JobDeps, run: typeof runEnrich = runEnrich): Promise<"done" | "skipped"> {
+export type EnrichJobResult = { result: "done" | "skipped"; reason?: string };
+
+export async function handleEnrichJob(data: EnrichJobData, deps: JobDeps, run: typeof runEnrich = runEnrich): Promise<EnrichJobResult> {
   const { businessId, ownerId, force } = data;
   try {
     await run(businessId, ownerId, deps, { force });
-    return "done";
+    return { result: "done" };
   } catch (e) {
     if (e instanceof BudgetExhaustedError || e instanceof ProviderNotConfiguredError || e instanceof ProviderDisabledError) {
-      return "skipped";
+      return { result: "skipped", reason: e.message };
     }
     throw e;
   }

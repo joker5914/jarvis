@@ -87,7 +87,11 @@ async function main() {
 
   await boss.work<EnrichJobData>(QUEUES.enrich, { batchSize: 1 }, async ([job]) => {
     const r = await handleEnrichJob(job.data, { providers: getProviders(), log: console.log, signal: job.signal });
-    console.log(`[enrich] ${r} ${job.data.businessId}`);
+    if (r.result === "skipped") {
+      console.log(`[enrich] skipped ${job.data.businessId}: ${r.reason}`);
+    } else {
+      console.log(`[enrich] done ${job.data.businessId}`);
+    }
   });
 
   await boss.work<ScannerTickJobData>(QUEUES.scannerTick, { batchSize: 1 }, async () => {
