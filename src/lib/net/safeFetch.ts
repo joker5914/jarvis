@@ -192,3 +192,24 @@ export async function readCapped(res: Response, maxBytes: number): Promise<strin
   if (!finished) await reader.cancel().catch(() => {});
   return Buffer.concat(chunks).toString("utf8");
 }
+
+/**
+ * Release a response body the caller will never read. Drains a bounded amount (so undici's
+ * parser reaches EOF unpaused on Connection: close responses — see readCapped) and cancels
+ * only what remains. Fire-and-forget; never throws.
+ */
+export async function discardBody(res: Response): Promise<void> {
+  if (!res.body) return;
+  try {
+    const reader = res.body.getReader();
+    let drained = 0;
+    while (drained < DRAIN_AFTER_CAP_BYTES) {
+      const { done, value } = await reader.read();
+      if (done || !value) return;
+      drained += value.length;
+    }
+    await reader.cancel().catch(() => {});
+  } catch {
+    // already locked/cancelled — nothing to release
+  }
+}

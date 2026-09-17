@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { safeFetch, readCapped, pinnedDispatcher, type PinnedDispatcher } from "@/lib/net/safeFetch";
+import { safeFetch, readCapped, discardBody, pinnedDispatcher, type PinnedDispatcher } from "@/lib/net/safeFetch";
 import { UnsafeUrlError } from "@/lib/net/ssrf";
 
 const pub = async () => ["93.184.216.34"];
@@ -134,5 +134,21 @@ describe("safeFetch", () => {
     const d = pinnedDispatcher("example.com", ["93.184.216.34"]);
     expect(d.options).toEqual({ keepAliveTimeout: 1, keepAliveMaxTimeout: 1, connections: 1, pipelining: 0 });
     await d.close();
+  });
+});
+
+describe("discardBody", () => {
+  it("drains a small body to completion without cancelling", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(1024)); c.close(); }, cancel() { cancelled = true; } });
+    await discardBody(new Response(body));
+    expect(cancelled).toBe(false);
+  });
+  it("cancels an oversized body once the drain bound is reached", async () => {
+    let cancelled = false;
+    let pushed = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(c) { if (pushed < 64) { c.enqueue(new Uint8Array(256 * 1024)); pushed++; } else { c.close(); } }, cancel() { cancelled = true; } });
+    await discardBody(new Response(body));
+    expect(cancelled).toBe(true);
   });
 });

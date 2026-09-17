@@ -11,7 +11,7 @@ import { normalizePhone } from "@/lib/extract/normalize";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness } from "@/lib/providers/types";
 import { DISCOVERY_CONFIG } from "@/lib/config/discovery";
-import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, upsertIgnoringConflict, type JobDeps } from "./shared";
+import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, upsertIgnoringConflict, withTimeout, type JobDeps } from "./shared";
 
 /**
  * `signal` is aborted when pg-boss expires or cancels the underlying job (e.g. the job
@@ -22,6 +22,8 @@ import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, 
 export type ZipSearchDeps = JobDeps;
 export { JobPausedError, normalizeName };
 
+/** Upper bound for one business's website extraction (home page + candidate pages). */
+const SCRAPE_HARD_TIMEOUT_MS = 90_000;
 const SCRAPE_CONCURRENCY = 4;
 
 type Progress = { step: string; current?: number; total?: number; message?: string; doneSteps: string[] };
@@ -256,7 +258,14 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
 export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b?.websiteUrl) return;
-  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) });
+  // Hard ceiling per site: a single hung socket (seen live — an undici parser assertion left a
+  // request that never settled, stalling a 487-site batch at 486) must never block the batch.
+  // JobPausedError is rethrown untouched by the wrapper (Promise.race passes it through).
+  const r = await withTimeout(
+    extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) }),
+    SCRAPE_HARD_TIMEOUT_MS,
+    `scrape ${b.websiteUrl}`,
+  );
   await prisma.business.update({
     where: { id: businessId },
     data: {

@@ -1,6 +1,6 @@
 import { promises as dns } from "node:dns";
 import { REQUEST_TIMEOUT_MS, USER_AGENT } from "@/lib/extract/website";
-import { safeFetch } from "@/lib/net/safeFetch";
+import { safeFetch, discardBody } from "@/lib/net/safeFetch";
 import { UnsafeUrlError } from "@/lib/net/ssrf";
 import type { ValidationProvider } from "./types";
 
@@ -14,7 +14,7 @@ export class BuiltinValidationProvider implements ValidationProvider {
       // Neither the HEAD response nor the GET fallback's body is ever read here — only the
       // status is checked — so release it explicitly rather than leaving it for the pinned
       // Agent's backstop timer.
-      void res.body?.cancel().catch(() => {});
+      void discardBody(res);
       return res.ok ? { reachable: true } : { reachable: false, error: `HTTP ${res.status}` };
     } catch (e) {
       const err = e as Error;

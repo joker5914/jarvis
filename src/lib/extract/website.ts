@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
 import { detectProvider } from "@/lib/scoring/providerDetect";
-import { safeFetch, readCapped } from "@/lib/net/safeFetch";
+import { safeFetch, readCapped, discardBody } from "@/lib/net/safeFetch";
 import { UnsafeUrlError } from "@/lib/net/ssrf";
 import {
   classifySocialUrl,
@@ -29,12 +29,12 @@ export const defaultFetcher: PageFetcher = async (url) => {
       { timeoutMs: REQUEST_TIMEOUT_MS },
     );
     if (!res.ok) {
-      void res.body?.cancel().catch(() => {});
+      void discardBody(res);
       return { ok: false, status: res.status, error: `HTTP ${res.status}` };
     }
     const ct = res.headers.get("content-type") ?? "";
     if (!/text\/html|application\/xhtml/i.test(ct)) {
-      void res.body?.cancel().catch(() => {});
+      void discardBody(res);
       return { ok: true, status: res.status, html: "", finalUrl: res.url };
     }
     const html = await readCapped(res, MAX_HTML_BYTES);
