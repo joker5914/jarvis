@@ -115,12 +115,23 @@ export async function runEnrich(
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
     const { city, state } = regionFromAddress(b.formattedAddress);
-    const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state }, maxPeople);
+    const metro = cfg.enrichment.metroLocation ?? null;
+    const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state, metro }, maxPeople);
     const people = search.people;
-    // Named for the activity-message suffixes below only — search.totalFound (the free headcount
-    // signal) is consumed by the Task 3 chain guard, not by anything in this function.
+    // Named for the activity-message suffixes below only — search.totalFound/totalAtDomain (the
+    // free headcount signals) are consumed by the Task 3 chain guard, not by anything in this
+    // function. Guarded per-branch (city && state, metro non-null, state) so a scope the query
+    // couldn't actually have matched in (a malformed/partial result) never renders as
+    // "(matched in null, null)" — by construction searchPeople only ever sets a scope when the
+    // corresponding location input was present, but this stays defensive rather than trusting that.
     const scopeSuffix =
-      search.scope === "city" ? ` (matched in ${city}, ${state})` : search.scope === "state" ? ` (matched in ${stateNameFor(state)})` : "";
+      search.scope === "city" && city && state
+        ? ` (matched in ${city}, ${state})`
+        : search.scope === "metro" && metro
+          ? ` (matched in ${metro})`
+          : search.scope === "state" && state
+            ? ` (matched in ${stateNameFor(state)})`
+            : "";
     // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
     // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
     // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked

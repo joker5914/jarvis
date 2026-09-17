@@ -39,6 +39,9 @@ export type EnrichmentConfig = {
   maxPeople: number;
   monthlyCreditCap: number;
   cycleRenewsOn: string | null;
+  /** Operator-typed metro area (e.g. "Houston, Texas"), used by the location cascade's metro
+   * scope when the lead's own city scope is empty or skipped. Not prefilled; null by default. */
+  metroLocation: string | null;
 };
 
 export type CreditStatus = {

@@ -143,8 +143,10 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
     // Deterministic scope mirroring the real cascade's contract: "city" when both a city and a
     // state were given (real Apollo would try the city scope first), "any" otherwise — see
     // ApolloEnrichmentProvider.searchPeople for the actual location-cascade behavior this stands
-    // in for in fake mode.
-    return { people, totalFound: people.length, scope: q.city && q.state ? "city" : "any" };
+    // in for in fake mode. totalAtDomain mirrors totalFound here (the fake has no separate
+    // national-vs-scoped count to simulate); tests that want a specific totalAtDomain (Task 3's
+    // chain-headcount guard) override searchPeople directly, the same way other tests already do.
+    return { people, totalFound: people.length, totalAtDomain: people.length, scope: q.city && q.state ? "city" : "any" };
   }
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
     this.calls.enrich++;

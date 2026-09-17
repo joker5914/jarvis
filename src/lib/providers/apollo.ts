@@ -305,15 +305,28 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
   }
 
   /**
-   * Local-first location cascade (Plan 9 Task 2): tries the lead's city, then its state, then no
-   * location filter at all, stopping at the first scope that returns any candidates — so a
-   * franchise-brand domain (e.g. kidsrkids.com) surfaces the local owner/director instead of the
-   * head office a plain domain search would return. Each attempt is one `withBudget("apollo", …)`
-   * call (People Search itself costs no Apollo credits, only counts toward the app's own daily
-   * call budget), so the cascade costs at most 3 budget units. `person_locations[]` takes natural
-   * place names ("Pearland, Texas", "Texas, United States"), verified live 2026-09-17 — see
-   * stateNameFor. When `q.city` is set but `q.state` isn't, the city scope is skipped: a bare city
-   * name is ambiguous (there are many Pearlands) without a state to disambiguate it.
+   * Unlocated-first location cascade (Plan 9 Task 2, restructured in the fix round after live
+   * testing): the first call is always unfiltered by location (`scope: "any"`), a full page
+   * (searchPageSize). Its `total_entries` is `totalAtDomain` — a free national headcount that
+   * both short-circuits the common case and feeds the Task 3 chain guard. When
+   * `totalAtDomain <= searchPageSize`, every person at the org is already in that one page (a
+   * single-location SMB), so this returns immediately: one call, no cascade. Otherwise (a
+   * multi-location org, or a franchise brand whose head office would otherwise win) it cascades
+   * city → metro → state, stopping at the first scope with any candidates, so a franchise-brand
+   * domain (e.g. kidsrkids.com) surfaces the local owner/director instead of the head office.
+   * When every located scope comes back empty, falls back to the already-fetched unlocated page.
+   * `totalAtDomain` is carried through every returned result unchanged once known; it is null only
+   * when no usable total could be determined at all (no org match on the fallback branch, or a
+   * non-200/422 on the very first call — in which case there is no cascade either, since a total
+   * this function can't trust isn't a total it can compare against searchPageSize).
+   *
+   * Each attempt is one `withBudget("apollo", …)` call (People Search itself costs no Apollo
+   * credits, only counts toward the app's own daily call budget), so the cascade costs at most 4
+   * budget units (any + city + metro + state). `person_locations[]` takes natural place names
+   * ("Pearland, Texas", "Texas, United States"), verified live 2026-09-17 — see stateNameFor; the
+   * metro scope passes `q.metro` verbatim (an operator-typed Settings value, e.g. "Houston,
+   * Texas"). When `q.city` is set but `q.state` isn't, the city scope is skipped: a bare city name
+   * is ambiguous (there are many Pearlands) without a state to disambiguate it.
    *
    * `max` is accepted for interface stability (a future/other provider may use it to bound its
    * own request page size) but unused here: each attempt always fetches a full page
@@ -337,21 +350,19 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       filter = { q_organization_domains_list: [q.domain] };
     } else {
       const org = await this.searchOrganization(q.orgName, q.city);
-      if (!org) return { people: [], totalFound: 0, scope: "any" };
+      if (!org) return { people: [], totalFound: 0, totalAtDomain: null, scope: "any" };
       filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] };
     }
-    const stateName = stateNameFor(q.state);
-    const scopes: { scope: PeopleSearchScope; loc?: string }[] = [];
-    if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
-    if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
-    scopes.push({ scope: "any" });
-    let last: PeopleSearchResult = { people: [], totalFound: 0, scope: "any" };
-    for (const s of scopes) {
+
+    // `knownTotalAtDomain` is null only for the very first (unlocated) call, which is the one
+    // that establishes it; every later cascade call already knows it (carried through from that
+    // first call) and just reports it back unchanged on its own result.
+    const fetchScope = async (scope: PeopleSearchScope, loc: string | null, knownTotalAtDomain: number | null): Promise<PeopleSearchResult> => {
       const r = await withBudget("apollo", () =>
         post<{ people?: SearchPerson[]; total_entries?: number }>(key, PEOPLE_SEARCH_PATH, {
           ...base,
           ...filter,
-          ...(s.loc ? { person_locations: [s.loc] } : {}),
+          ...(loc ? { person_locations: [loc] } : {}),
         }),
       );
       const people = rank((r.data?.people ?? []).map<EnrichPerson>((p) => ({
@@ -366,10 +377,30 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
         hasEmail: !!p.has_email,
         orgName: p.organization?.name ?? null,
       })));
-      last = { people, totalFound: r.data?.total_entries ?? people.length, scope: s.scope };
-      if (people.length > 0) return last;
+      const totalEntries = r.data?.total_entries;
+      return {
+        people,
+        totalFound: totalEntries ?? people.length,
+        totalAtDomain: knownTotalAtDomain ?? totalEntries ?? null,
+        scope,
+      };
+    };
+
+    const any = await fetchScope("any", null, null);
+    if (any.totalAtDomain !== null && any.totalAtDomain <= ENRICH_CONFIG.searchPageSize) return any; // single-location SMB: everyone's already in hand
+    if (any.totalAtDomain === null) return any; // 422/non-200 on the first call: no total to cascade against
+
+    const stateName = stateNameFor(q.state);
+    const scopes: { scope: PeopleSearchScope; loc: string }[] = [];
+    if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
+    if (q.metro) scopes.push({ scope: "metro", loc: q.metro });
+    if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
+
+    for (const s of scopes) {
+      const r = await fetchScope(s.scope, s.loc, any.totalAtDomain);
+      if (r.people.length > 0) return r;
     }
-    return last;
+    return any;
   }
 
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {

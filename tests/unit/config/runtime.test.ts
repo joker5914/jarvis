@@ -10,7 +10,7 @@ describe("mergeConfig", () => {
     expect(c.exclusion.chains).toEqual(DEFAULT_EXCLUSION_CONFIG.chains);
     expect(c.exclusion.entityPatterns).toBe(DEFAULT_EXCLUSION_CONFIG.entityPatterns);
     expect(c.projects).toEqual({ highFitThreshold: 60, mediumFitThreshold: 30, backfillMonths: 12 });
-    expect(c.enrichment).toEqual({ maxPeople: 1, monthlyCreditCap: 80, cycleRenewsOn: null });
+    expect(c.enrichment).toEqual({ maxPeople: 1, monthlyCreditCap: 80, cycleRenewsOn: null, metroLocation: null });
   });
   it("replaces list fields wholesale, keeps entityPatterns, applies category disable and package override", () => {
     const c = mergeConfig({ exclusion: { chains: ["bella"] }, categories: { disabled: ["bar"], packageOverrides: { cafe: "internet_mobile" } }, projects: { highFitThreshold: 70 } });
@@ -49,5 +49,14 @@ describe("overridesSchema", () => {
     const ok = overridesSchema.parse({ enrichment: { monthlyCreditCap: 5000 } });
     expect(ok.enrichment?.monthlyCreditCap).toBe(5000);
     expect(() => overridesSchema.parse({ enrichment: { monthlyCreditCap: 5001 } })).toThrow();
+  });
+  it("accepts a metro area string, defaults to null via mergeConfig, and rejects out-of-range lengths", () => {
+    const ok = overridesSchema.parse({ enrichment: { metroLocation: "Houston, Texas" } });
+    expect(ok.enrichment?.metroLocation).toBe("Houston, Texas");
+    expect(mergeConfig({}).enrichment.metroLocation).toBeNull();
+    expect(mergeConfig(ok).enrichment.metroLocation).toBe("Houston, Texas");
+    expect(() => overridesSchema.parse({ enrichment: { metroLocation: "TX" } })).toThrow(); // shorter than min(3)
+    expect(() => overridesSchema.parse({ enrichment: { metroLocation: "x".repeat(81) } })).toThrow(); // longer than max(80)
+    expect(overridesSchema.parse({ enrichment: { metroLocation: null } }).enrichment?.metroLocation).toBeNull();
   });
 });

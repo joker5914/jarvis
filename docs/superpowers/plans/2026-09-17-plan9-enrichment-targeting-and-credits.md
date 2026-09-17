@@ -4,7 +4,7 @@
 
 **Goal:** Spend Apollo credits on the right person (local decision-makers, never a chain's head office), show the real Apollo credit balance in Settings, and close the last flaky test.
 
-**Architecture:** Apollo People Search costs no credits, so it becomes the workhorse: a location cascade (city → state → anywhere) finds the local owner for franchise-brand domains, and the same search's `total_entries` is a free headcount signal that flags national chains before a credit is spent. Credit accounting keeps the app's own per-cycle cap (what this app has spent) and adds Apollo's live balance and cycle dates from `usage_stats/credit_usage_stats`. `searchPeople` grows from a bare array to a result object carrying `totalFound` and the `scope` that matched, which both new features consume.
+**Architecture:** Apollo People Search costs no credits, so it becomes the workhorse: an unlocated-first call establishes the org's national headcount and short-circuits for a single-location SMB, then a location cascade (city → metro → state) finds the local owner for multi-location/franchise-brand domains; the same search's `total_entries` is also a free headcount signal that flags national chains before a credit is spent. Credit accounting keeps the app's own per-cycle cap (what this app has spent) and adds Apollo's live balance and cycle dates from `usage_stats/credit_usage_stats`. `searchPeople` grows from a bare array to a result object carrying `totalFound`, `totalAtDomain`, and the `scope` that matched, which both new features consume.
 
 **Tech Stack:** Next.js 15.5 (App Router), React 19, Prisma 6.19 / Postgres 16, pg-boss 12, zod 4, Vitest 5, shadcn Base UI. Node 22.22.3 via nvm.
 
@@ -219,12 +219,13 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
 
 **Why:** verified 2026-09-17 with zero-credit probes: `person_locations[]` takes `"City, State"` with the full state name. `kidsrkids.com`: 139 people nationally, 0 in "Pearland, Texas", 20 in "Houston, Texas" (a local Preschool Director), 64 in "Texas, United States". `hrblock.com`: 6,579 nationally, 1 in Pearland (Assistant Manager). Without the filter, a franchise-brand domain returns the head office.
 
-**Interfaces:**
+**Interfaces (as shipped — restructured in a fix round after live testing found the original city→state→any-first order wasteful for the common single-location SMB and short of a metro fallback; see the fix-round note below):**
 - Produces:
   ```ts
-  export type PeopleSearchQuery = { domain: string | null; orgName: string; city: string | null; state: string | null }; // state = 2-letter USPS code or null
-  export type PeopleSearchScope = "city" | "state" | "any";
-  export type PeopleSearchResult = { people: EnrichPerson[]; totalFound: number; scope: PeopleSearchScope };
+  // metro = operator-typed Settings value (RuntimeConfig.enrichment.metroLocation), passed verbatim as person_locations[]
+  export type PeopleSearchQuery = { domain: string | null; orgName: string; city: string | null; state: string | null; metro: string | null }; // state = 2-letter USPS code or null
+  export type PeopleSearchScope = "city" | "metro" | "state" | "any";
+  export type PeopleSearchResult = { people: EnrichPerson[]; totalFound: number; totalAtDomain: number | null; scope: PeopleSearchScope };
   searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult>;
   // src/lib/geo/usStates.ts
   export const US_STATE_NAMES: Readonly<Record<string, string>>; // "TX" → "Texas", all 50 + DC
@@ -232,7 +233,10 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
   // src/lib/jobs/enrich.ts
   export function regionFromAddress(addr: string | null): { city: string | null; state: string | null }; // supersedes cityFromAddress (keep it as a thin wrapper)
   ```
-- `totalFound` = Apollo's `total_entries` for the scope that matched (or for the last attempted scope when everything was empty).
+- `totalFound` = Apollo's `total_entries` for the scope that matched (or for the unlocated "any" page returned as the fallback when every located scope was empty).
+- `totalAtDomain` = Apollo's `total_entries` for the *unlocated* first call specifically — the org's national headcount, independent of which scope ultimately matched; carried unchanged onto every later result. Null only when no usable total could be determined at all (org-fallback found no org — no call ever made — or the unlocated call itself returned a non-200/422). This is what Task 3's chain guard reads, **not** `totalFound`.
+
+**Algorithm as shipped:** the first call is always unlocated (`scope: "any"`, full `searchPageSize` page) — that call's `total_entries` becomes `totalAtDomain`. If `totalAtDomain <= ENRICH_CONFIG.searchPageSize`, every person at the org is already in that one page (a single-location SMB): return immediately, one call total. If `totalAtDomain` is null (422/non-200 on that first call), also return immediately — there is no total worth cascading against. Otherwise cascade `city → metro → state` (each conditionally included: city only when both a city and a resolved state name exist, metro only when `q.metro` is configured, state only when a state resolves), stopping at the first scope with any candidates; if every located scope comes back empty, fall back to the already-fetched unlocated page (`scope: "any"`). Each attempt is one `withBudget("apollo", …)` call; the cascade costs at most 4 (any + city + metro + state) — up from the pre-fix-round cascade's 3, but the common case (a single-location SMB) now costs exactly 1 instead of up to 3.
 
 - [x] **Step 1: Failing tests**
 
@@ -240,15 +244,16 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
 
 `tests/unit/jobs/enrichHelpers.test.ts`: `regionFromAddress("1820 Pearland Pkwy, Pearland, TX 77581, USA")` → `{ city: "Pearland", state: "TX" }`; without the country suffix; `("Somewhere")` → `{ city: null, state: null }`; `cityFromAddress` still returns the city.
 
-`tests/unit/providers/apollo.test.ts`:
-- cascade: fetch mock returns `total_entries: 0` for the first call and 3 people for the second; `searchPeople({ domain: "kidsrkids.com", orgName: "Kids R Kids", city: "Pearland", state: "TX" }, 1)` → two calls; the first has `person_locations[]=Pearland, Texas`, the second `person_locations[]=Texas, United States`; result `scope: "state"`, `totalFound: 3`.
-- three empties → third call has no `person_locations[]`, `scope: "any"`, `totalFound: 0`, `people: []`.
-- first call non-empty → one call, `scope: "city"`.
-- no city/state → a single unfiltered call, `scope: "any"`.
-- org-search fallback branch (domain null) unchanged apart from the result object (`scope: "any"`).
+`tests/unit/providers/apollo.test.ts` (fix-round shape — see the algorithm above):
+- small org: `total_entries: 3` on the unlocated call → exactly 1 fetch, `scope: "any"`, `totalAtDomain: 3`.
+- large org: unlocated → 139, city → 0, metro → 20 (non-empty) → 3 fetches, `scope: "metro"`, `totalFound: 20`, `totalAtDomain: 139`; `person_locations[]` values are none, then `"Pearland, Texas"`, then the metro string verbatim.
+- large org, every located scope empty → falls back to the unlocated page, `scope: "any"`, 4 fetches (any + city + metro + state).
+- no metro configured → the metro call is skipped (3 fetches max: any + city + state).
+- a 422 on the unlocated call → `{ people: [], totalFound: 0, totalAtDomain: null, scope: "any" }`, exactly 1 fetch (no cascade on an error); other HTTP errors still throw.
+- org-search fallback branch (domain null) unchanged apart from the result object, and asserted for `scope`/`totalAtDomain` too (reviewer nit).
 - People Search response fields are still mapped as before (`orgName`, `hasEmail`, ranking).
 
-`tests/db/enrich.test.ts`: update every `fake.searchPeople = async () => [...]` to return `{ people, totalFound: people.length, scope: "any" }`; add one case where the fake returns `scope: "city"` and assert the success message ends with ` (matched in Pearland, TX)`.
+`tests/db/enrich.test.ts`: update every `fake.searchPeople = async () => [...]` to return `{ people, totalFound: people.length, totalAtDomain: people.length, scope: "any" }`; add one case where the fake returns `scope: "city"` and assert the success message ends with ` (matched in Pearland, TX)`.
 
 - [x] **Step 2: Run, expect failures.**
 
@@ -258,7 +263,7 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
 
 `src/lib/jobs/enrich.ts`: `regionFromAddress` parses the `"City, ST 12345"` part the way `cityFromAddress` does and extracts the 2-letter code with `/^([A-Z]{2})\b/` from the state-zip segment; `cityFromAddress(addr)` = `regionFromAddress(addr).city`.
 
-`src/lib/providers/apollo.ts` `searchPeople`:
+`src/lib/providers/apollo.ts` `searchPeople` (fix-round shape — unlocated first, short-circuit for small orgs, then city → metro → state):
 ```ts
 async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
   await checkPlanBlocked(PEOPLE_SEARCH_PATH);
@@ -266,32 +271,43 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
   const base = { person_titles: [...ENRICH_CONFIG.preferredTitles], include_similar_titles: true, person_seniorities: [...ENRICH_CONFIG.seniorities], per_page: ENRICH_CONFIG.searchPageSize, page: 1 };
   let filter: Record<string, string | string[]>;
   if (q.domain) filter = { q_organization_domains_list: [q.domain] };
-  else { const org = await this.searchOrganization(q.orgName, q.city); if (!org) return { people: [], totalFound: 0, scope: "any" }; filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] }; }
-  const stateName = stateNameFor(q.state);
-  const scopes: { scope: PeopleSearchScope; loc?: string }[] = [];
-  if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
-  if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
-  scopes.push({ scope: "any" });
-  let last: PeopleSearchResult = { people: [], totalFound: 0, scope: "any" };
-  for (const s of scopes) {
-    const r = await withBudget("apollo", () => post<{ people?: SearchPerson[]; total_entries?: number }>(key, PEOPLE_SEARCH_PATH, { ...base, ...filter, ...(s.loc ? { person_locations: [s.loc] } : {}) }));
+  else { const org = await this.searchOrganization(q.orgName, q.city); if (!org) return { people: [], totalFound: 0, totalAtDomain: null, scope: "any" }; filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] }; }
+
+  const fetchScope = async (scope: PeopleSearchScope, loc: string | null, knownTotalAtDomain: number | null): Promise<PeopleSearchResult> => {
+    const r = await withBudget("apollo", () => post<{ people?: SearchPerson[]; total_entries?: number }>(key, PEOPLE_SEARCH_PATH, { ...base, ...filter, ...(loc ? { person_locations: [loc] } : {}) }));
     const people = rank((r.data?.people ?? []).map(toEnrichPerson));
-    last = { people, totalFound: r.data?.total_entries ?? people.length, scope: s.scope };
-    if (people.length > 0) return last;
+    const totalEntries = r.data?.total_entries;
+    return { people, totalFound: totalEntries ?? people.length, totalAtDomain: knownTotalAtDomain ?? totalEntries ?? null, scope };
+  };
+
+  const any = await fetchScope("any", null, null);
+  if (any.totalAtDomain !== null && any.totalAtDomain <= ENRICH_CONFIG.searchPageSize) return any; // single-location SMB: everyone's already in hand
+  if (any.totalAtDomain === null) return any; // 422/non-200 on the first call: no total to cascade against
+
+  const stateName = stateNameFor(q.state);
+  const scopes: { scope: PeopleSearchScope; loc: string }[] = [];
+  if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
+  if (q.metro) scopes.push({ scope: "metro", loc: q.metro });
+  if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
+  for (const s of scopes) {
+    const r = await fetchScope(s.scope, s.loc, any.totalAtDomain);
+    if (r.people.length > 0) return r;
   }
-  return last;
+  return any;
 }
 ```
-`rank` is the existing titleRank/hasEmail sort extracted into a function. Each scope attempt is one budget unit (People Search is free of credits but counts toward the daily call budget; the cascade costs at most 3).
+`rank` is the existing titleRank/hasEmail sort extracted into a function.
 
-`src/lib/providers/fake.ts`: returns `{ people: [...same two...], totalFound: 2, scope: q.city && q.state ? "city" : "any" }`.
+`src/lib/providers/fake.ts`: returns `{ people: [...same two...], totalFound: people.length, totalAtDomain: people.length, scope: q.city && q.state ? "city" : "any" }`.
 
-`src/lib/jobs/enrich.ts` `runEnrich`: `const { city, state } = regionFromAddress(b.formattedAddress); const search = await …searchPeople({ domain, orgName: b.name, city, state }, maxPeople); const people = search.people;`. Keep `found = people.length` and the Task 7 "checked" logic exactly as they are (they describe the page we examined). Append a scope suffix to the success and none-had-email messages only: ` (matched in ${city}, ${state})` when `search.scope === "city"`, ` (matched in ${stateNameFor(state)})` when `"state"`, nothing when `"any"`. `search.totalFound` is consumed by Task 3, not by any message here.
+`src/lib/jobs/enrich.ts` `runEnrich`: `const { city, state } = regionFromAddress(b.formattedAddress); const metro = cfg.enrichment.metroLocation ?? null; const search = await …searchPeople({ domain, orgName: b.name, city, state, metro }, maxPeople); const people = search.people;`. Keep `found = people.length` and the Task 7 "checked" logic exactly as they are (they describe the page we examined). Append a scope suffix to the success and none-had-email messages only, each guarded by the value it names actually being present (so a mismatched/partial result can never render `(matched in null, null)`): ` (matched in ${city}, ${state})` when `search.scope === "city" && city && state`, ` (matched in ${metro})` when `search.scope === "metro" && metro`, ` (matched in ${stateNameFor(state)})` when `search.scope === "state" && state`, nothing when `"any"`. `search.totalFound`/`search.totalAtDomain` are consumed by Task 3, not by any message here — Task 3's headcount guard reads `search.totalAtDomain` specifically (the national count), not `totalFound` (which can be a narrower scoped count).
 
-`tests/db/enrichCredits.test.ts`: its subclass overriding `searchPeople` must return the result object.
+`src/lib/config/runtime.ts`: `RuntimeConfig.enrichment` gains `metroLocation: string | null`; `overridesSchema`'s `enrichment` object gains `metroLocation: z.string().trim().min(3).max(80).nullable().optional()`; `mergeConfig` defaults it to `null`. `src/components/settings/types.ts` `EnrichmentConfig` gains the same field. `EnrichmentCard.tsx` gets a text input "Metro area for enrichment" (not prefilled) with helper text "Used when nobody is found in the lead's own city, e.g. Houston, Texas"; its `renewalPlaceholder` prop is renamed `renewalHint` and the date is formatted the way `ProviderKeysCard` does ("renews Oct 16") rather than shown as a raw ISO date.
+
+`tests/db/enrichCredits.test.ts`: its subclass overriding `searchPeople` must return the result object, and should import `PeopleSearchQuery`/`PeopleSearchResult` rather than re-declaring the query shape inline.
 
 - [x] **Step 4: tsc, lint, unit, db exit 0.**
-- [x] **Step 5: Commit** `feat(enrich): local-first People Search (city → state → anywhere) and a search result object with totalFound and scope`.
+- [x] **Step 5: Commit** `feat(enrich): local-first People Search (city → state → anywhere) and a search result object with totalFound and scope` (Task 2's original commit); the fix round restructuring the cascade and adding the metro setting is a separate commit — `feat(enrich): unlocated search first (national headcount, single-call for small orgs), then city → metro → state; metro area setting`.
 
 ---
 
@@ -312,7 +328,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
   export async function rescoreExclusions(ownerId: string, cfg?: RuntimeConfig): Promise<{ scanned: number; newlyExcluded: number; restored: number }>;
   ```
   Re-runs `scoreSmbFit({ name, sameNameCount }, cfg.exclusion, cfg.projects)` for every business of the owner (same `nameCounts` logic as `src/lib/jobs/zipSearch.ts:176`), updates `exclusion`/`exclusionReasons` only when they change, and writes an activity row `Excluded as chain: <reason>` / `Exclusion lifted` per changed business. Businesses whose current reasons include `apollo_headcount:` keep that reason (it is not name-derived) — merge, do not overwrite.
-- `runEnrich`: after `searchPeople`, `if (domain && search.totalFound >= ENRICH_CONFIG.chainHeadcountMin)` → set `exclusion: "enterprise"`, add `chain:apollo_headcount:<n>` to `exclusionReasons`, log `Enrichment skipped: <n> people at <domain> in Apollo — not an SMB (marked as chain)`, return `{ added: 0, updated: 0, skipped: "chain" }`, no reveal, `lastEnrichedAt` untouched. `isEnrichIssueMessage` gains this skip (it explains an empty People list).
+- `runEnrich`: after `searchPeople`, `if (domain && search.totalAtDomain !== null && search.totalAtDomain >= ENRICH_CONFIG.chainHeadcountMin)` → set `exclusion: "enterprise"`, add `chain:apollo_headcount:<n>` to `exclusionReasons`, log `Enrichment skipped: <n> people at <domain> in Apollo — not an SMB (marked as chain)`, return `{ added: 0, updated: 0, skipped: "chain" }`, no reveal, `lastEnrichedAt` untouched. Reads `search.totalAtDomain` (the org's *national* headcount from the cascade's unlocated first call — see Task 2), not `search.totalFound` (which can be a narrower scoped count, e.g. just the metro or city page): a franchise brand's local page can easily be small even though the brand nationally is not. `isEnrichIssueMessage` gains this skip (it explains an empty People list).
 - PATCH `/api/businesses/:id` body gains `markAsChain: z.literal(true).optional()`: appends `normalizeName(name)` (from `src/lib/jobs/shared.ts`) to `overrides.exclusion.chains` (dedupe, lowercase, via `saveOverrides`), then `rescoreExclusions`; response `{ business, rescore: { newlyExcluded } }`.
 - `scripts/chain-sweep.ts`: `node --env-file=.env --import=tsx scripts/chain-sweep.ts [--apply] [--limit N]` — for each non-excluded business with a domain (skip `SHARED_HOSTS`), one People Search with no location and `per_page: 1` through the provider (so `withBudget` and the plan-block memo apply), print `domain  total  → chain?`; with `--apply`, mark as in `runEnrich`. Prints a reminder that the Apollo daily budget in Settings bounds the sweep (raise it to ≥ the business count first) and stops cleanly on `BudgetExhaustedError`.
 
@@ -322,7 +338,7 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 `tests/db/rescore.test.ts`: create three businesses ("Zumiez", "Bella Nails", "Zumiez Outlet") with `exclusion: "none"`; `rescoreExclusions(OWNER, cfgWithChains(["zumiez"]))` → `{ scanned: 3, newlyExcluded: 2, restored: 0 }`, activity rows written for the two, Bella untouched; a second run → `newlyExcluded: 0`; a business with `exclusionReasons: ["chain:apollo_headcount:2000"]` stays excluded even when its name matches nothing.
 
-`tests/db/enrich.test.ts`: fake returns `totalFound: 6579` for a business with a domain → `skipped: "chain"`, `enrich` calls 0, exclusion `enterprise`, reason `chain:apollo_headcount:6579`, one activity row, `lastEnrichedAt` null; `totalFound: 139` → proceeds normally.
+`tests/db/enrich.test.ts`: fake returns `totalAtDomain: 6579` for a business with a domain → `skipped: "chain"`, `enrich` calls 0, exclusion `enterprise`, reason `chain:apollo_headcount:6579`, one activity row, `lastEnrichedAt` null; `totalAtDomain: 139` → proceeds normally.
 
 `tests/db/businessPatchRoute.test.ts`: `markAsChain: true` on "Zumiez" → 200, `rescore.newlyExcluded ≥ 1`, `AppConfig.overrides.exclusion.chains` contains `"zumiez"`; a second call is idempotent (no duplicate entry).
 

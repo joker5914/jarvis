@@ -52,6 +52,11 @@ export const overridesSchema = z
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .nullable()
           .optional(),
+        /** Operator-typed metro area (e.g. "Houston, Texas") passed verbatim as a
+         * `person_locations[]` value when the location cascade's city scope is empty or skipped —
+         * see PeopleSearchQuery.metro and ApolloEnrichmentProvider.searchPeople. Not prefilled;
+         * null (the default) means the metro scope is skipped entirely. */
+        metroLocation: z.string().trim().min(3).max(80).nullable().optional(),
       })
       .strict()
       .optional(),
@@ -65,7 +70,7 @@ export type RuntimeConfig = {
   categories: Category[];
   allCategories: (Category & { enabled: boolean; defaultPackageSlug: PackageSlug })[];
   projects: { highFitThreshold: number; mediumFitThreshold: number; backfillMonths: number };
-  enrichment: { maxPeople: number; monthlyCreditCap: number; cycleRenewsOn: string | null };
+  enrichment: { maxPeople: number; monthlyCreditCap: number; cycleRenewsOn: string | null; metroLocation: string | null };
   overrides: ConfigOverrides;
 };
 
@@ -92,6 +97,7 @@ export function mergeConfig(o: ConfigOverrides): RuntimeConfig {
       maxPeople: o.enrichment?.maxPeople ?? ENRICH_CONFIG.maxPeople,
       monthlyCreditCap: o.enrichment?.monthlyCreditCap ?? ENRICH_CONFIG.monthlyCreditCapDefault,
       cycleRenewsOn: o.enrichment?.cycleRenewsOn ?? null,
+      metroLocation: o.enrichment?.metroLocation ?? null,
     },
     overrides: o,
   };

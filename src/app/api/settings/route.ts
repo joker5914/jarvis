@@ -61,7 +61,7 @@ export const GET = handle(async () => {
         mediumFitThreshold: PROJECT_CONFIG.mediumFitThreshold,
         backfillMonths: PROJECT_CONFIG.backfillMonths,
       },
-      enrichment: { maxPeople: ENRICH_CONFIG.maxPeople, monthlyCreditCap: ENRICH_CONFIG.monthlyCreditCapDefault, cycleRenewsOn: null },
+      enrichment: { maxPeople: ENRICH_CONFIG.maxPeople, monthlyCreditCap: ENRICH_CONFIG.monthlyCreditCapDefault, cycleRenewsOn: null, metroLocation: null },
     },
   });
 });
