@@ -10,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
@@ -148,67 +147,96 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
   const people = groupPeople(b.contacts);
 
+  const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
+
   return (
-    <div className="space-y-5" data-testid="lead-detail">
-      <div>
+    <div className="space-y-4" data-testid="lead-detail">
+      <div className="space-y-2">
+        <h2 className="text-lg font-semibold leading-tight sm:text-xl [overflow-wrap:anywhere]">{b.name}</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-xl font-semibold">{b.name}</h2>
           <QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} />
           <SourceBadge source={b.source} />
-          {b.exclusion === "none" ? (
-            <span className="ml-auto flex items-center gap-2">
-              <Button size="sm" variant="outline" data-testid="enrich-button" disabled={enriching || credits?.remaining === 0} onClick={enrich}>
-                {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+        </div>
+        <div className="text-sm text-muted-foreground">
+          <p>{categoryLabel(b.primaryCategory)}</p>
+          {address && <p>{address}</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {b.phone && (
+            <>
+              <Button size="sm" variant="outline" nativeButton={false} render={<a href={`tel:${b.phone}`} />}>
+                Call {b.phone}
               </Button>
-              {credits && (
-                <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
-                  ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
-                </span>
-              )}
-            </span>
-          ) : (
-            <span className="ml-auto text-xs text-muted-foreground" data-testid="enrich-excluded-note">
-              Excluded — not enriched
-            </span>
+              <CopyButton value={b.phone} label="Phone" />
+            </>
           )}
+          {b.websiteUrl && (
+            <Button size="sm" variant="outline" nativeButton={false} render={<a href={b.websiteUrl} target="_blank" rel="noreferrer" />}>
+              Website{b.websiteReachable === false ? " (unreachable)" : ""}
+            </Button>
+          )}
+          <Button size="sm" variant="outline" nativeButton={false} render={<a href={linkedinSearch} target="_blank" rel="noreferrer" />}>
+            Search LinkedIn
+          </Button>
         </div>
-        {b.exclusion === "none" && credits?.remaining === 0 && (
-          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+        {b.exclusion !== "none" && <p className="text-xs text-red-600">Excluded: {b.exclusionReasons.join(", ")}</p>}
+        {b.suggestedPackage && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 text-sm">
+            <dt className="text-muted-foreground">Suggested pitch</dt>
+            <dd>{packageLabel(b.suggestedPackage)}</dd>
+          </dl>
         )}
-        <p className="text-sm text-muted-foreground">{categoryLabel(b.primaryCategory)}{b.formattedAddress ? ` · ${b.formattedAddress}` : ""}</p>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
-          {b.phone && <span className="inline-flex items-center gap-1"><a href={`tel:${b.phone}`} className="hover:underline">{b.phone}</a><CopyButton value={b.phone} label="Phone" /></span>}
-          {b.websiteUrl && <a href={b.websiteUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Website{b.websiteReachable === false ? " (unreachable)" : ""}</a>}
-          <a href={linkedinSearch} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Search LinkedIn</a>
-        </div>
-        {b.exclusion !== "none" && <p className="mt-2 text-xs text-red-600">Excluded: {b.exclusionReasons.join(", ")}</p>}
-        {b.suggestedPackage && <p className="mt-2 text-sm"><span className="text-muted-foreground">Suggested pitch:</span> {packageLabel(b.suggestedPackage)}</p>}
         {b.currentProviderHint && (
-          <p className="mt-1 text-sm"><span className="text-muted-foreground">Current provider (hint):</span> {b.currentProviderHint}
+          <p className="text-sm"><span className="text-muted-foreground">Current provider (hint):</span> {b.currentProviderHint}
             {b.currentProviderEvidence && <span className="block text-xs text-muted-foreground">“{b.currentProviderEvidence}”</span>}</p>
         )}
+        <div className="space-y-1">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+            {b.exclusion === "none" ? (
+              <>
+                <Button size="sm" variant="outline" data-testid="enrich-button" disabled={enriching || credits?.remaining === 0} onClick={enrich}>
+                  {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+                </Button>
+                {credits && (
+                  <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
+                    ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground" data-testid="enrich-excluded-note">
+                Excluded — not enriched
+              </span>
+            )}
+          </div>
+          {b.exclusion === "none" && credits?.remaining === 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+          )}
+        </div>
       </div>
 
-      <Separator />
-
-      <section className="space-y-3">
-        <h3 className="font-medium">Contacts</h3>
+      <section className="border-t pt-4 space-y-3">
+        <h3 className="text-sm font-semibold">Contacts</h3>
         {GROUPS.map((g) => {
           const list = b.contacts.filter((c) => g.types.includes(c.type));
           if (list.length === 0) return null;
           return (
-            <div key={g.key}>
-              <div className="text-xs font-medium uppercase text-muted-foreground">{g.label}</div>
-              <ul className="mt-1 space-y-1">
+            <div key={g.key} className="space-y-1">
+              <div className="text-xs font-medium text-muted-foreground">{g.label}</div>
+              <ul className="space-y-1">
                 {list.map((c) => (
-                  <li key={c.id} className="flex items-center gap-2 text-sm">
-                    {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
-                      : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
-                      : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
-                    {c.personName && <span className="text-muted-foreground">· {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
-                    <span className={`rounded px-1 text-[10px] uppercase ${c.validationStatus === "valid" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" : c.validationStatus === "invalid" ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}>{c.validationStatus}</span>
-                    <span className="text-[10px] text-muted-foreground">{c.source}</span>
-                    {(c.type === "email" || c.type === "phone") && <CopyButton value={c.value} label={titleCase(c.type)} />}
+                  <li key={c.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-sm">
+                    <span className="min-w-0 truncate" title={c.value}>
+                      {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
+                        : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
+                        : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
+                      {c.personName && <span className="text-muted-foreground"> · {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      <span className={`rounded px-1 text-[10px] ${c.validationStatus === "valid" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" : c.validationStatus === "invalid" ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}>{titleCase(c.validationStatus)}</span>
+                      <span className="text-xs text-muted-foreground">{c.source}</span>
+                      {(c.type === "email" || c.type === "phone") && <CopyButton value={c.value} label={titleCase(c.type)} />}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -217,25 +245,27 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         })}
         {b.contacts.length === 0 && <p className="text-sm text-muted-foreground">No contacts found yet.</p>}
         {b.contactQualityReasons && b.contactQualityReasons.length > 0 && (
-          <p className="text-xs text-muted-foreground">Quality: {b.contactQualityReasons.map((r) => `${r.detail} (+${r.points})`).join(", ")}</p>
+          <p className="text-xs text-muted-foreground">Why {b.contactQualityBand}: {b.contactQualityReasons.map((r) => `${r.detail} +${r.points}`).join(" · ")}</p>
         )}
       </section>
 
-      <Separator />
-
-      <section className="space-y-2" data-testid="people-section">
-        <h3 className="font-medium">People</h3>
+      <section className="border-t pt-4 space-y-3" data-testid="people-section">
+        <h3 className="text-sm font-semibold">People</h3>
         {people.length === 0 ? (
           <p className="text-sm text-muted-foreground">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
         ) : (
           <ul className="space-y-1">
             {people.map((p) => (
-              <li key={p.key} data-testid="people-row" className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="font-medium">{p.name}</span>
-                {p.title && <span className="text-muted-foreground">{p.title}</span>}
-                {p.email && <CopyButton value={p.email} label={p.email} />}
-                {p.linkedin && <a className="underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
-                <SourceBadge source={p.source} />
+              <li key={p.key} data-testid="people-row" className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-sm">
+                <span className="min-w-0 truncate" title={p.title ? `${p.name}, ${p.title}` : p.name}>
+                  <span className="font-medium">{p.name}</span>
+                  {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
+                </span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <SourceBadge source={p.source} />
+                  {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
+                  {p.email && <CopyButton value={p.email} label={p.email} />}
+                </span>
               </li>
             ))}
           </ul>
@@ -243,10 +273,8 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         {b.lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
       </section>
 
-      <Separator />
-
-      <section className="space-y-3">
-        <h3 className="font-medium">Outreach</h3>
+      <section className="border-t pt-4 space-y-3">
+        <h3 className="text-sm font-semibold">Outreach</h3>
         <div className="space-y-1">
           <Label htmlFor="status">Status</Label>
           <Select value={b.outreachStatus} onValueChange={(v) => { if (v != null) patch({ outreachStatus: v }); }} items={STATUS_ITEMS}>
@@ -291,28 +319,24 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       </section>
 
       {b.projects.length > 0 && (
-        <>
-          <Separator />
-          <section className="space-y-2">
-            <h3 className="font-medium">TDLR project</h3>
-            {b.projects.map((p) => (
-              <div key={p.id} className="rounded-md border p-3 text-sm">
-                <div className="font-medium">{p.projectName} <span className="text-muted-foreground">({p.projectNumber})</span></div>
-                <div className="text-muted-foreground">{formatDate(p.startDate)} → {formatDate(p.completionDate)}{p.estimatedCost != null ? ` · $${p.estimatedCost.toLocaleString()}` : ""}{p.timingWindow ? ` · ${titleCase(p.timingWindow)}` : ""}</div>
-                {p.scopeOfWork && <div className="mt-1 text-muted-foreground">{p.scopeOfWork}</div>}
-                {p.ownerName && <div className="mt-1">Owner: {p.ownerName}{p.ownerPhone ? ` · ${p.ownerPhone}` : ""}</div>}
-              </div>
-            ))}
-          </section>
-        </>
+        <section className="border-t pt-4 space-y-3">
+          <h3 className="text-sm font-semibold">TDLR project</h3>
+          {b.projects.map((p) => (
+            <div key={p.id} className="rounded-md border p-3 text-sm">
+              <div className="font-medium">{p.projectName} <span className="text-muted-foreground">({p.projectNumber})</span></div>
+              <div className="text-muted-foreground">{formatDate(p.startDate)} → {formatDate(p.completionDate)}{p.estimatedCost != null ? ` · $${p.estimatedCost.toLocaleString()}` : ""}{p.timingWindow ? ` · ${titleCase(p.timingWindow)}` : ""}</div>
+              {p.scopeOfWork && <div className="mt-1 text-muted-foreground">{p.scopeOfWork}</div>}
+              {p.ownerName && <div className="mt-1">Owner: {p.ownerName}{p.ownerPhone ? ` · ${p.ownerPhone}` : ""}</div>}
+            </div>
+          ))}
+        </section>
       )}
 
-      <Separator />
-      <section>
-        <h3 className="font-medium">Activity</h3>
-        <ul className="mt-2 space-y-1 text-sm">
+      <section className="border-t pt-4 space-y-3">
+        <h3 className="text-sm font-semibold">Activity</h3>
+        <ul className="space-y-1 text-sm">
           {b.activity.map((a) => (
-            <li key={a.id} className="flex gap-2"><span className="w-20 shrink-0 text-xs text-muted-foreground">{timeAgo(a.createdAt)}</span><span>{a.message}</span></li>
+            <li key={a.id} className="flex gap-2"><span className="w-16 shrink-0 text-xs text-muted-foreground">{timeAgo(a.createdAt)}</span><span className="min-w-0 [overflow-wrap:anywhere]">{a.message}</span></li>
           ))}
           {b.activity.length === 0 && <li className="text-muted-foreground">No activity yet.</li>}
         </ul>
