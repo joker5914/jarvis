@@ -52,7 +52,10 @@ async function main() {
       let queued = 0;
       for (let i = 0, batchIndex = 0; i < list.length; i += 25, batchIndex++) {
         const singletonKey = `website-recheck:cleanup:${runTimestamp}:${ownerId}:${batchIndex}`;
-        const ok = await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId, { singletonKey });
+        // origin: "manual" — this is a one-off manual re-check, not the scanner's own work, so
+        // it must never pause on a disabled/paused Scanner and must never clear a
+        // scanner-owned `website_recheck:<ISO>` marker (see runWebsiteRecheck's doc comment).
+        const ok = await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId, { singletonKey, origin: "manual" });
         if (ok) queued++;
         else console.warn(`  owner ${ownerId}: batch ${batchIndex} (${singletonKey}) was NOT queued (boss.send returned null)`);
       }

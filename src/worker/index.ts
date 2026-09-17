@@ -16,7 +16,7 @@ import { runTdlrSync } from "@/lib/jobs/tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "@/lib/jobs/promote";
 import { runWebsiteRecheck } from "@/lib/jobs/websiteRecheck";
 import { handleEnrichJob } from "@/lib/jobs/enrichHandler";
-import { JobPausedError, scannerPauseCheck } from "@/lib/jobs/shared";
+import { JobPausedError, recheckPauseCheck, scannerPauseCheck } from "@/lib/jobs/shared";
 import { runScannerTick } from "@/lib/scanner/tick";
 import { REGION } from "@/lib/config/region";
 import { SCANNER_CONFIG } from "@/lib/config/scanner";
@@ -68,9 +68,17 @@ async function main() {
   });
 
   await boss.work<WebsiteRecheckJobData>(QUEUES.websiteRecheck, { batchSize: 1 }, async ([job]) => {
-    console.log(`[website-recheck] start ${job.data.businessIds.length}`);
+    const { origin } = job.data;
+    // A job queued before `origin` existed has no field at all; that's treated as scanner-origin
+    // (see recheckPauseCheck's doc comment) so its pause/window behaviour doesn't change.
+    console.log(`[website-recheck] start ${job.data.businessIds.length} (${origin ?? "scanner"})`);
     try {
-      await runWebsiteRecheck(job.data.businessIds, job.data.ownerId, { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: scannerPauseCheck(job.data.ownerId) });
+      await runWebsiteRecheck(
+        job.data.businessIds,
+        job.data.ownerId,
+        { providers: getProviders(), log: console.log, signal: job.signal, shouldPause: recheckPauseCheck(origin, job.data.ownerId) },
+        { origin },
+      );
       console.log(`[website-recheck] done`);
     } catch (e) {
       // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc

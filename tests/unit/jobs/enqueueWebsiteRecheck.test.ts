@@ -49,4 +49,20 @@ describe("enqueueWebsiteRecheck singletonKey", () => {
     const ok = await enqueueWebsiteRecheck(["biz-1"], "owner-1", { singletonKey: "website-recheck:cleanup:x:0" });
     expect(ok).toBe(false);
   });
+
+  // Defect fix: the website-recheck worker handler always paused on a disabled Scanner, even
+  // for the cleanup script's manual re-checks. `origin` now travels in the job data so the
+  // worker (and runWebsiteRecheck's marker-clear) can tell a manual run from a scanner-origin
+  // one. Defaulting to "scanner" keeps tick.ts's call sites (which never pass `opts`) unchanged.
+  it("defaults origin to 'scanner' in the job data when opts.origin is omitted (tick.ts call shape)", async () => {
+    await enqueueWebsiteRecheck(["biz-1"], "owner-1");
+    const [, data] = send.mock.calls[0];
+    expect(data).toMatchObject({ origin: "scanner" });
+  });
+
+  it("passes origin: 'manual' through to the job data (cleanup script call shape)", async () => {
+    await enqueueWebsiteRecheck(["biz-1"], "owner-1", { singletonKey: "website-recheck:cleanup:x:0", origin: "manual" });
+    const [, data] = send.mock.calls[0];
+    expect(data).toMatchObject({ origin: "manual" });
+  });
 });
