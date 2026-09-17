@@ -114,10 +114,11 @@ describe("TdlrRegistryProvider HTTP contract", () => {
     await Promise.all([provider.getProjectDetail("TABS2027001089"), provider.getProjectDetail("TABS2027001089")]);
 
     expect(timestamps).toHaveLength(2);
-    // Allow 1ms of slack: Date.now() has integer-ms resolution, so the gate's
+    // Allow 2ms of slack: Date.now() has integer-ms resolution, so the gate's
     // internal (lastRequestAt + minIntervalMs - Date.now()) math can compute a
-    // wait that is up to 1ms short of minIntervalMs due to truncation, not a
-    // throttle bug.
-    expect(Math.abs(timestamps[1] - timestamps[0])).toBeGreaterThanOrEqual(MIN_INTERVAL_MS - 1);
+    // wait that is up to 1ms short of minIntervalMs due to truncation, and Node's
+    // setTimeout may fire up to ~1ms early on a loaded CI runner (observed: 38ms for a
+    // 40ms gate). Neither is a throttle bug; the real gate is 20 s between TDLR calls.
+    expect(Math.abs(timestamps[1] - timestamps[0])).toBeGreaterThanOrEqual(MIN_INTERVAL_MS - 2);
   });
 });
