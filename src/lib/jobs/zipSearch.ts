@@ -44,14 +44,30 @@ type Found = { biz: DiscoveredBusiness; category: string };
 type KnownFresh = { placeId: string; category: string };
 
 /** Per category: IDs-only search; details only for places we don't have or haven't refreshed recently. */
-async function discover(searchId: string, ownerId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[], categories: Category[]) {
+async function discover(
+  searchId: string,
+  ownerId: string,
+  zip: string,
+  center: { lat: number; lng: number },
+  radius: number,
+  deps: ZipSearchDeps,
+  done: string[],
+  categories: Category[],
+  priorIds: Record<string, string> | null,
+) {
   const idsByCategory = new Map<string, string>(); // placeId -> first surfacing category
-  for (let i = 0; i < categories.length; i++) {
-    await checkPause(deps);
-    const c = categories[i];
-    await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
-    const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius);
-    for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+  if (priorIds && Object.keys(priorIds).length > 0) {
+    for (const [id, slug] of Object.entries(priorIds)) idsByCategory.set(id, slug);
+    await setProgress(searchId, { step: "discover", current: categories.length, total: categories.length, message: "Using previously discovered places", doneSteps: done });
+  } else {
+    for (let i = 0; i < categories.length; i++) {
+      await checkPause(deps);
+      const c = categories[i];
+      await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
+      const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius, DISCOVERY_CONFIG.maxPlacesPerCategory);
+      for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+    }
+    await prisma.search.update({ where: { id: searchId }, data: { discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue } });
   }
 
   const refreshBefore = new Date(Date.now() - DISCOVERY_CONFIG.detailsRefreshDays * 86_400_000);
@@ -311,7 +327,8 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
     if (!done.includes("discover")) {
-      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories);
+      const priorIds = (search.discoveredIds as Record<string, string> | null) ?? null;
+      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds);
       await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
       businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh, cfg);
       done.push("discover");
