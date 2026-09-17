@@ -231,6 +231,21 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
       expect(result.scope).toBe("state");
     });
 
+    it("metro equal to the lead's own city is not queried twice — at most 3 fetches (any + city + state)", async () => {
+      let call = 0;
+      mockFetch(() => {
+        call++;
+        if (call === 1) return json({ total_entries: 139, people: [{ id: "p0", first_name: "Nat", title: "CEO", has_email: true }] });
+        if (call === 2) return json({ total_entries: 0, people: [] });
+        return json({ total_entries: 5, people: [{ id: "p1", first_name: "Sam", title: "Manager", has_email: true }] });
+      });
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "hrblock.com", orgName: "H&R Block", city: "Houston", state: "TX", metro: "houston, texas" }, 1);
+      expect(calls).toHaveLength(3);
+      expect(new URL(calls[1].url).searchParams.getAll("person_locations[]")).toEqual(["Houston, Texas"]);
+      expect(new URL(calls[2].url).searchParams.getAll("person_locations[]")).toEqual(["Texas, United States"]);
+      expect(result.scope).toBe("state");
+    });
+
     it("large org, no city/state/metro available at all: falls back to the unlocated page after 1 fetch, scope 'any'", async () => {
       mockFetch(() => json({ total_entries: 6579, people: [
         { id: "p1", first_name: "Alex", title: "Assistant Manager", has_email: true },

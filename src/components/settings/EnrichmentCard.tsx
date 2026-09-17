@@ -83,12 +83,12 @@ export function EnrichmentCard({
           <Input
             id="enrichment-metro"
             type="text"
-            placeholder="e.g. Houston, Texas"
+            placeholder="City, State"
             value={value.metroLocation ?? ""}
-            onChange={(e) => onChange({ ...value, metroLocation: e.target.value || null })}
+            onChange={(e) => onChange({ ...value, metroLocation: e.target.value.trim() === "" ? null : e.target.value })}
             data-testid="enrichment-metro"
           />
-          <p className="text-xs text-muted-foreground">Used when nobody is found in the lead&apos;s own city, e.g. Houston, Texas</p>
+          <p className="text-xs text-muted-foreground">Used when nobody is found in the lead&apos;s own city: the nearest larger city, written as City, State</p>
         </div>
       </CardContent>
     </Card>

@@ -393,7 +393,9 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
     const stateName = stateNameFor(q.state);
     const scopes: { scope: PeopleSearchScope; loc: string }[] = [];
     if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
-    if (q.metro) scopes.push({ scope: "metro", loc: q.metro });
+    // Skip the metro scope when it is the lead's own city (a Houston lead with metro "Houston,
+    // Texas" would otherwise repeat the identical, already-empty query and waste a budget unit).
+    if (q.metro && !scopes.some((s) => s.loc.toLowerCase() === q.metro!.trim().toLowerCase())) scopes.push({ scope: "metro", loc: q.metro });
     if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
 
     for (const s of scopes) {

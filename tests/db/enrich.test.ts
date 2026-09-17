@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db";
+import { saveOverrides } from "@/lib/config/runtime";
 import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
@@ -194,6 +195,26 @@ describe("runEnrich", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0].message).toBe("Enrichment failed: Apollo /x HTTP 503");
     expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
+  });
+
+  it("passes the configured metro area to the search and names it in the activity row (Plan 9 Task 2)", async () => {
+    await saveOverrides(OWNER, { enrichment: { metroLocation: "Metro City, Texas" } });
+    try {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      let seenMetro: string | null | undefined;
+      fake.searchPeople = async (q) => {
+        seenMetro = q.metro;
+        return { people: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" }], totalFound: 1, totalAtDomain: 30, scope: "metro" };
+      };
+      const d = deps(fake);
+      await runEnrich(b.id, OWNER, d);
+      expect(seenMetro).toBe("Metro City, Texas");
+      const log = await prisma.activityLog.findFirst({ where: { businessId: b.id, kind: "enriched" }, orderBy: { createdAt: "desc" } });
+      expect(log?.message).toMatch(/ \(matched in Metro City, Texas\)$/);
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
   });
 
   describe("enrichment targeting guard (Task 4)", () => {
