@@ -71,6 +71,17 @@ export function scannerPauseCheck(ownerId: string): () => Promise<boolean> {
 }
 
 /**
+ * Decides the `shouldPause` a website-recheck job runs with: scanner-origin jobs are subject
+ * to the scanner's pause/window checks, manual-origin jobs (e.g. scripts/cleanup-invalid-emails.ts)
+ * never are — a disabled/paused Scanner must not block a one-off manual re-check. A job with no
+ * `origin` at all predates the field (queued before this change shipped) and is treated as
+ * scanner-origin so its in-flight behaviour doesn't change out from under it.
+ */
+export function recheckPauseCheck(origin: "scanner" | "manual" | undefined, ownerId: string): (() => Promise<boolean>) | undefined {
+  return origin === "manual" ? undefined : scannerPauseCheck(ownerId);
+}
+
+/**
  * `upsert()` with `update: {}` is a no-op once the row exists, so a P2002 from a concurrent
  * writer racing the same upsert means the desired row is already there — safe to ignore rather
  * than fail the whole job.

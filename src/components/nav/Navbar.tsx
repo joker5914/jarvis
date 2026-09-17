@@ -50,7 +50,7 @@ export function Navbar() {
   const [open, setOpen] = useState(false);
   return (
     <header className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur dark:bg-neutral-950/80">
-      <div className="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
+      <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-4 px-4 sm:px-6 xl:px-8">
         <Link href="/" className="font-semibold tracking-tight">
           SDR Lead Gen
         </Link>

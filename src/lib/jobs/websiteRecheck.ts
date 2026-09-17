@@ -12,8 +12,19 @@ import { recomputeContactQuality, scrapeOne, validateEmails } from "./zipSearch"
  * The caller decides what "paused" means for a batch with no single stateful row to mark —
  * `enqueueWebsiteRecheck`'s `JOB_MODE=inline` branch and the worker's pg-boss handler both
  * treat a `JobPausedError` here as an expected pause rather than a job failure.
+ *
+ * `opts.origin` gates the `finally` marker-clear below: a `"manual"` run (e.g.
+ * scripts/cleanup-invalid-emails.ts) never clears the scanner's `website_recheck:<ISO>` marker,
+ * since it doesn't own it and a concurrent scanner-origin run may still be relying on it.
+ * Omitting `opts`/`origin` (every existing caller and test) keeps the marker-clear unconditional,
+ * matching the scanner-origin behaviour this function had before `origin` existed.
  */
-export async function runWebsiteRecheck(businessIds: string[], ownerId: string, deps: JobDeps): Promise<{ rechecked: number }> {
+export async function runWebsiteRecheck(
+  businessIds: string[],
+  ownerId: string,
+  deps: JobDeps,
+  opts: { origin?: "scanner" | "manual" } = {},
+): Promise<{ rechecked: number }> {
   try {
     let rechecked = 0;
     for (const id of businessIds) {
@@ -57,10 +68,16 @@ export async function runWebsiteRecheck(businessIds: string[], ownerId: string, 
     // the write if nothing changed it between the read and the write, so a newer
     // website_recheck marker set by another run in that gap can never be clobbered — this run
     // can only ever clear the marker it saw, never a different one that replaced it.
-    const state = await prisma.scannerState.findUnique({ where: { ownerId }, select: { currentJobId: true } });
-    const marker = state?.currentJobId;
-    if (marker?.startsWith(WEBSITE_RECHECK_JOB_PREFIX)) {
-      await prisma.scannerState.updateMany({ where: { ownerId, currentJobId: marker }, data: { currentJobId: null } });
+    //
+    // A manual-origin run skips this entirely: it never wrote the marker (only the scanner
+    // does, via setScannerState in tick.ts), so clearing it here would race a concurrent
+    // scanner-origin run that still owns it.
+    if (opts.origin !== "manual") {
+      const state = await prisma.scannerState.findUnique({ where: { ownerId }, select: { currentJobId: true } });
+      const marker = state?.currentJobId;
+      if (marker?.startsWith(WEBSITE_RECHECK_JOB_PREFIX)) {
+        await prisma.scannerState.updateMany({ where: { ownerId, currentJobId: marker }, data: { currentJobId: null } });
+      }
     }
   }
 }

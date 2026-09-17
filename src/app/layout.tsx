@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-background text-foreground antialiased">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <Navbar />
-          <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
+          <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 xl:px-8">{children}</main>
           <Toaster />
         </ThemeProvider>
       </body>

@@ -1,0 +1,39 @@
+import { isPlatformEmail } from "./platformDomains";
+
+// Shared classifier for stored email `Contact.value`s whose local part carries a phone-number
+// or zip/digit-run fragment glued on from adjacent page text with no separator (e.g.
+// "77581info@eatportara.com" from a zip code, "-229-4384chefstevehaug@…" from a phone number,
+// "77584phone832-295-3350emailamericanailspearland@…" from both). These are syntactically valid
+// emails — `normalizeEmail` alone can't tell they're wrong — so `scripts/cleanup-invalid-emails.ts`
+// uses this in addition to `normalizeEmail` to flag them for deletion. Extracted out of the
+// script (rather than kept inline) so it's unit-testable on its own.
+//
+// A local part is glued when either:
+//   - it starts with a phone/zip fragment (the original leading-fragment rule), or
+//   - it contains a `\d{3}-\d{4}` phone fragment anywhere, or
+//   - it contains a zip-shaped run of exactly 5 digits immediately followed by a letter anywhere
+//     (exactly five, not 5+, so order/ticket-style aliases like "ref000001a" are left alone).
+const LEADING_FRAGMENT_RE = /^(-?\d{3}-\d{4}|\d{5})[a-z]/i;
+const PHONE_FRAGMENT_ANYWHERE_RE = /\d{3}-\d{4}/;
+const DIGIT_RUN_BEFORE_LETTER_RE = /(?<!\d)\d{5}(?!\d)[a-z]/i;
+
+export function isGluedLocalPart(local: string): boolean {
+  return LEADING_FRAGMENT_RE.test(local) || PHONE_FRAGMENT_ANYWHERE_RE.test(local) || DIGIT_RUN_BEFORE_LETTER_RE.test(local);
+}
+
+/** Convenience for a full email address: applies `isGluedLocalPart` to the part before the `@`. */
+export function isGluedEmail(email: string): boolean {
+  return isGluedLocalPart(email.split("@")[0] ?? "");
+}
+
+/**
+ * The full "this stored email row is junk" test for the cleanup script: either its local part
+ * carries glued phone/zip digits (`isGluedEmail`), or its domain is a third-party
+ * booking/site-builder/support platform rather than the business's own (`isPlatformEmail`) — a
+ * platform address is syntactically perfect and passes `normalizeEmail` on its own merits (as of
+ * this fix, `normalizeEmail` itself also rejects it going forward; this OR is what still catches
+ * platform rows stored before that check existed, or if the check is ever moved elsewhere).
+ */
+export function isJunkEmail(email: string): boolean {
+  return isGluedEmail(email) || isPlatformEmail(email);
+}

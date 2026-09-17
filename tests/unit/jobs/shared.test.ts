@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkPause, JobPausedError, normalizeName, discoveredToBusinessFields } from "@/lib/jobs/shared";
+import { checkPause, JobPausedError, normalizeName, discoveredToBusinessFields, recheckPauseCheck } from "@/lib/jobs/shared";
 import { FakeDiscoveryProvider, FakeEnrichmentProvider, FakeGeocodeProvider, FakeRegistryProvider, FakeValidationProvider, fakeFetcher } from "@/lib/providers/fake";
 
 const providers = {
@@ -21,6 +21,23 @@ describe("checkPause", () => {
     await expect(checkPause({ providers, shouldPause: async () => true })).rejects.toBeInstanceOf(JobPausedError);
     await expect(checkPause({ providers, shouldPause: async () => false })).resolves.toBeUndefined();
     await expect(checkPause({ providers })).resolves.toBeUndefined();
+  });
+});
+
+// Defect fix: the website-recheck worker handler always passed scannerPauseCheck regardless of
+// origin, so the cleanup script's manual re-checks paused on a disabled Scanner within
+// milliseconds. recheckPauseCheck is the pure decision the handler now uses instead — it's
+// never invoked here (that would need a DB-backed ScannerState), just checked for shape, which
+// is enough to prove "manual" is the only origin that opts out.
+describe("recheckPauseCheck", () => {
+  it("returns undefined for a manual-origin job (never pauses on the Scanner)", () => {
+    expect(recheckPauseCheck("manual", "owner-1")).toBeUndefined();
+  });
+  it("returns a shouldPause function for scanner-origin", () => {
+    expect(typeof recheckPauseCheck("scanner", "owner-1")).toBe("function");
+  });
+  it("treats a missing origin (legacy job queued before this field existed) as scanner-origin", () => {
+    expect(typeof recheckPauseCheck(undefined, "owner-1")).toBe("function");
   });
 });
 

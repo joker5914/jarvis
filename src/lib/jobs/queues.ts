@@ -37,7 +37,7 @@ export type ZipSearchJobData = { searchId: string; origin?: JobOrigin };
 export type TdlrSyncJobData = { origin?: JobOrigin };
 export type PromoteJobData = { businessId: string; ownerId: string };
 export type PromoteBatchJobData = Record<string, never>;
-export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string };
+export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string; origin?: JobOrigin };
 export type ScannerTickJobData = Record<string, never>;
 export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean; people?: number };
 

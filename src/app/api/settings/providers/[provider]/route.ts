@@ -4,6 +4,7 @@ import { getActor } from "@/lib/actor";
 import { ApiError, handle, json } from "@/lib/api";
 import { encryptString } from "@/lib/crypto";
 import { budgetStatus } from "@/lib/providers/budget";
+import { clearPlanBlock } from "@/lib/providers/apollo";
 
 const PROVIDER_LABELS: Record<string, string> = { google: "Google Places", apollo: "Apollo.io" };
 const ENV_NAMES: Record<string, string> = { google: "GOOGLE_MAPS_API_KEY", apollo: "APOLLO_API_KEY" };
@@ -35,13 +36,17 @@ export const PUT = handle(async (req, ctx) => {
     throw e;
   }
 
+  const priorRow = await prisma.providerConfig.findUnique({ where: { provider } });
+
   const data: { encryptedKey?: string | null; enabled?: boolean; dailyBudget?: number } = {};
+  let keySet = false;
   if (parsed.key === null) {
     data.encryptedKey = null;
   } else if (parsed.key !== undefined) {
     const secret = process.env.APP_SECRET;
     if (!secret) throw new ApiError(500, "APP_SECRET is not configured");
     data.encryptedKey = encryptString(parsed.key, secret);
+    keySet = true;
   }
   if (parsed.enabled !== undefined) data.enabled = parsed.enabled;
   if (parsed.dailyBudget !== undefined) data.dailyBudget = parsed.dailyBudget;
@@ -51,6 +56,14 @@ export const PUT = handle(async (req, ctx) => {
     update: data,
     create: { provider, ...data },
   });
+
+  // A fresh key or re-enabling the provider is the operator's signal that whatever caused a
+  // plan block (or the block memoized before this fix even shipped) may no longer apply — clear
+  // it so the next Enrich actually retries against Apollo instead of refusing from a stale 409.
+  const enabledTurnedOn = parsed.enabled === true && priorRow?.enabled !== true;
+  if (keySet || enabledTurnedOn) {
+    await clearPlanBlock(provider);
+  }
 
   const row = await prisma.providerConfig.findUnique({ where: { provider } });
   const env = process.env[ENV_NAMES[provider]];

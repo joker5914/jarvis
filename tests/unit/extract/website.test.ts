@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { extractWebsiteContacts, pickCandidatePages, defaultFetcher, type PageFetcher } from "@/lib/extract/website";
+import { extractWebsiteContacts, extractFromHtml, pickCandidatePages, defaultFetcher, type PageFetcher } from "@/lib/extract/website";
 import * as safeFetchMod from "@/lib/net/safeFetch";
 
 const fixture = (name: string) =>
@@ -40,6 +40,117 @@ describe("extractWebsiteContacts", () => {
   it("falls back to /contact and /about when no links match", () => {
     const pages = pickCandidatePages("https://x.com/", "<html><body><a href='/menu'>Menu</a></body></html>");
     expect(pages).toEqual(["https://x.com/contact", "https://x.com/about"]);
+  });
+});
+
+describe("extractFromHtml email boundary fix", () => {
+  it("does not glue trailing text onto the domain's TLD", () => {
+    const r = extractFromHtml("<p>Contact: blacklisttattoocotx@gmail.comSubmitThanks</p>");
+    expect([...r.emails]).toEqual(["blacklisttattoocotx@gmail.com"]);
+  });
+
+  it("prefers the mailto href over scanned text and strips the query string", () => {
+    // NOTE: the plan's own example domain for this case was "example.com", but that domain is
+    // also required (by the Interfaces section, and by the pre-existing
+    // normalizeEmail("user@example.com") -> null test) to be rejected as a placeholder. Both
+    // requirements can't hold for the same address, so this case uses a non-placeholder domain
+    // to test the actual behavior under test: mailto: preference + query-string stripping.
+    const r = extractFromHtml('<p>Email us: <a href="mailto:info@realbiz.com?subject=Hi">info@realbiz.com</a></p>');
+    expect([...r.emails]).toEqual(["info@realbiz.com"]);
+  });
+
+  it("takes the longest plausible TLD prefix for a listed small-business gTLD glued to trailing text", () => {
+    const r = extractFromHtml("<p>sales@shop.onlineOrder now</p>");
+    expect([...r.emails]).toEqual(["sales@shop.online"]);
+  });
+
+  it("drops an address whose TLD has no plausible prefix", () => {
+    const r = extractFromHtml("<p>foo@bar.notatld</p>");
+    expect([...r.emails]).toEqual([]);
+  });
+
+  // H1: KNOWN_TLDS now comes from the `tlds` npm package (the IANA list) instead of a
+  // hand-picked set, so these real gTLDs are scanned and kept unchanged rather than being
+  // mis-rewritten to a shorter look-alike TLD or dropped outright.
+  it("keeps real IANA gTLDs unchanged when scanned from page text", () => {
+    const r = extractFromHtml("<p>Email info@smithco.technology or jane@smithlaw.attorney.</p>");
+    expect([...r.emails]).toEqual(["info@smithco.technology", "jane@smithlaw.attorney"]);
+  });
+
+  it("still recovers a glued .com when the trailing junk is not itself an IANA TLD", () => {
+    const r = extractFromHtml("<p>a@gmail.comsubmitthanks</p>");
+    expect([...r.emails]).toEqual(["a@gmail.com"]);
+  });
+
+  it("recovers a genuine .style address glued to trailing text", () => {
+    const r = extractFromHtml("<p>info@rawlife.stylestore</p>");
+    expect([...r.emails]).toEqual(["info@rawlife.style"]);
+  });
+
+  it("trims a zip-code fragment glued before the local part", () => {
+    const r = extractFromHtml("<p>77581info@eatportara.com</p>");
+    expect([...r.emails]).toEqual(["info@eatportara.com"]);
+  });
+
+  it("trims a phone-number fragment glued before the local part", () => {
+    const r = extractFromHtml("<p>-229-4384chefstevehaug@gmail.com</p>");
+    expect([...r.emails]).toEqual(["chefstevehaug@gmail.com"]);
+  });
+
+  it("does not fuse adjacent text nodes across tag boundaries with no separator", () => {
+    // Reproduces the real bug mechanism: a zip/route-code cell sits directly next to an email
+    // cell with no whitespace text node between them in the source HTML, so cheerio's $.text()
+    // used to concatenate them into "77581info@eatportara.com". With a separator inserted at
+    // every tag boundary, "77581" and "info@eatportara.com" stay distinct words, so the scanner
+    // never even sees a glued local part here.
+    const r = extractFromHtml("<table><tr><td>77581</td><td>info@eatportara.com</td></tr></table>");
+    expect([...r.emails]).toEqual(["info@eatportara.com"]);
+  });
+
+  it("drops a site-builder placeholder address found in scanned text", () => {
+    const r = extractFromHtml("<p>filler@godaddy.com</p>");
+    expect([...r.emails]).toEqual([]);
+  });
+
+  // Fix round (Critical/Important #2): repairGluedLocal used to strip only the FIRST leading
+  // numeric fragment. Real case: after stripping the leading zip "77584", the remainder
+  // "phone832-295-3350emailamericanailspearland" starts with a letter and was emitted as-is —
+  // even though a phone number is still glued inside it. Guessing where the real local part
+  // starts inside that remainder is unreliable, so the whole candidate is dropped instead.
+  it("drops an address whose local part still carries an embedded phone fragment after the leading zip is stripped", () => {
+    const r = extractFromHtml("<p>77584phone832-295-3350emailamericanailspearland@gmail.com</p>");
+    expect([...r.emails]).toEqual([]);
+  });
+
+  it("still extracts a legit local part containing digits with no leading glued fragment (john2024)", () => {
+    const r = extractFromHtml("<p>Email john2024@realbiz.com for a quote</p>");
+    expect([...r.emails]).toEqual(["john2024@realbiz.com"]);
+  });
+
+  it("still extracts a legit local part containing digits with no leading glued fragment (sales3)", () => {
+    const r = extractFromHtml("<p>Email sales3@realbiz.com for a quote</p>");
+    expect([...r.emails]).toEqual(["sales3@realbiz.com"]);
+  });
+
+  // Fix round (item 5b): documents current behavior rather than changing it. The domain+TLD
+  // capture in EMAIL_SCAN_RE is greedy, so for "ecart-software.com.last" it binds
+  // domain="ecart-software.com" and tld="last" (the rightmost dot-segment) rather than
+  // domain="ecart-software" and tld="com". "last" isn't a plausible TLD and has no plausible
+  // prefix, so the whole candidate is dropped. The scanner deliberately does not retry with an
+  // earlier "." as the TLD boundary — recovering "info@ecart-software.com" here would require
+  // the same kind of "guess where the real boundary is" logic that item 2 shows is unsafe, so a
+  // rare false negative is preferred over risking a wrong email.
+  it("conservatively drops an address with an extra dot-segment after its real TLD instead of guessing the boundary", () => {
+    const r = extractFromHtml("<p>info@ecart-software.com.last</p>");
+    expect([...r.emails]).toEqual([]);
+  });
+
+  // Task 5: a business's site embeds a Vagaro booking widget whose support address ends up in
+  // the scraped text alongside the business's own real contact address. The platform address
+  // must be dropped and the SMB's own address kept.
+  it("drops a booking-platform support address embedded in a page but keeps the business's own address", () => {
+    const r = extractFromHtml("<p>Questions about booking? support@vagaro.com. Reach us directly at info@pearlywhitespearland.com.</p>");
+    expect([...r.emails]).toEqual(["info@pearlywhitespearland.com"]);
   });
 });
 

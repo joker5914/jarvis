@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
 import type { ProviderConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
@@ -6,6 +6,7 @@ import { saveOverrides } from "@/lib/config/runtime";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
 import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
+import { PEOPLE_SEARCH_PATH, __setPlanBlockedForTests, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -152,6 +153,160 @@ describe("enrich routes: not-configured provider (real mode, no key)", () => {
     const body = await res.json();
     expect(body.error).toBe("Apollo API key is not configured");
     expect(body.settingsHref).toBe("/settings");
+  });
+});
+
+describe("enrich routes: Apollo plan-blocked (Free plan API_INACCESSIBLE)", () => {
+  let prevJobMode: string | undefined;
+  let apolloSnapshot: ProviderConfig | null;
+
+  beforeAll(async () => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+    apolloSnapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    if (apolloSnapshot) {
+      await prisma.providerConfig.update({ where: { provider: "apollo" }, data: apolloSnapshot });
+    } else {
+      await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
+  });
+  beforeEach(async () => {
+    await cleanup();
+    // M1: apolloPlanBlocked() now revalidates against this row on every call (see below), so a
+    // row a previous test in this block persisted must not leak into the next one.
+    await prisma.providerConfig.deleteMany({ where: { provider: "apollo" } });
+  });
+  afterEach(() => __resetPlanBlockedForTests());
+
+  // M1 (whole-branch review): apolloPlanBlocked() now revalidates a "blocked" memo against the
+  // persisted ProviderConfig row rather than trusting it outright (see that function's doc
+  // comment), so a memo set here without a matching row — which a real markPlanBlocked() never
+  // does, since it always persists alongside the memo — would no longer block the route; these
+  // tests upsert the row too, matching what a real 403 in the worker process actually leaves
+  // behind. The DB-row-only scenario (memo empty, as in another process/replica) is covered
+  // separately below.
+  it("POST /businesses/:id/enrich returns 409 with settingsHref while the plan-block memo is set, without queuing", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.lastEnrichedAt).toBeNull();
+  });
+
+  it("POST /businesses/bulk enrich returns 409 with settingsHref while the plan-block memo is set", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("a memo that has already expired no longer blocks the route", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() - 1000);
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(202);
+  });
+
+  // M1: a memo that says blocked must not survive a Settings save (in this or another web
+  // process/replica) that cleared the persisted row — the route proceeds instead of serving a
+  // stale 409 forever.
+  it("a live memo is dropped and does not block the route once the persisted row has been cleared", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
+    await prisma.providerConfig.deleteMany({ where: { provider: "apollo" } });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(202);
+  });
+});
+
+// In production JOB_MODE=queue, so only the worker process ever sees a live Apollo 403 and
+// populates the in-memory memo above — the Next.js web process's copy is always empty. These
+// tests exercise that real split: they never call __setPlanBlockedForTests, so the memo starts
+// (and, per afterEach, stays) empty, and instead write straight to the ProviderConfig row the
+// worker would have persisted, proving the routes' gate reads the database, not just memory.
+describe("enrich routes: Apollo plan-blocked via persisted ProviderConfig row (web process, no memo)", () => {
+  let prevJobMode: string | undefined;
+  let apolloSnapshot: ProviderConfig | null;
+
+  beforeAll(async () => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+    apolloSnapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    if (apolloSnapshot) {
+      await prisma.providerConfig.update({ where: { provider: "apollo" }, data: apolloSnapshot });
+    } else {
+      await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
+  });
+  beforeEach(cleanup);
+  // apolloPlanBlocked() primes this process's memo when it finds a blocked row, so a leftover
+  // memo from one test in this block must not leak into the next (or into other describe blocks).
+  afterEach(() => __resetPlanBlockedForTests());
+
+  it("POST /businesses/:id/enrich returns 409 with settingsHref from a persisted row alone, without queuing", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.lastEnrichedAt).toBeNull();
+  });
+
+  it("POST /businesses/bulk enrich returns 409 with settingsHref from a persisted row alone", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("an expired persisted planBlockedUntil does not block the route", async () => {
+    await prisma.providerConfig.upsert({
+      where: { provider: "apollo" },
+      update: { planBlockedUntil: new Date(Date.now() - 1000), planBlockDetail: "API_INACCESSIBLE" },
+      create: { provider: "apollo", planBlockedUntil: new Date(Date.now() - 1000), planBlockDetail: "API_INACCESSIBLE" },
+    });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(202);
   });
 });
 

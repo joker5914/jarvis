@@ -73,6 +73,27 @@ describe("runWebsiteRecheck", () => {
     expect(state.currentJobId).toBe("some-other-job-id");
   });
 
+  // Defect fix: the website-recheck worker handler always paused on a disabled Scanner, even
+  // for scripts/cleanup-invalid-emails.ts's manual re-checks (found live: it queued 5 batches
+  // and each one paused within milliseconds). `origin: "manual"` is the fix on the enqueue side;
+  // this proves the other half — a manual run must never clear the `website_recheck:<ISO>`
+  // marker a concurrent scanner-origin run owns, since a manual run never wrote it.
+  it("origin 'manual': never clears the website_recheck marker, even though it would otherwise own it", async () => {
+    const b = await prisma.business.create({ data: { name: "X", websiteUrl: "https://x.fake.test/" } });
+    await prisma.scannerState.create({ data: { ownerId: OWNER, currentJobId: "website_recheck:2026-01-01T00:00:00.000Z" } });
+    await runWebsiteRecheck([b.id], OWNER, { providers }, { origin: "manual" });
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.currentJobId).toBe("website_recheck:2026-01-01T00:00:00.000Z");
+  });
+
+  it("origin 'scanner': still clears its own website_recheck marker (unchanged from the default)", async () => {
+    const b = await prisma.business.create({ data: { name: "X", websiteUrl: "https://x.fake.test/" } });
+    await prisma.scannerState.create({ data: { ownerId: OWNER, currentJobId: "website_recheck:2026-01-01T00:00:00.000Z" } });
+    await runWebsiteRecheck([b.id], OWNER, { providers }, { origin: "scanner" });
+    const state = await prisma.scannerState.findUniqueOrThrow({ where: { ownerId: OWNER } });
+    expect(state.currentJobId).toBeNull();
+  });
+
   // D6: extractWebsiteContacts awaits opts.beforeFetch before every page fetch, and scrapeOne
   // wires it to checkPause, so a pause requested mid-scrape stops before the next candidate
   // page is fetched rather than only between businesses.

@@ -15,7 +15,7 @@ import { runZipSearch } from "./zipSearch";
 import { runTdlrSync } from "./tdlrSync";
 import { runPromoteBusiness, runPromoteHighFit } from "./promote";
 import { runWebsiteRecheck } from "./websiteRecheck";
-import { JobPausedError, scannerPauseCheck } from "./shared";
+import { JobPausedError, recheckPauseCheck, scannerPauseCheck } from "./shared";
 import { getProviders } from "@/lib/providers";
 import { getActor } from "@/lib/actor";
 
@@ -107,19 +107,40 @@ export async function enqueueEnrich(businessId: string, ownerId: string, opts: {
   return id !== null;
 }
 
-export async function enqueueWebsiteRecheck(businessIds: string[], ownerId: string): Promise<boolean> {
+const DEFAULT_WEBSITE_RECHECK_SINGLETON_KEY = "website-recheck";
+
+/**
+ * `singletonKey` defaults to the fixed `"website-recheck"` key the scanner tick (`tick.ts`)
+ * relies on: that queue is `policy: "exclusive"` (one job queued-or-active per key), which is
+ * exactly the dedupe the tick wants — it never passes `opts`, so it keeps the shared key.
+ * A caller that needs to queue more than one batch at a time (e.g. the cleanup script firing
+ * several batches back to back) must pass a unique `singletonKey` per batch, or every batch
+ * after the first will silently no-op (return `false`) under the shared key.
+ *
+ * `origin` defaults to `"scanner"` so `src/lib/scanner/tick.ts`'s call sites (which never pass
+ * `opts`) keep today's behaviour unchanged. A manual caller (e.g. scripts/cleanup-invalid-emails.ts)
+ * passes `origin: "manual"` so the run is never paused by a disabled/paused Scanner and never
+ * clears a scanner-owned `website_recheck:<ISO>` marker (see runWebsiteRecheck's doc comment).
+ */
+export async function enqueueWebsiteRecheck(
+  businessIds: string[],
+  ownerId: string,
+  opts: { singletonKey?: string; origin?: JobOrigin } = {},
+): Promise<boolean> {
+  const singletonKey = opts.singletonKey ?? DEFAULT_WEBSITE_RECHECK_SINGLETON_KEY;
+  const origin = opts.origin ?? "scanner";
   if (process.env.JOB_MODE === "inline") {
     // runWebsiteRecheck has no outer JobPausedError handling of its own (see its doc comment);
     // a pause is expected/normal here, not a bug, so it's logged quietly rather than as an error.
-    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: scannerPauseCheck(ownerId) }).catch((e) => {
+    void runWebsiteRecheck(businessIds, ownerId, { providers: getProviders(), log: console.log, shouldPause: recheckPauseCheck(origin, ownerId) }, { origin }).catch((e) => {
       if (e instanceof JobPausedError) console.log("[inline website-recheck] paused");
       else console.error("[inline website-recheck]", e);
     });
     return true;
   }
   const boss = await getBoss();
-  const data: WebsiteRecheckJobData = { businessIds, ownerId };
-  const id = await boss.send(QUEUES.websiteRecheck, data, { retryLimit: 1, retryDelay: 60, priority: SCANNER_PRIORITY, singletonKey: "website-recheck" });
+  const data: WebsiteRecheckJobData = { businessIds, ownerId, origin };
+  const id = await boss.send(QUEUES.websiteRecheck, data, { retryLimit: 1, retryDelay: 60, priority: SCANNER_PRIORITY, singletonKey });
   return id !== null;
 }
 
