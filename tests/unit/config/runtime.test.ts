@@ -10,6 +10,7 @@ describe("mergeConfig", () => {
     expect(c.exclusion.chains).toEqual(DEFAULT_EXCLUSION_CONFIG.chains);
     expect(c.exclusion.entityPatterns).toBe(DEFAULT_EXCLUSION_CONFIG.entityPatterns);
     expect(c.projects).toEqual({ highFitThreshold: 60, mediumFitThreshold: 30, backfillMonths: 12 });
+    expect(c.enrichment).toEqual({ maxPeople: 1, monthlyCreditCap: 80, cycleRenewsOn: null });
   });
   it("replaces list fields wholesale, keeps entityPatterns, applies category disable and package override", () => {
     const c = mergeConfig({ exclusion: { chains: ["bella"] }, categories: { disabled: ["bar"], packageOverrides: { cafe: "internet_mobile" } }, projects: { highFitThreshold: 70 } });
@@ -37,5 +38,11 @@ describe("overridesSchema", () => {
     expect(ok.categories?.packageOverrides).toEqual({ cafe: "internet_mobile" });
     expect(() => overridesSchema.parse({ categories: { packageOverrides: { nope: "internet_mobile" } } })).toThrow();
     expect(() => overridesSchema.parse({ categories: { packageOverrides: { cafe: "not_a_package" } } })).toThrow();
+  });
+  it("accepts valid enrichment overrides and rejects out-of-bounds/malformed ones", () => {
+    const ok = overridesSchema.parse({ enrichment: { maxPeople: 2, monthlyCreditCap: 50, cycleRenewsOn: "2026-10-15" } });
+    expect(ok.enrichment).toEqual({ maxPeople: 2, monthlyCreditCap: 50, cycleRenewsOn: "2026-10-15" });
+    expect(() => overridesSchema.parse({ enrichment: { maxPeople: 6 } })).toThrow();
+    expect(() => overridesSchema.parse({ enrichment: { cycleRenewsOn: "15 Oct" } })).toThrow();
   });
 });

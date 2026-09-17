@@ -89,14 +89,14 @@ export async function enqueuePromoteBatch(): Promise<boolean> {
  * this one awaits `runEnrich` so a `JOB_MODE=inline` caller's 202 response comes back only
  * after enrichment has actually finished (the Task 5 e2e relies on this).
  */
-export async function enqueueEnrich(businessId: string, ownerId: string, opts: { force?: boolean } = {}): Promise<boolean> {
+export async function enqueueEnrich(businessId: string, ownerId: string, opts: { force?: boolean; people?: number } = {}): Promise<boolean> {
   if (process.env.JOB_MODE === "inline") {
     const { runEnrich } = await import("./enrich");
-    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log }, { force: opts.force });
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log }, { force: opts.force, people: opts.people });
     return true;
   }
   const boss = await getBoss();
-  const data: EnrichJobData = { businessId, ownerId, force: opts.force };
+  const data: EnrichJobData = { businessId, ownerId, force: opts.force, people: opts.people };
   const id = await boss.send(QUEUES.enrich, data, {
     singletonKey: businessId,
     priority: MANUAL_PRIORITY,

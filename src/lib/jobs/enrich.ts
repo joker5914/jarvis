@@ -2,8 +2,10 @@ import { prisma } from "@/lib/db";
 import { checkPause, upsertIgnoringConflict, type JobDeps } from "./shared";
 import { validateEmails, recomputeContactQuality } from "./zipSearch";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
+import { loadConfig } from "@/lib/config/runtime";
+import { creditStatus } from "@/lib/enrichment/credits";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
-import { ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
+import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 import type { EnrichPerson } from "@/lib/providers/types";
 
 const SOCIAL_HOSTS = ["facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com", "sites.google.com", "business.site", "wixsite.com", "squarespace.com", "godaddysites.com"];
@@ -55,7 +57,7 @@ export async function runEnrich(
   businessId: string,
   ownerId: string,
   deps: JobDeps,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; people?: number } = {},
 ): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
@@ -68,17 +70,34 @@ export async function runEnrich(
       return { added: 0, updated: 0, skipped: "recent" as const };
     }
   }
+  const cfg = await loadConfig(ownerId);
+  const maxPeople = Math.min(ENRICH_CONFIG.maxPeopleLimit, Math.max(1, opts.people ?? cfg.enrichment.maxPeople));
+  const status = await creditStatus(ownerId, cfg);
+  const { used, cap } = status;
+  let remaining = status.remaining;
+  if (remaining <= 0) {
+    await log("Enrichment skipped: Apollo monthly credit cap reached");
+    throw new CreditCapReachedError(used, cap);
+  }
   let added = 0;
   let updated = 0;
   let contactRows = 0;
   try {
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
-    const people = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city: cityFromAddress(b.formattedAddress) }, ENRICH_CONFIG.maxPeople);
-    for (const p of people.slice(0, ENRICH_CONFIG.maxPeople)) {
+    const people = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city: cityFromAddress(b.formattedAddress) }, maxPeople);
+    for (const p of people.slice(0, maxPeople)) {
       await checkPause(deps);
+      // Apollo's search never returns emails (see EnrichmentProvider.searchPeople); a hit it
+      // already flags as having no email would never yield one from a paid reveal either, so
+      // skip it before spending a credit. `p.email` is checked too for a fake/future provider
+      // that already has the email in hand from the cheap search.
+      if (!p.hasEmail && !p.email) continue;
+      const willPay = !p.email;
+      if (willPay && remaining <= 0) break; // cap reached mid-run: stop revealing further people, but let the business finish
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
+      if (willPay && full.email) remaining--;
       const personName = full.name;
       const personTitle = full.title;
       const rows: { type: "email" | "linkedin"; value: string }[] = [];

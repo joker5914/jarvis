@@ -14,3 +14,16 @@ export class ProviderDisabledError extends Error {
     this.name = "ProviderDisabledError";
   }
 }
+
+/** Thrown by runEnrich when the owner's monthly Apollo credit cap (see src/lib/enrichment/credits.ts)
+ * is already reached before any provider call. Unrecoverable by retry — swallowed by
+ * handleEnrichJob like the budget/config errors above. */
+export class CreditCapReachedError extends Error {
+  constructor(
+    public used: number,
+    public cap: number,
+  ) {
+    super(`Apollo monthly credit cap reached (${used}/${cap})`);
+    this.name = "CreditCapReachedError";
+  }
+}

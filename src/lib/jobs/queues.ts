@@ -39,7 +39,7 @@ export type PromoteJobData = { businessId: string; ownerId: string };
 export type PromoteBatchJobData = Record<string, never>;
 export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string };
 export type ScannerTickJobData = Record<string, never>;
-export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean };
+export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean; people?: number };
 
 // Minimal structural type for the pg-boss instance this helper needs: avoids importing the
 // `pg-boss` package (and its types) into every caller just to type one parameter.

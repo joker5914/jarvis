@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { CATEGORIES, type Category } from "./categories";
 import { DEFAULT_EXCLUSION_CONFIG, type ExclusionConfig } from "./exclusion";
+import { ENRICH_CONFIG } from "./enrichment";
 import { PACKAGES, type PackageSlug } from "./packages";
 import { PROJECT_CONFIG } from "./projects";
 
@@ -42,6 +43,18 @@ export const overridesSchema = z
         message: "highFitThreshold must be greater than mediumFitThreshold",
       })
       .optional(),
+    enrichment: z
+      .object({
+        maxPeople: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
+        monthlyCreditCap: z.number().int().min(0).max(1000).optional(),
+        cycleRenewsOn: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .nullable()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -52,6 +65,7 @@ export type RuntimeConfig = {
   categories: Category[];
   allCategories: (Category & { enabled: boolean; defaultPackageSlug: PackageSlug })[];
   projects: { highFitThreshold: number; mediumFitThreshold: number; backfillMonths: number };
+  enrichment: { maxPeople: number; monthlyCreditCap: number; cycleRenewsOn: string | null };
   overrides: ConfigOverrides;
 };
 
@@ -73,6 +87,11 @@ export function mergeConfig(o: ConfigOverrides): RuntimeConfig {
       highFitThreshold: o.projects?.highFitThreshold ?? PROJECT_CONFIG.highFitThreshold,
       mediumFitThreshold: o.projects?.mediumFitThreshold ?? PROJECT_CONFIG.mediumFitThreshold,
       backfillMonths: o.projects?.backfillMonths ?? PROJECT_CONFIG.backfillMonths,
+    },
+    enrichment: {
+      maxPeople: o.enrichment?.maxPeople ?? ENRICH_CONFIG.maxPeople,
+      monthlyCreditCap: o.enrichment?.monthlyCreditCap ?? ENRICH_CONFIG.monthlyCreditCapDefault,
+      cycleRenewsOn: o.enrichment?.cycleRenewsOn ?? null,
     },
     overrides: o,
   };
