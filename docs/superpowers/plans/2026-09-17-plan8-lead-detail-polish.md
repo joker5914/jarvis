@@ -112,10 +112,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `src/lib/extract/normalize.ts`, `src/lib/extract/website.ts`, `tests/unit/extract/normalize.test.ts`, `tests/unit/extract/website.test.ts`
 - Create: `scripts/cleanup-invalid-emails.ts`
 
+**Live evidence (dev DB, 2026-09-17):** 149 of 960 stored email contacts are suspect, in three classes: (a) text glued after the domain — `chefstevehaug@gmail.compowered`, `info@eatportara.compackages`; (b) text glued before the address — `77581info@eatportara.com…`, `-229-4384chefstevehaug@…`, `440-8500pearlandtx15-007@gyrorepublic.com…` (adjacent text nodes concatenated without a separator, so phone digits and zips ran into the local part); (c) site-builder placeholders — `filler@godaddy.com…`. All three must be fixed at extraction time and cleaned from the database.
+
 **Interfaces:**
-- `KNOWN_TLDS` (exported from `normalize.ts`): a Set of common TLDs — `com net org edu gov mil biz info io co us ca uk de fr es it nl au nz mx br in jp cn ru ch se no dk fi be at ie pt pl cz gr tr za ae sg hk kr tw id my ph th vn ar cl pe ve` plus generic `app dev tech online site store shop xyz me tv cc pro biz`, and any 2-letter TLD.
-- `isPlausibleTld(tld: string): boolean` = `tld.length === 2 || KNOWN_TLDS.has(tld)`.
-- `normalizeEmail(raw)` returns null unless the TLD is plausible; `EMAIL_SCAN_RE` becomes `/([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})(?![a-z])/gi` and the scanner additionally tries progressively shorter TLD prefixes when the captured TLD is not plausible (e.g. `comsubmitthanks` → `com`), only accepting when the remainder starts with an uppercase letter or non-letter in the original text (glued-word heuristic) — simplest correct rule: take the longest plausible prefix of the captured TLD; if none, drop the match.
+- `KNOWN_TLDS` (exported from `normalize.ts`): a Set of plausible TLDs — country codes are covered by the 2-letter rule; include the common generics `com net org edu gov mil biz info io co us name pro mobi asia` and a generous list of gTLDs a small business might use (`app dev tech online site store shop xyz me tv cc style studio salon dental clinic cafe pizza restaurant bar beer coffee fitness yoga photography design law legal realty homes house auto cars repair services solutions group llc inc ltd health care vet pet dog kids school academy church farm garden florist boutique fashion hair beauty spa nails tattoo ink art gallery music events wedding photo media news blog live life world city agency company center email cloud digital global network systems software team tools works zone club fun games plus one today now best top new`). `isPlausibleTld(tld)` = `tld.length === 2 || KNOWN_TLDS.has(tld)`.
+- `PLACEHOLDER_EMAIL_RE` (exported): rejects `filler@godaddy.com`, `*@example.com|example.org|example.net|domain.com|email.com|yourdomain.com|yourcompany.com|company.com|test.com|sentry.io|wixpress.com|squarespace.com|godaddy.com|mysite.com|website.com`, and locals `noreply|no-reply|donotreply|filler|placeholder|user|username|yourname|name` at those or any domain when the domain is also a builder domain.
+- `normalizeEmail(raw)` returns null unless the TLD is plausible and the address is not a placeholder.
+- Scanner text assembly in `website.ts`: before scanning text for emails, insert a separator at every tag boundary so adjacent text nodes cannot fuse (e.g. load the HTML after `html.replace(/>/g, "> ")`, or walk text nodes and join with `" "`); `EMAIL_SCAN_RE` becomes `/(?<![a-z0-9._%+-])([a-z0-9._%+-]+)@([a-z0-9.-]+)\.([a-z]{2,24})(?![a-z])/gi`; when the captured TLD is not plausible, take its longest plausible prefix (`comsubmitthanks` → `com`, `stylestore` → `style`); if none, drop the match. Locals that begin with a phone/zip fragment (`^\d{5}(?=[a-z])`, `^-?\d{3}-\d{4}`) are trimmed to the part after the fragment (`77581info` → `info`, `-229-4384chefstevehaug` → `chefstevehaug`) when the remainder is ≥ 2 chars and starts with a letter; otherwise dropped.
+- `mailto:` hrefs are always preferred over scanned text for the same address.
 
 - [ ] **Step 1: Failing unit tests**
 
@@ -129,16 +133,27 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 import { prisma } from "@/lib/db";
 import { normalizeEmail } from "@/lib/extract/normalize";
 const apply = process.argv.includes("--apply");
-const rows = await prisma.contact.findMany({ where: { type: "email" }, select: { id: true, value: true, businessId: true } });
-const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value);
-console.log(`${bad.length} of ${rows.length} email contacts fail the validator`);
-for (const r of bad.slice(0, 20)) console.log("  ", r.value);
+const rows = await prisma.contact.findMany({ where: { type: "email" }, select: { id: true, value: true, businessId: true, ownerId: true } });
+// A stored value is junk when the corrected validator rejects it, OR its local part carries a
+// phone/zip fragment glued from adjacent page text (syntactically valid, semantically wrong).
+const GLUED_LOCAL = /^(-?\d{3}-\d{4}|\d{5})[a-z]/i;
+const bad = rows.filter((r) => normalizeEmail(r.value) !== r.value || GLUED_LOCAL.test(r.value.split("@")[0]));
+console.log(`${bad.length} of ${rows.length} email contacts are junk`);
+for (const r of bad.slice(0, 30)) console.log("  ", r.value);
 if (apply && bad.length) {
   await prisma.contact.deleteMany({ where: { id: { in: bad.map((r) => r.id) } } });
-  const ids = [...new Set(bad.map((r) => r.businessId))];
+  const byOwner = new Map<string, Set<string>>();
+  for (const r of bad) { if (!byOwner.has(r.ownerId)) byOwner.set(r.ownerId, new Set()); byOwner.get(r.ownerId)!.add(r.businessId); }
   const { recomputeContactQuality } = await import("@/lib/jobs/zipSearch");
-  for (const id of ids) await recomputeContactQuality(id);
-  console.log(`deleted ${bad.length}; re-scored ${ids.length} businesses`);
+  const { enqueueWebsiteRecheck } = await import("@/lib/jobs/enqueue");
+  for (const [ownerId, ids] of byOwner) {
+    for (const id of ids) await recomputeContactQuality(id);
+    // Re-scrape with the fixed extractor so the real addresses come back (batches of 25, like the Scanner).
+    const list = [...ids];
+    for (let i = 0; i < list.length; i += 25) await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId);
+    console.log(`owner ${ownerId}: re-scored ${ids.size} businesses, queued ${Math.ceil(list.length / 25)} re-check batches`);
+  }
+  console.log(`deleted ${bad.length}`);
 }
 await prisma.$disconnect();
 ```
