@@ -48,6 +48,16 @@ plan is required for API-based people enrichment; without one, use Apollo's
 web app to find and paste in contacts manually, then save your API key
 again in Settings once you upgrade.
 
+## Running the app day to day
+
+For actual prospecting, use `npm run serve` — it builds a production bundle
+and starts it on port 3000, so page navigation is fast (tens of
+milliseconds instead of seconds). Use `npm run dev` only while changing
+code; it compiles each page the first time you visit it and recompiles on
+every file change, which is what makes dev mode feel slow. Run on Node 22
+via `nvm use` (reads `.nvmrc`). Either way, the background worker is a
+separate process: start it with `npm run worker`.
+
 ## Prerequisites
 
 - Node 22, via nvm: `nvm use 22.22.3`
