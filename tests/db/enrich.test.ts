@@ -44,7 +44,26 @@ describe("runEnrich", () => {
     const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
     expect(log).toHaveLength(1);
     expect(log[0].message).toMatch(/Apollo/);
-    expect(log[0].message).toBe("Enriched via Apollo: 1 person, 2 new contacts, 0 updated");
+    expect(log[0].message).toBe("Enriched via Apollo: 1 person with a verified email out of 1 found; 2 new contacts, 0 updated");
+  });
+  // Live bug (Plan 8 Task 7): searching found 2 candidates but neither had an email; the old
+  // message ("Enriched via Apollo: 0 people, 0 new contacts, 0 updated") read like a targeting
+  // failure that returned nothing, when Apollo actually did find people — just none with an
+  // email. The new message names the titles that came back empty-handed.
+  it("m=2, n=0: search finds two candidates, neither has an email — names the titles instead of a generic '0 people'", async () => {
+    const b = await biz();
+    const fake = new FakeEnrichmentProvider();
+    fake.searchPeople = async () => [
+      { apolloId: "fake-store-mgr", firstName: "Casey", lastName: null, name: "Casey", title: "Store Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
+      { apolloId: "fake-barista", firstName: "Sam", lastName: null, name: "Sam", title: "Barista", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
+    ];
+    const d = deps(fake);
+    const r = await runEnrich(b.id, OWNER, d);
+    expect(r).toEqual({ added: 0, updated: 0, skipped: null });
+    expect(d.enrichment.calls.enrich).toBe(0); // never worth a paid reveal — search already said no email
+    const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+    expect(log).toHaveLength(1);
+    expect(log[0].message).toBe("Enriched via Apollo: none of 2 people found had an email (Store Manager, Barista)");
   });
   it("is idempotent: a second run without force is skipped as recently enriched, and force re-runs without duplicating", async () => {
     const b = await biz();

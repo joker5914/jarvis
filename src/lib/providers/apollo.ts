@@ -290,7 +290,9 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       person_titles: [...ENRICH_CONFIG.preferredTitles],
       include_similar_titles: true,
       person_seniorities: [...ENRICH_CONFIG.seniorities],
-      per_page: max,
+      // People Search is free of Apollo credits, so fetch a full page and rank locally (see
+      // ENRICH_CONFIG.searchPageSize) instead of asking for just `max` rows in Apollo's own order.
+      per_page: ENRICH_CONFIG.searchPageSize,
       page: 1,
     };
     let filter: Record<string, string | number | boolean | string[] | undefined>;

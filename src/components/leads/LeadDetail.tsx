@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Tag } from "@prisma/client";
 import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -14,9 +15,13 @@ import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
 import { latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
 import { QualityBadge } from "./QualityBadge";
 import { SourceBadge } from "./SourceBadge";
+
+const ENRICH_WATCH_INTERVAL_MS = 2000;
+const ENRICH_WATCH_TIMEOUT_MS = 90_000;
 
 type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string };
 type Project = { id: string; projectNumber: string; projectName: string; estimatedCost: number | null; startDate: string | null; completionDate: string | null; scopeOfWork: string | null; ownerName: string | null; ownerPhone: string | null; timingWindow: string | null };
@@ -71,14 +76,22 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [enriching, setEnriching] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
+  // different lead) so a stale timer never touches this component's state after it's gone.
+  const enrichWatchController = useRef<AbortController | null>(null);
+  // Aborts on a different lead being shown (the drawer can swap `id` without fully unmounting
+  // LeadDetail) as well as on real unmount, so a watch started for one lead never lands on
+  // another's state.
+  useEffect(() => () => enrichWatchController.current?.abort(), [id]);
 
-  async function load() {
+  async function load(): Promise<Detail | null> {
     setB(null);
     const res = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
-    if (!res.ok) return toast.error("Could not load lead");
+    if (!res.ok) { toast.error("Could not load lead"); return null; }
     const { business } = await res.json();
     setB(business);
     setNotes(business.notes);
+    return business as Detail;
   }
   async function loadCredits() {
     const res = await fetch("/api/enrichment/credits", { cache: "no-store" });
@@ -102,6 +115,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   async function enrich() {
     setEnriching(true);
+    enrichWatchController.current?.abort(); // a stale watch from a previous click, if any
+    const controller = new AbortController();
+    enrichWatchController.current = controller;
     try {
       const res = await fetch(`/api/businesses/${id}/enrich`, {
         method: "POST",
@@ -117,11 +133,32 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       }
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
       toast.success("Enrichment queued");
-      await load();
+      onChanged?.();
+      const since = new Date();
+      const result = await watchEnrichment({
+        businessId: id,
+        since,
+        fetchDetail: async (): Promise<WatchableDetail> => {
+          const r = await fetch(`/api/businesses/${id}`, { cache: "no-store" });
+          const { business } = await r.json();
+          return business as WatchableDetail;
+        },
+        intervalMs: ENRICH_WATCH_INTERVAL_MS,
+        timeoutMs: ENRICH_WATCH_TIMEOUT_MS,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return; // unmounted/switched leads mid-watch — don't touch state
+      const fresh = await load();
       await loadCredits();
       onChanged?.();
+      if (result === "done") {
+        const newest = fresh?.activity.find((a) => a.kind === "enriched");
+        toast.success(newest?.message ?? "Enrichment finished");
+      } else {
+        toast("Still working — check the activity log in a minute");
+      }
     } finally {
-      setEnriching(false);
+      if (!controller.signal.aborted) setEnriching(false);
     }
   }
 
@@ -201,7 +238,12 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             {b.exclusion === "none" ? (
               <>
                 <Button size="sm" variant="outline" data-testid="enrich-button" disabled={enriching || credits?.remaining === 0} onClick={enrich}>
-                  {enriching ? "Enriching…" : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
+                  {enriching ? (
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                      Enriching…
+                    </span>
+                  ) : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
                 </Button>
                 {credits && (
                   <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">

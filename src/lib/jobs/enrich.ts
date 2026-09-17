@@ -107,6 +107,12 @@ export async function runEnrich(
     // across the whole loop so a business where *every* candidate mismatches gets one explanatory
     // activity row (below) instead of the generic "0 people" success message.
     let skippedOrg: string | null = null;
+    // Counts people who actually came back with a verified email this run (via the free search's
+    // hasEmail flag, or a paid reveal that confirmed one) — distinct from `added`, which only
+    // counts people who produced a *new* contact row (an already-known email doesn't increment
+    // `added` but should still count toward "N people with a verified email" in the activity
+    // message below).
+    let withEmail = 0;
     for (const p of people.slice(0, maxPeople)) {
       await checkPause(deps);
       // Apollo's obfuscated search rows carry `organization.name` but no domain, so a name check
@@ -130,6 +136,7 @@ export async function runEnrich(
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
       if (willPay && full.email) remaining--;
+      if (full.email) withEmail++;
       const personName = full.name;
       const personTitle = full.title;
       const rows: { type: "email" | "linkedin"; value: string }[] = [];
@@ -181,7 +188,16 @@ export async function runEnrich(
     await validateEmails([businessId], deps);
     await recomputeContactQuality(businessId);
     await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
-    await log(`Enriched via Apollo: ${added} ${added === 1 ? "person" : "people"}, ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+    const found = people.length;
+    if (found > 0 && withEmail === 0) {
+      // Search found candidates but none had (or yielded, on reveal) a verified email — worth
+      // explaining which titles came back empty-handed rather than just "0 people" (the live bug
+      // this task fixes: the best candidate used to never even be fetched).
+      const titles = people.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
+      await log(`Enriched via Apollo: none of ${found} people found had an email (${titles})`);
+    } else {
+      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+    }
     return { added, updated, skipped: null };
   } catch (e) {
     if (e instanceof BudgetExhaustedError) await log("Enrichment paused: Apollo daily budget exhausted");

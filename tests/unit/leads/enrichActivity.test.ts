@@ -20,14 +20,14 @@ describe("isEnrichIssueMessage", () => {
   });
 
   it("does not match a successful enrichment or unrelated activity", () => {
-    expect(isEnrichIssueMessage("Enriched via Apollo: 1 person, 2 new contacts, 0 updated")).toBe(false);
+    expect(isEnrichIssueMessage("Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated")).toBe(false);
     expect(isEnrichIssueMessage("Status set to contacted")).toBe(false);
   });
 });
 
 describe("latestEnrichIssue", () => {
   const OLD = { id: "a1", kind: "enriched", message: "Enrichment unavailable: Your Apollo plan does not include the people search and enrichment API. (API_INACCESSIBLE)" };
-  const SUCCESS = { id: "a2", kind: "enriched", message: "Enriched via Apollo: 1 person, 2 new contacts, 0 updated" };
+  const SUCCESS = { id: "a2", kind: "enriched", message: "Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated" };
   const STATUS = { id: "a3", kind: "status_changed", message: "Status set to contacted" };
   const RECENT_SKIP = { id: "a4", kind: "enriched", message: "Enrichment skipped: enriched 1 day(s) ago (use Re-enrich to refresh)" };
   const PAUSED = { id: "a5", kind: "enriched", message: "Enrichment paused: Apollo daily budget exhausted" };

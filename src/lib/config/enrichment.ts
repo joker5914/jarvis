@@ -9,6 +9,10 @@
 export const ENRICH_CONFIG = {
   maxPeople: 1,
   maxPeopleLimit: 5,
+  // People Search itself costs no Apollo credits (only the later per-person reveal does), so
+  // request a full page and rank locally rather than asking Apollo for just `max` rows — its own
+  // ordering isn't the "best candidate" ordering we want (see Plan 8 Task 7).
+  searchPageSize: 10,
   monthlyCreditCap: 85,
   monthlyCreditCapDefault: 80,
   preferredTitles: ["owner", "founder", "general manager", "office manager", "president", "ceo", "manager"],
