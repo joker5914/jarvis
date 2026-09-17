@@ -158,18 +158,37 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
 }
 
 /** Reads at most maxBytes of the body (utf-8) and cancels the rest. */
+/**
+ * After the cap is reached, keep reading (and discarding) up to this many more bytes before
+ * cancelling. undici's HTTP/1 parser asserts `!paused` in `Parser.finish()` when the server
+ * closes a non-keep-alive connection while the consumer has stopped pulling (seen live: a
+ * capped page + `Connection: close` crashed the worker with `AssertionError: false == true`).
+ * Draining a bounded remainder lets most responses reach EOF with the parser unpaused; only
+ * pathologically large bodies are cancelled mid-stream.
+ */
+export const DRAIN_AFTER_CAP_BYTES = 2 * 1024 * 1024;
+
 export async function readCapped(res: Response, maxBytes: number): Promise<string> {
   if (!res.body) return "";
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let finished = false;
   while (total < maxBytes) {
     const { done, value } = await reader.read();
-    if (done || !value) break;
+    if (done || !value) { finished = true; break; }
     const remaining = maxBytes - total;
     chunks.push(value.length > remaining ? value.subarray(0, remaining) : value);
     total += Math.min(value.length, remaining);
   }
-  await reader.cancel().catch(() => {});
+  if (!finished) {
+    let drained = 0;
+    while (drained < DRAIN_AFTER_CAP_BYTES) {
+      const { done, value } = await reader.read().catch(() => ({ done: true, value: undefined as Uint8Array | undefined }));
+      if (done || !value) { finished = true; break; }
+      drained += value.length;
+    }
+  }
+  if (!finished) await reader.cancel().catch(() => {});
   return Buffer.concat(chunks).toString("utf8");
 }
