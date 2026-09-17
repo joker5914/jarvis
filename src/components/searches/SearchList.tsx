@@ -94,7 +94,7 @@ export function SearchList({ initial }: { initial: Search[] }) {
               <div className="flex items-center gap-2">
                 <SearchStatusBadge status={s.status} />
                 {s.origin === "scanner" && <Badge variant="outline">auto</Badge>}
-                <Button variant="outline" size="sm" render={<Link href={`/leads?searchId=${s.id}`} />}>
+                <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/leads?searchId=${s.id}`} />}>
                   View leads
                 </Button>
                 {s.status === "paused" ? (
