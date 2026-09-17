@@ -27,3 +27,27 @@ export class CreditCapReachedError extends Error {
     this.name = "CreditCapReachedError";
   }
 }
+
+/** User-facing explanation for a plan-blocked Apollo call. Apollo's Free plan returns 403
+ * API_INACCESSIBLE for the People Search / People Enrichment endpoints this app relies on
+ * (confirmed against the live key's own API profile), regardless of how the account's email is
+ * registered. Shared between the thrown error, the enrich routes' 409 body, and the README so
+ * the wording never drifts. */
+export const APOLLO_PLAN_BLOCK_MESSAGE =
+  "Apollo's Free plan does not include the people search and enrichment API. Upgrade to a paid Apollo plan, then save a new API key in Settings.";
+
+/** Thrown when Apollo returns 403 API_INACCESSIBLE for an endpoint this app relies on (People
+ * Search, People Enrichment) — see APOLLO_PLAN_BLOCK_MESSAGE for why. Unrecoverable by retry —
+ * swallowed by handleEnrichJob like the errors above, and memoized for a few hours so the app
+ * stops calling an endpoint it already knows is blocked. `detail` carries Apollo's raw error
+ * code (e.g. "API_INACCESSIBLE") for diagnosis in the activity log; it is never key material. */
+export class ProviderPlanError extends Error {
+  constructor(
+    public provider: string,
+    public endpoint: string,
+    public detail: string,
+  ) {
+    super(APOLLO_PLAN_BLOCK_MESSAGE);
+    this.name = "ProviderPlanError";
+  }
+}

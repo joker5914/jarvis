@@ -148,6 +148,13 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const people = groupPeople(b.contacts);
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
+  // `b.activity` is ordered most-recent-first (see getBusinessDetail), so the first "enriched"
+  // row whose message starts with one of these prefixes is the latest failed/paused/skipped
+  // enrich attempt — surfaced here so a click that silently failed (e.g. a plan-blocked Apollo
+  // endpoint, a budget/credit pause) stays visible on refresh, not just as a one-shot toast.
+  const lastEnrichIssue = b.activity.find(
+    (a) => a.kind === "enriched" && /^Enrichment (unavailable|skipped|paused)/.test(a.message),
+  );
 
   return (
     <div className="space-y-4" data-testid="lead-detail">
@@ -211,6 +218,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
           </div>
           {b.exclusion === "none" && credits?.remaining === 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">Monthly Apollo credit cap reached — adjust in Settings</p>
+          )}
+          {b.exclusion === "none" && lastEnrichIssue && (
+            <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="enrich-last-error">{lastEnrichIssue.message}</p>
           )}
         </div>
       </div>

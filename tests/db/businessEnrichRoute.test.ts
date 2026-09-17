@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import type { NextRequest } from "next/server";
 import type { ProviderConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
@@ -6,6 +6,7 @@ import { saveOverrides } from "@/lib/config/runtime";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
 import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
+import { PEOPLE_SEARCH_PATH, __setPlanBlockedForTests, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -152,6 +153,50 @@ describe("enrich routes: not-configured provider (real mode, no key)", () => {
     const body = await res.json();
     expect(body.error).toBe("Apollo API key is not configured");
     expect(body.settingsHref).toBe("/settings");
+  });
+});
+
+describe("enrich routes: Apollo plan-blocked (Free plan API_INACCESSIBLE)", () => {
+  let prevJobMode: string | undefined;
+
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+  });
+  beforeEach(cleanup);
+  afterEach(() => __resetPlanBlockedForTests());
+
+  it("POST /businesses/:id/enrich returns 409 with settingsHref while the plan-block memo is set, without queuing", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000);
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Apollo's Free plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.lastEnrichedAt).toBeNull();
+  });
+
+  it("POST /businesses/bulk enrich returns 409 with settingsHref while the plan-block memo is set", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000);
+    const b = await biz("none");
+    const res = await bulkPost(jsonReq({ ids: [b.id], enrich: true }), noCtx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/Apollo's Free plan does not include the people search and enrichment API/);
+    expect(body.settingsHref).toBe("/settings");
+  });
+
+  it("a memo that has already expired no longer blocks the route", async () => {
+    __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() - 1000);
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(202);
   });
 });
 

@@ -28,6 +28,20 @@ returns at most `maxPlacesPerCategory` (40) places, ranked by Google
 prominence, so a dense zip costs at most about 34 × 40 Place Details calls; a
 Resume never repeats the category searches.
 
+**Apollo's Free plan does not include the People Search or People
+Enrichment API** — every plan tier can call Organization Enrichment, but
+People Search and People Match return HTTP 403 (`API_INACCESSIBLE`) even
+with a valid key, regardless of the monthly credit balance above. The app
+detects this the first time it happens, records an `Enrichment
+unavailable: …` row (with the raw Apollo error code) on the lead's activity
+log so a failed Enrich click stays visible after a refresh, and stops
+calling those endpoints for 6 hours (both the background job and the
+single/bulk Enrich routes refuse up front with a 409 during that window) so
+a blocked plan doesn't waste retries or budget. A paid Apollo plan is
+required for API-based people enrichment; without one, use Apollo's web app
+to find and paste in contacts manually, then generate a new API key and
+save it in Settings once you upgrade.
+
 ## Prerequisites
 
 - Node 22, via nvm: `nvm use 22.22.3`

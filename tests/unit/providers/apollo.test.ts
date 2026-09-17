@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("@/lib/providers/budget", () => ({ withBudget: async (_p: string, fn: () => Promise<unknown>) => fn() }));
 vi.mock("@/lib/providers/keys", () => ({ getProviderKey: async () => "test-key" }));
 
-import { ApolloEnrichmentProvider } from "@/lib/providers/apollo";
+import { ApolloEnrichmentProvider, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
+import { ProviderPlanError } from "@/lib/providers/errors";
 
 type Call = { url: string; init: RequestInit };
 let calls: Call[];
@@ -108,6 +109,40 @@ describe("ApolloEnrichmentProvider.searchOrganization", () => {
   it("rejects an unrelated org name", async () => {
     mockFetch(() => json({ organizations: [{ id: "org1", name: "Katy Dental", primary_domain: "katydental.com" }] }));
     expect(await new ApolloEnrichmentProvider().searchOrganization("Bella Nails", null)).toBeNull();
+  });
+});
+
+describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
+  afterEach(() => __resetPlanBlockedForTests());
+
+  it("a 403 with error_code API_INACCESSIBLE throws ProviderPlanError, and memoizes so the next call skips fetch entirely", async () => {
+    mockFetch(() =>
+      json(
+        {
+          error:
+            "The api/v1/mixed_people/api_search API is not included in your Free plan and is not accessible, even with a master key. All paid plans include full API access. Upgrade your plan from https://www.apollo.io/pricing",
+          error_code: "API_INACCESSIBLE",
+        },
+        403,
+      ),
+    );
+    const provider = new ApolloEnrichmentProvider();
+    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+    expect(calls).toHaveLength(1);
+
+    // Second call, same process: the memo should short-circuit before any network call.
+    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+    expect(calls).toHaveLength(1); // fetch mock still only called once total
+  });
+
+  it("a plain 403 (no API_INACCESSIBLE) throws a generic HTTP error and is never memoized", async () => {
+    mockFetch(() => json({ error: "forbidden" }, 403));
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(
+      /Apollo \/mixed_people\/api_search HTTP 403/,
+    );
+    // Not memoized: a second call re-fetches instead of throwing from a cached block.
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/HTTP 403/);
+    expect(calls).toHaveLength(2);
   });
 });
 

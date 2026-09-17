@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
-import { ProviderDisabledError } from "@/lib/providers/errors";
+import { ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import type { JobDeps } from "@/lib/jobs/shared";
 
 const OWNER = "test-enrich-owner";
@@ -102,6 +102,19 @@ describe("runEnrich", () => {
     const logs = await prisma.activityLog.findMany({ where: { businessId: b.id } });
     expect(logs).toHaveLength(1);
     expect(logs[0].message).toBe("Enrichment skipped: Apollo is disabled in Settings");
+    expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
+  });
+  it("logs exactly one 'Enrichment unavailable' activity row and rethrows ProviderPlanError, leaving lastEnrichedAt null", async () => {
+    const b = await biz();
+    const fake = new FakeEnrichmentProvider();
+    const planError = new ProviderPlanError("apollo", "/mixed_people/api_search", "API_INACCESSIBLE");
+    fake.searchPeople = async () => { throw planError; };
+    await expect(runEnrich(b.id, OWNER, deps(fake))).rejects.toBeInstanceOf(ProviderPlanError);
+    const logs = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toBe(`Enrichment unavailable: ${planError.message} (API_INACCESSIBLE)`);
+    expect(logs[0].message).toMatch(/^Enrichment unavailable/);
+    expect(logs[0].message).toMatch(/\(API_INACCESSIBLE\)$/);
     expect((await prisma.business.findUniqueOrThrow({ where: { id: b.id } })).lastEnrichedAt).toBeNull();
   });
 });

@@ -7,6 +7,8 @@ import { loadConfig } from "@/lib/config/runtime";
 import { creditStatus, estimateCredits } from "@/lib/enrichment/credits";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
 import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
+import { apolloPlanBlocked } from "@/lib/providers/apollo";
+import { APOLLO_PLAN_BLOCK_MESSAGE } from "@/lib/providers/errors";
 
 const bodySchema = z.object({
   force: z.boolean().optional(),
@@ -38,6 +40,9 @@ export const POST = handle(async (req, ctx) => {
   }
   if (!(await isProviderEnabled("apollo"))) {
     return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
+  }
+  if (apolloPlanBlocked().blocked) {
+    return json({ error: APOLLO_PLAN_BLOCK_MESSAGE, settingsHref: "/settings" }, 409);
   }
   // Body is optional (a plain "Enrich" click sends no body at all); an absent/unparsable body is
   // treated as `{}` so force/people fall back to their defaults, but a present-and-invalid

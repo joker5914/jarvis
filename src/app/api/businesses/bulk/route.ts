@@ -7,6 +7,8 @@ import { loadConfig } from "@/lib/config/runtime";
 import { creditStatus, estimateCredits } from "@/lib/enrichment/credits";
 import { enqueueEnrich } from "@/lib/jobs/enqueue";
 import { isProviderConfigured, isProviderEnabled } from "@/lib/providers/keys";
+import { apolloPlanBlocked } from "@/lib/providers/apollo";
+import { APOLLO_PLAN_BLOCK_MESSAGE } from "@/lib/providers/errors";
 
 /** Refuses at the monthly Apollo credit cap before any provider call is queued, shared by the
  * single-business and bulk enrich routes. Takes an already-loaded config so callers that also
@@ -48,6 +50,9 @@ export const POST = handle(async (req) => {
     }
     if (!(await isProviderEnabled("apollo"))) {
       return json({ error: "Apollo is disabled in Settings", settingsHref: "/settings" }, 409);
+    }
+    if (apolloPlanBlocked().blocked) {
+      return json({ error: APOLLO_PLAN_BLOCK_MESSAGE, settingsHref: "/settings" }, 409);
     }
     const cfg = await loadConfig(actor.id);
     const capError = await assertCredits(actor.id, cfg);
