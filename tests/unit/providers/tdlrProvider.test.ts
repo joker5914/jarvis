@@ -118,7 +118,7 @@ describe("TdlrRegistryProvider HTTP contract", () => {
     // internal (lastRequestAt + minIntervalMs - Date.now()) math can compute a
     // wait that is up to 1ms short of minIntervalMs due to truncation, and Node's
     // setTimeout may fire up to ~1ms early on a loaded CI runner (observed: 38ms for a
-    // 40ms gate). Neither is a throttle bug; the real gate is 20 s between TDLR calls.
+    // 40ms gate). Neither is a throttle bug; the production gate is 1 s (TDLR_MIN_INTERVAL_MS).
     expect(Math.abs(timestamps[1] - timestamps[0])).toBeGreaterThanOrEqual(MIN_INTERVAL_MS - 2);
   });
 });
