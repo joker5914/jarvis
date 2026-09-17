@@ -46,24 +46,27 @@ describe("POST /api/searches/[id]/resume", () => {
 
     expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.error).toBe("Search is complete, not paused");
+    expect(body.error).toBe("Search is complete and has nothing to continue");
     expect(enqueueZipSearch).not.toHaveBeenCalled();
   });
 
-  it("409s a complete search with nothing pending (pendingDiscovery 0), same message as any other non-paused search", async () => {
-    const search = await prisma.search.create({ data: { ownerId: OWNER, zip: "77084", origin: "manual", status: "complete", pendingDiscovery: 0 } });
+  it("409s a complete search whose discovery already finished (discoveryComplete true), regardless of pendingDiscovery", async () => {
+    // pendingDiscovery must never gate this on its own — only discoveryComplete does.
+    const search = await prisma.search.create({
+      data: { ownerId: OWNER, zip: "77084", origin: "manual", status: "complete", discoveryComplete: true, pendingDiscovery: 0 },
+    });
 
     const res = await resumeSearch({} as NextRequest, { params: Promise.resolve({ id: search.id }) });
 
     expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.error).toBe("Search is complete, not paused");
+    expect(body.error).toBe("Search is complete and has nothing to continue");
     expect(enqueueZipSearch).not.toHaveBeenCalled();
   });
 
-  it("resumes (202) a complete search that has pendingDiscovery > 0, the same as a paused one (\"Find more\")", async () => {
+  it("resumes (202) a complete search whose discovery is incomplete, the same as a paused one (\"Find more\") — even when pendingDiscovery is 0", async () => {
     const search = await prisma.search.create({
-      data: { ownerId: OWNER, zip: "77084", origin: "manual", status: "complete", pendingDiscovery: 12, error: null },
+      data: { ownerId: OWNER, zip: "77084", origin: "manual", status: "complete", discoveryComplete: false, pendingDiscovery: 0, error: null },
     });
 
     const res = await resumeSearch({} as NextRequest, { params: Promise.resolve({ id: search.id }) });
@@ -77,9 +80,9 @@ describe("POST /api/searches/[id]/resume", () => {
     expect(enqueueZipSearch).toHaveBeenCalledWith(search.id, { priority: MANUAL_PRIORITY, origin: "manual" });
   });
 
-  it("resumes (202) a scanner-origin complete+pending search at scanner priority, when the Scanner isn't pause-requested", async () => {
+  it("resumes (202) a scanner-origin complete+incomplete-discovery search at scanner priority, when the Scanner isn't pause-requested", async () => {
     const search = await prisma.search.create({
-      data: { ownerId: OWNER, zip: "77002", origin: "scanner", status: "complete", pendingDiscovery: 3 },
+      data: { ownerId: OWNER, zip: "77002", origin: "scanner", status: "complete", discoveryComplete: false, pendingDiscovery: 3 },
     });
 
     const res = await resumeSearch({} as NextRequest, { params: Promise.resolve({ id: search.id }) });

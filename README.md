@@ -44,11 +44,13 @@ still searching categories or already fetching Place Details — the search
 completes normally instead of sitting paused: everything discovered so far
 is linked, scored, scraped, validated, and quality-scored, and the leads
 table shows those results right away. The Searches list marks it Complete
-with a note naming how many more places were found but not yet fetched, and
-a nightly job (00:15, after the daily budget resets at midnight) picks it
-back up automatically and finishes the rest — no user action needed. A
-"Find more" button on the search resumes it immediately instead of waiting
-for the nightly run.
+with a note — naming how many more places were found but not yet fetched
+when that count is known, or simply that more places may exist when the
+budget ran out before every category was even searched — and a nightly job
+(00:15, after the daily budget resets at midnight) picks it back up
+automatically and finishes the rest — no user action needed. A "Find more"
+button on the search resumes it immediately instead of waiting for the
+nightly run.
 
 **Local-first People Search (Plan 9).** People Search itself costs no
 Apollo credits, so every enrich run makes an unlocated ("any") call first

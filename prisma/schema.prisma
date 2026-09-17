@@ -105,9 +105,23 @@ model Search {
   status         JobStatus  @default(queued)
   progress       Json?
   discoveredIds  Json?
-  /** Discovered place IDs not yet fetched via Place Details (0 = nothing pending). Set when a
-   *  Google-budget-interrupted search completes on what it captured so far; the nightly
-   *  continue-partial job re-queues any search with pendingDiscovery > 0. */
+  /** Slugs of categories whose searchCategoryIds call has completed for this search, appended
+   *  one at a time as each category finishes (see discover() in src/lib/jobs/zipSearch.ts) —
+   *  durable across a pause/crash/budget interruption, unlike Search.progress (which every
+   *  step's setProgress() call overwrites wholesale). A continuation searches only the
+   *  categories not yet in this list. Reset to [] only when a brand-new Search row is created
+   *  (Re-run) — a resume/continuation never touches it directly. */
+  categoriesDone String[]   @default([])
+  /** False while discover() (category search + Place Details) has not yet finished for this
+   *  search — set false as soon as discover() starts doing real work, true only once it
+   *  completes with nothing left to search or fetch. This is the sole gate the resume route and
+   *  the nightly continue-partial job use to decide whether a "complete" search still has more
+   *  discovery to do; Search.pendingDiscovery is display-only (it can be 0 — e.g. every id
+   *  found so far is already fresh — while categories remain unsearched, so it must never be
+   *  used as that gate on its own). */
+  discoveryComplete Boolean @default(true)
+  /** Discovered place IDs not yet fetched via Place Details (display-only; see
+   *  discoveryComplete's doc comment above for why this must not be used as a completion gate). */
   pendingDiscovery Int      @default(0)
   countsFound    Int        @default(0)
   countsScraped  Int        @default(0)

@@ -72,6 +72,14 @@ export function SearchList({ initial }: { initial: Search[] }) {
       {items.map((s) => {
         const p = (s.progress ?? {}) as Progress;
         const running = s.status === "queued" || s.status === "running";
+        // Search.discoveryComplete is the gate — not Search.pendingDiscovery, which is
+        // display-only and can be 0 while categories are still unsearched (e.g. every place
+        // found so far was already fetched recently).
+        const hasMoreToDiscover = s.status === "complete" && !s.discoveryComplete;
+        const moreToDiscoverText =
+          s.pendingDiscovery > 0
+            ? `${s.pendingDiscovery} more ${s.pendingDiscovery === 1 ? "place" : "places"} to fetch (Google daily budget) · continues automatically after midnight`
+            : "More places may exist — discovery paused by the Google daily budget · continues automatically after midnight";
         return (
           <Card key={s.id} data-testid="search-card" data-status={s.status}>
             <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center">
@@ -91,10 +99,8 @@ export function SearchList({ initial }: { initial: Search[] }) {
                       <span className="ml-2 text-red-600">{s.error}</span>
                     ) : s.status === "paused" && p.message ? (
                       <span className="ml-2 text-amber-600 dark:text-amber-400">{p.message}</span>
-                    ) : s.status === "complete" && s.pendingDiscovery > 0 ? (
-                      <span className="ml-2 text-amber-600 dark:text-amber-400">
-                        {s.pendingDiscovery} more places to fetch (Google daily budget) · continues automatically after midnight
-                      </span>
+                    ) : hasMoreToDiscover ? (
+                      <span className="ml-2 text-amber-600 dark:text-amber-400">{moreToDiscoverText}</span>
                     ) : null}
                   </div>
                 )}
@@ -109,7 +115,7 @@ export function SearchList({ initial }: { initial: Search[] }) {
                   <Button variant="outline" size="sm" onClick={() => resume(s.id)}>
                     Resume
                   </Button>
-                ) : s.status === "complete" && s.pendingDiscovery > 0 ? (
+                ) : hasMoreToDiscover ? (
                   <Button variant="outline" size="sm" onClick={() => resume(s.id)}>
                     Find more
                   </Button>
