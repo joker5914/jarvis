@@ -9,10 +9,11 @@
 // A local part is glued when either:
 //   - it starts with a phone/zip fragment (the original leading-fragment rule), or
 //   - it contains a `\d{3}-\d{4}` phone fragment anywhere, or
-//   - it contains a run of 5+ digits immediately followed by a letter anywhere.
+//   - it contains a zip-shaped run of exactly 5 digits immediately followed by a letter anywhere
+//     (exactly five, not 5+, so order/ticket-style aliases like "ref000001a" are left alone).
 const LEADING_FRAGMENT_RE = /^(-?\d{3}-\d{4}|\d{5})[a-z]/i;
 const PHONE_FRAGMENT_ANYWHERE_RE = /\d{3}-\d{4}/;
-const DIGIT_RUN_BEFORE_LETTER_RE = /\d{5,}[a-z]/i;
+const DIGIT_RUN_BEFORE_LETTER_RE = /(?<!\d)\d{5}(?!\d)[a-z]/i;
 
 export function isGluedLocalPart(local: string): boolean {
   return LEADING_FRAGMENT_RE.test(local) || PHONE_FRAGMENT_ANYWHERE_RE.test(local) || DIGIT_RUN_BEFORE_LETTER_RE.test(local);

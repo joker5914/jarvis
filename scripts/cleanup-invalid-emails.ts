@@ -51,7 +51,7 @@ async function main() {
       const batches = Math.ceil(list.length / 25);
       let queued = 0;
       for (let i = 0, batchIndex = 0; i < list.length; i += 25, batchIndex++) {
-        const singletonKey = `website-recheck:cleanup:${runTimestamp}:${batchIndex}`;
+        const singletonKey = `website-recheck:cleanup:${runTimestamp}:${ownerId}:${batchIndex}`;
         const ok = await enqueueWebsiteRecheck(list.slice(i, i + 25), ownerId, { singletonKey });
         if (ok) queued++;
         else console.warn(`  owner ${ownerId}: batch ${batchIndex} (${singletonKey}) was NOT queued (boss.send returned null)`);

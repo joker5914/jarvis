@@ -16,8 +16,15 @@ describe("isGluedLocalPart", () => {
     expect(isGluedLocalPart("phone832-295-3350emailamericanailspearland")).toBe(true);
   });
 
-  it("flags a run of 5+ digits immediately followed by a letter, anywhere in the local part", () => {
+  it("flags a zip-shaped run of exactly 5 digits immediately followed by a letter, anywhere in the local part", () => {
     expect(isGluedLocalPart("promo12345off")).toBe(true);
+    expect(isGluedLocalPart("77584lafemmebeautyloungelcc")).toBe(true);
+  });
+
+  it("does not flag longer digit runs (order/ticket-style aliases) or digits not followed by a letter", () => {
+    expect(isGluedLocalPart("ref000001a")).toBe(false);
+    expect(isGluedLocalPart("dept543210sales")).toBe(false);
+    expect(isGluedLocalPart("box12345")).toBe(false);
   });
 
   it("does not flag a legit local part with a short digit run", () => {
