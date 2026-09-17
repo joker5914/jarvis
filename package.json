@@ -7,8 +7,8 @@
   },
   "scripts": {
     "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev --turbopack",
-    "build": "cross-env NEXT_TELEMETRY_DISABLED=1 next build",
-    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start",
+    "build": "cross-env NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production next build",
+    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production next start",
     "start:web": "prisma migrate deploy && next start -p ${PORT:-3000}",
     "start:worker": "node --import=tsx src/worker/index.ts",
     "serve": "npm run build && npm run start",
