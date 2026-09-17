@@ -44,8 +44,14 @@ describe("extractWebsiteContacts", () => {
 });
 
 function fakeBody() {
-  const body = { cancelled: false, cancel: async () => { body.cancelled = true; } };
-  return body;
+  // A real (small) stream: the discard path drains it to completion, so "released" means the
+  // stream was fully read or cancelled — either way the socket can be reused/closed.
+  const state = { drained: false, cancelled: false, get released() { return state.drained || state.cancelled; } };
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) { c.enqueue(new Uint8Array(64)); c.close(); state.drained = true; },
+    cancel() { state.cancelled = true; },
+  });
+  return Object.assign(state, { stream });
 }
 
 describe("defaultFetcher body cancellation on early-return paths", () => {
@@ -58,11 +64,11 @@ describe("defaultFetcher body cancellation on early-return paths", () => {
       status: 404,
       url: "https://dead.example/",
       headers: new Headers({ "content-type": "text/html" }),
-      body,
+      body: body.stream,
     } as unknown as Response);
     const r = await defaultFetcher("https://dead.example/");
     expect(r).toMatchObject({ ok: false, status: 404 });
-    expect(body.cancelled).toBe(true);
+    expect(body.released).toBe(true);
   });
 
   it("cancels the response body on a non-HTML content-type", async () => {
@@ -72,10 +78,10 @@ describe("defaultFetcher body cancellation on early-return paths", () => {
       status: 200,
       url: "https://x.com/menu.pdf",
       headers: new Headers({ "content-type": "application/pdf" }),
-      body,
+      body: body.stream,
     } as unknown as Response);
     const r = await defaultFetcher("https://x.com/menu.pdf");
     expect(r).toMatchObject({ ok: true, html: "" });
-    expect(body.cancelled).toBe(true);
+    expect(body.released).toBe(true);
   });
 });

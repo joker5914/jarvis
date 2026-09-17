@@ -103,6 +103,13 @@ async function main() {
   // queue a second tick behind one already in flight.
   await boss.schedule(QUEUES.scannerTick, `*/${SCANNER_CONFIG.tickMinutes} * * * *`, {}, { tz: REGION.timezone, singletonKey: "scanner-tick" });
 
+  // A 24/7 worker must survive stray exceptions thrown outside any job's promise chain (seen
+  // live: an undici HTTP/1 parser assertion raised inside a socket "end" handler killed the
+  // process mid-scrape and took an in-flight TDLR sync down with it). Log and keep serving;
+  // the affected request itself times out via undici's body timeout and the job's own
+  // per-business error handling records the failure.
+  process.on("uncaughtException", (e) => console.error("[worker] uncaught exception (worker kept alive)", e));
+  process.on("unhandledRejection", (e) => console.error("[worker] unhandled rejection (worker kept alive)", e));
   console.log(`worker ready (PROVIDER_MODE=${process.env.PROVIDER_MODE ?? "fake"})`);
 
   for (const sig of ["SIGTERM", "SIGINT"] as const) {

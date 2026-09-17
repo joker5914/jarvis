@@ -82,3 +82,20 @@ export async function upsertIgnoringConflict<T>(fn: () => Promise<T>): Promise<v
     if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
   }
 }
+
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
+/** Rejects with TimeoutError if `p` does not settle within `ms`; the timer never keeps the process alive. */
+export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new TimeoutError(`${label} exceeded ${ms} ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, guard]).finally(() => clearTimeout(timer)) as Promise<T>;
+}

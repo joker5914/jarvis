@@ -30,7 +30,10 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
   calls = { searchCategory: 0, searchCategoryIds: 0, getPlaceDetails: 0 };
   /** Raw queries passed to searchCategoryIds, in order — lets tests assert which categories were searched. */
   queries: string[] = [];
-  private known = new Map<string, DiscoveredBusiness>();
+  /** `maxResults` seen by each searchCategoryIds call, in order — lets tests assert the per-category cap was passed through. */
+  maxResultsSeen: number[] = [];
+  /** Every place generated so far, keyed by placeId — the fake's cache of "known" places across categories. */
+  known = new Map<string, DiscoveredBusiness>();
 
   private generate(rawQuery: string): DiscoveredBusiness[] {
     // Promote flow: a query beginning with a fake project's facility name returns one exact match.
@@ -81,9 +84,10 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
     return this.generate(rawQuery);
   }
 
-  async searchCategoryIds(rawQuery: string): Promise<string[]> {
+  async searchCategoryIds(rawQuery: string, _center?: { lat: number; lng: number }, _radiusMeters?: number, maxResults = 60): Promise<string[]> {
     this.calls.searchCategoryIds++;
     this.queries.push(rawQuery);
+    this.maxResultsSeen.push(maxResults);
     const list = this.generate(rawQuery);
     for (const biz of list) this.known.set(biz.placeId, biz);
     return list.map((b) => b.placeId);
@@ -91,6 +95,16 @@ export class FakeDiscoveryProvider implements DiscoveryProvider {
 
   async getPlaceDetails(placeId: string): Promise<DiscoveredBusiness | null> {
     this.calls.getPlaceDetails++;
+    const cached = this.known.get(placeId);
+    if (cached) return cached;
+    // Real Google Place IDs are globally stable, so Place Details for an ID this provider
+    // instance never generated itself (e.g. a resumed search reusing IDs a Search row
+    // persisted from an earlier searchCategoryIds call, possibly on a different provider
+    // instance) must still resolve — reconstruct it deterministically from the ID the same
+    // way `generate()` would have produced it originally.
+    const query = placeId === "fake-bella-nails" ? "bella nails & spa" : /^fake-(.+)-\d+$/.exec(placeId)?.[1]?.replace(/-/g, " ");
+    if (!query) return null;
+    for (const biz of this.generate(query)) this.known.set(biz.placeId, biz);
     return this.known.get(placeId) ?? null;
   }
 }

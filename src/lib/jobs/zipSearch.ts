@@ -11,7 +11,7 @@ import { normalizePhone } from "@/lib/extract/normalize";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import type { DiscoveredBusiness } from "@/lib/providers/types";
 import { DISCOVERY_CONFIG } from "@/lib/config/discovery";
-import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, upsertIgnoringConflict, type JobDeps } from "./shared";
+import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, upsertIgnoringConflict, withTimeout, type JobDeps } from "./shared";
 
 /**
  * `signal` is aborted when pg-boss expires or cancels the underlying job (e.g. the job
@@ -22,6 +22,8 @@ import { checkPause, discoveredToBusinessFields, JobPausedError, normalizeName, 
 export type ZipSearchDeps = JobDeps;
 export { JobPausedError, normalizeName };
 
+/** Upper bound for one business's website extraction (home page + candidate pages). */
+const SCRAPE_HARD_TIMEOUT_MS = 90_000;
 const SCRAPE_CONCURRENCY = 4;
 
 type Progress = { step: string; current?: number; total?: number; message?: string; doneSteps: string[] };
@@ -44,14 +46,30 @@ type Found = { biz: DiscoveredBusiness; category: string };
 type KnownFresh = { placeId: string; category: string };
 
 /** Per category: IDs-only search; details only for places we don't have or haven't refreshed recently. */
-async function discover(searchId: string, ownerId: string, zip: string, center: { lat: number; lng: number }, radius: number, deps: ZipSearchDeps, done: string[], categories: Category[]) {
+async function discover(
+  searchId: string,
+  ownerId: string,
+  zip: string,
+  center: { lat: number; lng: number },
+  radius: number,
+  deps: ZipSearchDeps,
+  done: string[],
+  categories: Category[],
+  priorIds: Record<string, string> | null,
+) {
   const idsByCategory = new Map<string, string>(); // placeId -> first surfacing category
-  for (let i = 0; i < categories.length; i++) {
-    await checkPause(deps);
-    const c = categories[i];
-    await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
-    const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius);
-    for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+  if (priorIds && Object.keys(priorIds).length > 0) {
+    for (const [id, slug] of Object.entries(priorIds)) idsByCategory.set(id, slug);
+    await setProgress(searchId, { step: "discover", current: categories.length, total: categories.length, message: "Using previously discovered places", doneSteps: done });
+  } else {
+    for (let i = 0; i < categories.length; i++) {
+      await checkPause(deps);
+      const c = categories[i];
+      await setProgress(searchId, { step: "discover", current: i + 1, total: categories.length, message: c.label, doneSteps: done });
+      const ids = await deps.providers.discovery.searchCategoryIds(`${c.query} in ${zip}`, center, radius, DISCOVERY_CONFIG.maxPlacesPerCategory);
+      for (const id of ids) if (id && !idsByCategory.has(id)) idsByCategory.set(id, c.slug);
+    }
+    await prisma.search.update({ where: { id: searchId }, data: { discoveredIds: Object.fromEntries(idsByCategory) as Prisma.InputJsonValue } });
   }
 
   const refreshBefore = new Date(Date.now() - DISCOVERY_CONFIG.detailsRefreshDays * 86_400_000);
@@ -65,11 +83,27 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
   const found = new Map<string, Found>();
   const toFetch = [...idsByCategory.keys()].filter((id) => !fresh.has(id));
   let n = 0;
+  // `complete` is false only when Place Details itself hits the Google daily budget partway
+  // through this loop: the caller then links/scores/scrapes/validates/quality-scores whatever
+  // is in `found` so far and pauses, resuming the remaining `toFetch` IDs later (persisted via
+  // `discoveredIds` above, so Resume never re-runs the category searches). A BudgetExhaustedError
+  // from the category-search loop above is not caught here — it still propagates to
+  // runZipSearch's outer catch, unchanged.
+  let complete = true;
   for (const id of toFetch) {
     await checkPause(deps);
     n++;
     await setProgress(searchId, { step: "details", current: n, total: toFetch.length, doneSteps: done });
-    const biz = await deps.providers.discovery.getPlaceDetails(id);
+    let biz: DiscoveredBusiness | null;
+    try {
+      biz = await deps.providers.discovery.getPlaceDetails(id);
+    } catch (e) {
+      if (e instanceof BudgetExhaustedError) {
+        complete = false;
+        break;
+      }
+      throw e;
+    }
     if (biz && biz.name) {
       found.set(id, { biz, category: idsByCategory.get(id)! });
       // Persist the Business row as soon as its details are fetched, not just after the whole
@@ -104,7 +138,11 @@ async function discover(searchId: string, ownerId: string, zip: string, center: 
       );
     }
   }
-  return { found, knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })) };
+  return {
+    found,
+    knownFresh: [...idsByCategory.keys()].filter((id) => fresh.has(id) && known.has(id)).map((id) => ({ placeId: id, category: idsByCategory.get(id)! })),
+    complete,
+  };
 }
 
 async function upsertBusinesses(searchId: string, ownerId: string, found: Map<string, Found>, knownFresh: KnownFresh[], cfg: RuntimeConfig) {
@@ -220,7 +258,14 @@ async function upsertBusinesses(searchId: string, ownerId: string, found: Map<st
 export async function scrapeOne(businessId: string, ownerId: string, deps: ZipSearchDeps) {
   const b = await prisma.business.findUnique({ where: { id: businessId } });
   if (!b?.websiteUrl) return;
-  const r = await extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) });
+  // Hard ceiling per site: a single hung socket (seen live — an undici parser assertion left a
+  // request that never settled, stalling a 487-site batch at 486) must never block the batch.
+  // JobPausedError is rethrown untouched by the wrapper (Promise.race passes it through).
+  const r = await withTimeout(
+    extractWebsiteContacts(b.websiteUrl, deps.providers.fetcher, { beforeFetch: () => checkPause(deps) }),
+    SCRAPE_HARD_TIMEOUT_MS,
+    `scrape ${b.websiteUrl}`,
+  );
   await prisma.business.update({
     where: { id: businessId },
     data: {
@@ -310,11 +355,17 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
 
     // 2 to 4. discover + exclusion + upsert (skipped on resume)
     let businessIds: string[];
+    let discoveryComplete = true;
     if (!done.includes("discover")) {
-      const { found, knownFresh } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories);
+      const priorIds = (search.discoveredIds as Record<string, string> | null) ?? null;
+      const { found, knownFresh, complete } = await discover(searchId, ownerId, search.zip, center, radius, deps, done, cfg.categories, priorIds);
+      discoveryComplete = complete;
       await setProgress(searchId, { step: "save", current: 0, total: found.size + knownFresh.length, doneSteps: done });
       businessIds = await upsertBusinesses(searchId, ownerId, found, knownFresh, cfg);
-      done.push("discover");
+      // Only mark "discover" done when Place Details fetched everything: a budget-interrupted
+      // run must be resumable back into discover() (via the persisted `discoveredIds`) rather
+      // than treated as already past that step.
+      if (discoveryComplete) done.push("discover");
       await prisma.search.update({ where: { id: searchId }, data: { countsFound: businessIds.length } });
       log(`search ${searchId}: ${businessIds.length} businesses`);
     } else {
@@ -376,11 +427,31 @@ export async function runZipSearch(searchId: string, deps: ZipSearchDeps): Promi
     await setProgress(searchId, { step: "score", doneSteps: done });
     for (const id of businessIds) await recomputeContactQuality(id);
 
-    await prisma.search.update({
-      where: { id: searchId },
-      data: { status: "complete", progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue },
-    });
-    log(`search ${searchId}: complete`);
+    if (discoveryComplete) {
+      await prisma.search.update({
+        where: { id: searchId },
+        data: { status: "complete", progress: { step: "complete", doneSteps: [...done, "scrape", "validate", "score"] } as Prisma.InputJsonValue },
+      });
+      log(`search ${searchId}: complete`);
+    } else {
+      // Place Details hit the Google daily budget: everything fetched so far has still been
+      // linked, scored, scraped, validated, and quality-scored above. `error` stays null (this
+      // is not a failure state) and "discover" is absent from doneSteps so Resume re-enters
+      // discover() and fetches only the remaining persisted IDs.
+      await prisma.search.update({
+        where: { id: searchId },
+        data: {
+          status: "paused",
+          error: null,
+          progress: {
+            step: "paused",
+            message: "Discovery incomplete: Google daily budget exhausted — resume to find more businesses",
+            doneSteps: done,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      log(`search ${searchId}: paused with discovery incomplete (${businessIds.length} businesses processed)`);
+    }
   } catch (e) {
     if (e instanceof JobPausedError) {
       await prisma.search.update({ where: { id: searchId }, data: { status: "paused", progress: { step: "paused", message: "Paused by user", doneSteps: done } as Prisma.InputJsonValue } });

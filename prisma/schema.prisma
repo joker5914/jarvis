@@ -104,6 +104,7 @@ model Search {
   radiusMeters   Int?
   status         JobStatus  @default(queued)
   progress       Json?
+  discoveredIds  Json?
   countsFound    Int        @default(0)
   countsScraped  Int        @default(0)
   countsEnriched Int        @default(0)
