@@ -5,7 +5,7 @@ import { creditStatus } from "@/lib/enrichment/credits";
 import { CreditCapReachedError } from "@/lib/providers/errors";
 import { loadConfig, saveOverrides } from "@/lib/config/runtime";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
-import type { EnrichPerson } from "@/lib/providers/types";
+import type { EnrichPerson, PeopleSearchResult } from "@/lib/providers/types";
 import type { JobDeps } from "@/lib/jobs/shared";
 
 const OWNER = "test-enrich-credits-owner";
@@ -21,9 +21,9 @@ afterAll(cleanup);
 
 /** Marks the second search hit (General Manager) as hasEmail so a two-person run pays to reveal both. */
 class BothHaveEmailProvider extends FakeEnrichmentProvider {
-  async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
-    const people = await super.searchPeople(q, max);
-    return people.map((p) => (p.title === "General Manager" ? { ...p, hasEmail: true } : p));
+  async searchPeople(q: { domain: string | null; orgName: string; city: string | null; state: string | null }, max: number): Promise<PeopleSearchResult> {
+    const result = await super.searchPeople(q, max);
+    return { ...result, people: result.people.map((p) => (p.title === "General Manager" ? { ...p, hasEmail: true } : p)) };
   }
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
     const person = await super.enrichPerson(apolloId);

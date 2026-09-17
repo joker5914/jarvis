@@ -234,7 +234,7 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
   ```
 - `totalFound` = Apollo's `total_entries` for the scope that matched (or for the last attempted scope when everything was empty).
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/unit/geo/usStates.test.ts`: `stateNameFor("TX") === "Texas"`, `("tx")` same, `("XX")` null, `(null)` null; the map has 51 entries.
 
@@ -250,9 +250,9 @@ UI: `ProviderKeysCard.tsx:81-84` becomes two lines when `credits.apollo` exists:
 
 `tests/db/enrich.test.ts`: update every `fake.searchPeople = async () => [...]` to return `{ people, totalFound: people.length, scope: "any" }`; add one case where the fake returns `scope: "city"` and assert the success message ends with ` (matched in Pearland, TX)`.
 
-- [ ] **Step 2: Run, expect failures.**
+- [x] **Step 2: Run, expect failures.**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/lib/geo/usStates.ts`: the 50 states + DC as `{ AL: "Alabama", … , WY: "Wyoming", DC: "District of Columbia" }`; `stateNameFor` upper-cases and looks up.
 
@@ -290,8 +290,8 @@ async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResul
 
 `tests/db/enrichCredits.test.ts`: its subclass overriding `searchPeople` must return the result object.
 
-- [ ] **Step 4: tsc, lint, unit, db exit 0.**
-- [ ] **Step 5: Commit** `feat(enrich): local-first People Search (city → state → anywhere) and a search result object with totalFound and scope`.
+- [x] **Step 4: tsc, lint, unit, db exit 0.**
+- [x] **Step 5: Commit** `feat(enrich): local-first People Search (city → state → anywhere) and a search result object with totalFound and scope`.
 
 ---
 

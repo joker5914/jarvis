@@ -8,6 +8,7 @@ import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
 import { PLATFORM_EMAIL_DOMAINS } from "@/lib/extract/platformDomains";
+import { stateNameFor } from "@/lib/geo/usStates";
 import type { EnrichPerson } from "@/lib/providers/types";
 
 // Hosts that never identify a business's own domain: social/review profile pages (the original
@@ -38,16 +39,29 @@ export function domainFromUrl(url: string | null): string | null {
   }
 }
 
-export function cityFromAddress(addr: string | null): string | null {
-  if (!addr) return null;
+/**
+ * Splits a formatted street address into its city and 2-letter state code, the way Google's
+ * formatted_address strings lay them out ("street, city, ST zip[, country]"). Supersedes the
+ * plain city-only cityFromAddress (kept below as a thin wrapper — other code and tests still use
+ * it): the location cascade in searchPeople needs both to build Apollo's `person_locations[]`
+ * filter (see src/lib/providers/apollo.ts and src/lib/geo/usStates.ts).
+ */
+export function regionFromAddress(addr: string | null): { city: string | null; state: string | null } {
+  if (!addr) return { city: null, state: null };
   const parts = addr.split(",").map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return null;
-  if (parts.length === 1) return null;
+  if (parts.length <= 1) return { city: null, state: null };
   const last = parts[parts.length - 1];
   const isCountry = /^(usa|united states|us)$/i.test(last);
   const stateZipIdx = isCountry ? parts.length - 2 : parts.length - 1;
-  const city = parts[stateZipIdx - 1];
-  return city && !/\d/.test(city) ? city : null;
+  const cityRaw = parts[stateZipIdx - 1];
+  const city = cityRaw && !/\d/.test(cityRaw) ? cityRaw : null;
+  const stateZip = parts[stateZipIdx] as string | undefined;
+  const stateMatch = stateZip ? /^([A-Z]{2})\b/.exec(stateZip) : null;
+  return { city, state: stateMatch ? stateMatch[1] : null };
+}
+
+export function cityFromAddress(addr: string | null): string | null {
+  return regionFromAddress(addr).city;
 }
 
 /**
@@ -100,7 +114,13 @@ export async function runEnrich(
   try {
     await checkPause(deps);
     const domain = domainFromUrl(b.websiteUrl);
-    const people = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city: cityFromAddress(b.formattedAddress) }, maxPeople);
+    const { city, state } = regionFromAddress(b.formattedAddress);
+    const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state }, maxPeople);
+    const people = search.people;
+    // Named for the activity-message suffixes below only — search.totalFound (the free headcount
+    // signal) is consumed by the Task 3 chain guard, not by anything in this function.
+    const scopeSuffix =
+      search.scope === "city" ? ` (matched in ${city}, ${state})` : search.scope === "state" ? ` (matched in ${stateNameFor(state)})` : "";
     // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
     // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
     // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked
@@ -214,12 +234,12 @@ export async function runEnrich(
       const titles = examined.slice(0, 5).map((p) => p.title ?? "(no title)").join(", ");
       const noun = (n: number) => (n === 1 ? "person" : "people");
       await log(
-        checked < found
+        (checked < found
           ? `Enriched via Apollo: none of the ${checked} ${noun(checked)} checked (of ${found} found) had an email (${titles})`
-          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`,
+          : `Enriched via Apollo: none of ${found} ${noun(found)} found had an email (${titles})`) + scopeSuffix,
       );
     } else {
-      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated`);
+      await log(`Enriched via Apollo: ${withEmail} ${withEmail === 1 ? "person" : "people"} with a verified email out of ${found} found; ${contactRows} new contact${contactRows === 1 ? "" : "s"}, ${updated} updated${scopeSuffix}`);
     }
     return { added, updated, skipped: null };
   } catch (e) {

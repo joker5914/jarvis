@@ -54,13 +54,17 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
       { id: "p2", first_name: "Maria", last_name_obfuscated: "L.", title: "Owner", has_email: true },
       { id: "p3", first_name: "Lee", last_name_obfuscated: "T.", title: "General Manager", has_email: false },
     ] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "bellanails.com", orgName: "Bella Nails", city: "Houston" }, 5);
+    // No state given: the city scope is skipped (a bare city name is ambiguous), so this is a
+    // single unfiltered-by-location call, same as before this task.
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: "bellanails.com", orgName: "Bella Nails", city: "Houston", state: null }, 5);
+    expect(calls).toHaveLength(1);
     const u = new URL(calls[0].url);
     expect(u.origin + u.pathname).toBe("https://api.apollo.io/api/v1/mixed_people/api_search");
     expect(u.searchParams.getAll("q_organization_domains_list[]")).toEqual(["bellanails.com"]);
     expect(u.searchParams.getAll("person_titles[]")).toContain("owner");
     expect(u.searchParams.getAll("person_seniorities[]")).toContain("owner");
     expect(u.searchParams.get("include_similar_titles")).toBe("true");
+    expect(u.searchParams.has("person_locations[]")).toBe(false);
     // People Search is free of credits: always requests a full page (searchPageSize), regardless
     // of `max`, then ranks and slices locally (see Plan 8 Task 7).
     expect(u.searchParams.get("per_page")).toBe("10");
@@ -75,7 +79,7 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     mockFetch((c) => c.url.includes("/mixed_companies/search")
       ? json({ organizations: [{ id: "org1", name: "Bella Nails", primary_domain: "bellanails.com" }] })
       : json({ total_entries: 1, people: [{ id: "p1", first_name: "Maria", title: "Owner", has_email: true }] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston" }, 5);
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston", state: null }, 5);
     const org = new URL(calls[0].url);
     expect(org.pathname).toBe("/api/v1/mixed_companies/search");
     expect(org.searchParams.get("q_organization_name")).toBe("Bella Nails");
@@ -92,24 +96,26 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
     mockFetch((c) => c.url.includes("/mixed_companies/search")
       ? json({ organizations: [{ id: "org1", name: "Bella Nails" }] })
       : json({ total_entries: 1, people: [{ id: "p1", first_name: "Maria", title: "Owner", has_email: true }] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston" }, 5);
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Bella Nails", city: "Houston", state: null }, 5);
     const ppl = new URL(calls[1].url);
     expect(ppl.searchParams.getAll("organization_ids[]")).toEqual(["org1"]);
     expect(ppl.searchParams.has("q_organization_domains_list[]")).toBe(false);
     expect(people.map((p) => p.apolloId)).toEqual(["p1"]);
   });
 
-  it("without a domain and no organization match: returns [] after one org-search call", async () => {
+  it("without a domain and no organization match: returns an empty result after one org-search call", async () => {
     mockFetch(() => json({ organizations: [] }));
-    expect(await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Nope", city: null }, 5)).toEqual([]);
+    const result = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Nope", city: null, state: null }, 5);
+    expect(result).toEqual({ people: [], totalFound: 0, scope: "any" });
     expect(calls).toHaveLength(1);
   });
 
   it("treats 422 as no results and throws on other errors", async () => {
     mockFetch(() => json({ error: "bad" }, 422));
-    expect(await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).toEqual([]);
+    const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5);
+    expect(result).toEqual({ people: [], totalFound: 0, scope: "any" });
     mockFetch(() => json({ error: "slow down" }, 429));
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/429/);
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toThrow(/429/);
   });
 
   // Live bug (Plan 8 Task 7): searchPeople used to request per_page: max (often 1) AND slice its
@@ -126,7 +132,7 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
       { id: "p4", first_name: "Casey", title: "Store Manager", has_email: false },
       { id: "p5", first_name: "Riley", title: "Owner", has_email: false },
     ] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 1);
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 1);
     const u = new URL(calls[0].url);
     expect(u.searchParams.get("per_page")).toBe("10"); // requests the full page, not max=1
     expect(people).toHaveLength(5); // not sliced to max=1 — the caller decides how many to act on
@@ -138,7 +144,7 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
       { id: "p4", first_name: "Casey", title: "Store Manager", has_email: false },
       { id: "p3", first_name: "Jordan", title: "Production/Operations Manager", has_email: true },
     ] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5);
     expect(people.map((p) => p.apolloId)).toEqual(["p3", "p4"]); // same title rank (both "manager"), email breaks the tie
   });
 
@@ -147,10 +153,72 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
       { id: "p1", first_name: "Sam", title: "Owner", has_email: true, organization: { name: "Booksy" } },
       { id: "p2", first_name: "Lee", title: "Manager", has_email: true, organization: {} },
     ] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+    const { people } = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5);
     const byId = Object.fromEntries(people.map((p) => [p.apolloId, p]));
     expect(byId.p1.orgName).toBe("Booksy");
     expect(byId.p2.orgName).toBeNull();
+  });
+
+  describe("location cascade (city → state → anywhere)", () => {
+    it("empty in city, found in state: two calls, person_locations[]='Pearland, Texas' then 'Texas, United States', scope 'state'", async () => {
+      let call = 0;
+      mockFetch(() => {
+        call++;
+        if (call === 1) return json({ total_entries: 0, people: [] });
+        return json({ total_entries: 3, people: [
+          { id: "p1", first_name: "Jamie", title: "Preschool Director", has_email: true },
+        ] });
+      });
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "kidsrkids.com", orgName: "Kids R Kids", city: "Pearland", state: "TX" }, 1);
+      expect(calls).toHaveLength(2);
+      const first = new URL(calls[0].url);
+      expect(first.searchParams.getAll("person_locations[]")).toEqual(["Pearland, Texas"]);
+      const second = new URL(calls[1].url);
+      expect(second.searchParams.getAll("person_locations[]")).toEqual(["Texas, United States"]);
+      expect(result.scope).toBe("state");
+      expect(result.totalFound).toBe(3);
+      expect(result.people).toHaveLength(1);
+    });
+
+    it("all three scopes empty: city, then state, then no location filter at all — scope 'any', totalFound 0, people []", async () => {
+      mockFetch(() => json({ total_entries: 0, people: [] }));
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "hrblock.com", orgName: "H&R Block", city: "Pearland", state: "TX" }, 1);
+      expect(calls).toHaveLength(3);
+      expect(new URL(calls[0].url).searchParams.getAll("person_locations[]")).toEqual(["Pearland, Texas"]);
+      expect(new URL(calls[1].url).searchParams.getAll("person_locations[]")).toEqual(["Texas, United States"]);
+      expect(new URL(calls[2].url).searchParams.has("person_locations[]")).toBe(false);
+      expect(result).toEqual({ people: [], totalFound: 0, scope: "any" });
+    });
+
+    it("first call (city) is non-empty: stops after one call, scope 'city'", async () => {
+      mockFetch(() => json({ total_entries: 20, people: [
+        { id: "p1", first_name: "Jamie", title: "Preschool Director", has_email: true },
+      ] }));
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "kidsrkids.com", orgName: "Kids R Kids", city: "Houston", state: "TX" }, 1);
+      expect(calls).toHaveLength(1);
+      expect(new URL(calls[0].url).searchParams.getAll("person_locations[]")).toEqual(["Houston, Texas"]);
+      expect(result.scope).toBe("city");
+      expect(result.totalFound).toBe(20);
+    });
+
+    it("no city and no state: a single unfiltered call, scope 'any'", async () => {
+      mockFetch(() => json({ total_entries: 6579, people: [
+        { id: "p1", first_name: "Alex", title: "Assistant Manager", has_email: true },
+      ] }));
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "hrblock.com", orgName: "H&R Block", city: null, state: null }, 1);
+      expect(calls).toHaveLength(1);
+      expect(new URL(calls[0].url).searchParams.has("person_locations[]")).toBe(false);
+      expect(result.scope).toBe("any");
+      expect(result.totalFound).toBe(6579);
+    });
+
+    it("city present but state unknown (null): the city scope is skipped as ambiguous — falls straight to 'any'", async () => {
+      mockFetch(() => json({ total_entries: 2, people: [{ id: "p1", first_name: "Sam", title: "Owner", has_email: true }] }));
+      const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: "Somewhere", state: null }, 1);
+      expect(calls).toHaveLength(1);
+      expect(new URL(calls[0].url).searchParams.has("person_locations[]")).toBe(false);
+      expect(result.scope).toBe("any");
+    });
   });
 });
 
@@ -168,8 +236,8 @@ describe("ApolloEnrichmentProvider.searchOrganization", () => {
 
   it("rejects a single-word request that is merely a substring of a differently-named org, with no follow-up call", async () => {
     mockFetch(() => json({ organizations: [{ id: "org1", name: "Joe's Crab Shack", primary_domain: "joescrabshack.com" }] }));
-    const people = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Joe's", city: null }, 5);
-    expect(people).toEqual([]);
+    const result = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Joe's", city: null, state: null }, 5);
+    expect(result).toEqual({ people: [], totalFound: 0, scope: "any" });
     expect(calls).toHaveLength(1);
   });
 
@@ -215,7 +283,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       ),
     );
     const provider = new ApolloEnrichmentProvider();
-    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
     expect(calls).toHaveLength(1);
     // Persisted (via markPlanBlocked's upsert) so the Next.js web process, which never sees this
     // in-memory memo, can still learn about the block by reading ProviderConfig.
@@ -226,7 +294,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     });
 
     // Second call, same process: the memo should short-circuit before any network call.
-    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+    await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
     expect(calls).toHaveLength(1); // fetch mock still only called once total
     expect(providerConfigMock.upsert).toHaveBeenCalledTimes(1); // no new persistence on the memo hit
   });
@@ -235,7 +303,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     mockFetch(() =>
       json({ error: "This endpoint is not included in your Basic (Trial) plan and is not accessible, even with a master key." }, 403),
     );
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(
       ProviderPlanError,
     );
     expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({ update: { planBlockDetail: "API_INACCESSIBLE" } });
@@ -258,7 +326,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
         403,
       ),
     );
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(
       ProviderPlanError,
     );
     // error_code wins over error_details.code when both are present.
@@ -277,7 +345,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
         403,
       ),
     );
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(
       ProviderPlanError,
     );
     expect(providerConfigMock.upsert.mock.calls[0][0]).toMatchObject({
@@ -287,11 +355,11 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
 
   it("a plain 403 (no API_INACCESSIBLE) throws a generic HTTP error and is never memoized", async () => {
     mockFetch(() => json({ error: "forbidden" }, 403));
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toThrow(
       /Apollo \/mixed_people\/api_search HTTP 403/,
     );
     // Not memoized: a second call re-fetches instead of throwing from a cached block.
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toThrow(/HTTP 403/);
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toThrow(/HTTP 403/);
     expect(calls).toHaveLength(2);
     expect(providerConfigMock.upsert).not.toHaveBeenCalled();
   });
@@ -301,17 +369,17 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     try {
       mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
       const provider = new ApolloEnrichmentProvider();
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
       expect(calls).toHaveLength(1);
 
       // Still within the 6h window: short-circuits without a new fetch.
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
       expect(calls).toHaveLength(1);
 
       // Advance past the 6h TTL: the memo should no longer block, so the next call re-fetches.
       vi.advanceTimersByTime(6 * 60 * 60 * 1000 + 1000);
       mockFetch(() => json({ total_entries: 0, people: [] }));
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, scope: "any" });
       expect(calls).toHaveLength(1); // mockFetch() reset the calls array; this is the post-expiry fetch
     } finally {
       vi.useRealTimers();
@@ -337,7 +405,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     // low-level checkPlanBlocked gate (via searchPeople) proceeds to the network instead of
     // throwing from a stale block.
     mockFetch(() => json({ total_entries: 0, people: [] }));
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, scope: "any" });
     expect(calls).toHaveLength(1);
   });
 
@@ -347,7 +415,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       providerConfigMock.findUnique.mockResolvedValueOnce(null); // row cleared
       mockFetch(() => json({ total_entries: 0, people: [] }));
       const provider = new ApolloEnrichmentProvider();
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, scope: "any" });
       expect(calls).toHaveLength(1); // proceeded to the network instead of throwing
       expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1); // exactly one revalidation read
 
@@ -355,7 +423,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       // takes checkPlanBlocked's "memo empty" fast path, so no additional DB read happens even
       // though findUnique's mock is still wired up.
       mockFetch(() => json({ total_entries: 0, people: [] }));
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).resolves.toEqual([]);
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, scope: "any" });
       expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1);
     });
 
@@ -363,7 +431,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       __setPlanBlockedForTests(PEOPLE_SEARCH_PATH, Date.now() + 60_000, "API_INACCESSIBLE");
       providerConfigMock.findUnique.mockResolvedValueOnce({ planBlockedUntil: new Date(Date.now() + 60_000), planBlockDetail: "API_INACCESSIBLE" });
       mockFetch(() => { throw new Error("should not fetch: still blocked"); });
-      await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(
+      await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(
         ProviderPlanError,
       );
       expect(calls).toHaveLength(0);
@@ -372,7 +440,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
 
     it("the unblocked path (memo never set) makes zero extra ProviderConfig reads", async () => {
       mockFetch(() => json({ total_entries: 0, people: [] }));
-      await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null }, 5);
+      await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5);
       expect(providerConfigMock.findUnique).not.toHaveBeenCalled();
     });
   });
@@ -384,7 +452,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       try {
         mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
         const provider = new ApolloEnrichmentProvider();
-        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
         expect(calls).toHaveLength(1);
         expect(consoleErrorSpy).toHaveBeenCalled(); // logged, not silently swallowed
 
@@ -396,7 +464,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
         // every job after it re-hits the network (and re-403s) until a persist finally succeeds.
         providerConfigMock.findUnique.mockResolvedValueOnce(null);
         mockFetch(() => json({ error: "not included in your Free plan", error_code: "API_INACCESSIBLE" }, 403));
-        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
+        await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null }, 5)).rejects.toBeInstanceOf(ProviderPlanError);
         expect(calls).toHaveLength(1); // re-fetched (mockFetch reset calls) instead of short-circuiting
       } finally {
         consoleErrorSpy.mockRestore();

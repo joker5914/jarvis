@@ -47,12 +47,14 @@ describe("runEnrich", () => {
     // "out of 2 found" — the fake's searchPeople now returns its full ranked candidate list
     // (Owner + General Manager), matching real Apollo's search (free of credits, up to
     // searchPageSize); maxPeople=1 only bounds how many get a *paid* reveal, at the loop below.
-    expect(log[0].message).toBe("Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated");
+    // The fake reports scope "city" whenever both a city and a state are available (biz()'s
+    // default address has both), so the success message carries the location suffix too.
+    expect(log[0].message).toBe("Enriched via Apollo: 1 person with a verified email out of 2 found; 2 new contacts, 0 updated (matched in Houston, TX)");
   });
   it("m=0: search returns no candidates at all — names what was searched for, not a generic '0 people'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [];
+    fake.searchPeople = async () => ({ people: [], totalFound: 0, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -68,10 +70,10 @@ describe("runEnrich", () => {
   it("m=2, n=0: search finds two candidates, neither has an email — names the titles instead of a generic '0 people'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-store-mgr", firstName: "Casey", lastName: null, name: "Casey", title: "Store Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
       { apolloId: "fake-barista", firstName: "Sam", lastName: null, name: "Sam", title: "Barista", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 2, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -83,10 +85,10 @@ describe("runEnrich", () => {
   it("walks past a no-email candidate at rank 0 and reveals the emailed one at rank 1 within maxPeople=1 (re-review D2)", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-bellanails.com-gm", firstName: "Lee", lastName: null, name: "Lee", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
       { apolloId: "fake-bellanails.com-owner", firstName: "Maria", lastName: null, name: "Maria", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 2, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r.added).toBe(1);
@@ -98,9 +100,9 @@ describe("runEnrich", () => {
   it("m=1, n=0: singular wording — 'none of 1 person found had an email'", async () => {
     const b = await biz();
     const fake = new FakeEnrichmentProvider();
-    fake.searchPeople = async () => [
+    fake.searchPeople = async () => ({ people: [
       { apolloId: "fake-store-mgr", firstName: "Casey", lastName: null, name: "Casey", title: "Store Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: "Bella Nails & Spa" },
-    ];
+    ], totalFound: 1, scope: "any" });
     const d = deps(fake);
     const r = await runEnrich(b.id, OWNER, d);
     expect(r).toEqual({ added: 0, updated: 0, skipped: null });
@@ -198,9 +200,9 @@ describe("runEnrich", () => {
     it("skips a candidate whose Apollo-reported company doesn't match the lead (e.g. a shared booking-platform page returning the platform's own staff), with one explanatory activity row, no contact created, no paid reveal, and lastEnrichedAt set (L1: so a later bulk pass doesn't re-spend the Organization Search credit on the same mismatch)", async () => {
       const b = await biz({ name: "Whiskey Blades", websiteUrl: "https://whiskeyblades.booksy.com/" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-booksy-exec", firstName: "Sam", lastName: null, name: "Sam", title: "CEO", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Booksy" },
-      ];
+      ], totalFound: 1, scope: "any" });
       const d = deps(fake);
       const before = new Date();
       const r = await runEnrich(b.id, OWNER, d);
@@ -215,9 +217,9 @@ describe("runEnrich", () => {
       expect(updatedBiz.lastEnrichedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime());
 
       // Re-enrich with force still bypasses the recheckDays gate and retries against Apollo.
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-bella-owner", firstName: "Sam", lastName: null, name: "Sam", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Whiskey Blades" },
-      ];
+      ], totalFound: 1, scope: "any" });
       const forced = await runEnrich(b.id, OWNER, d, { force: true });
       expect(forced.skipped).toBeNull();
       expect(forced.added).toBe(1);
@@ -226,9 +228,9 @@ describe("runEnrich", () => {
     it("normalizes punctuation and connectors before comparing (\"Bella Nails & Spa\" vs \"Bella Nails and Spa\" is the same company)", async () => {
       const b = await biz({ name: "Bella Nails & Spa" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-bella-owner", firstName: "Linh", lastName: null, name: "Linh", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails and Spa" },
-      ];
+      ], totalFound: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).not.toMatchObject({ skipped: "org_mismatch" });
@@ -238,9 +240,9 @@ describe("runEnrich", () => {
     it("does not apply the name guard when the search was filtered by the lead's own domain (a domain owner often trades under another name)", async () => {
       const b = await biz({ name: "Dr. Jane Smith DDS", websiteUrl: "https://www.pearlandfamilydentistry.com/" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-pfd-owner", firstName: "Jane", lastName: null, name: "Jane", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Pearland Family Dentistry" },
-      ];
+      ], totalFound: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).not.toMatchObject({ skipped: "org_mismatch" });
@@ -250,9 +252,9 @@ describe("runEnrich", () => {
     it("proceeds when the candidate's orgName loosely matches the lead's name (case-insensitive, tolerant of a trailing legal suffix)", async () => {
       const b = await biz({ name: "ZERO Training Center" });
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-zerotrainingcenter.example-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Zero Training Center LLC" },
-      ];
+      ], totalFound: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r).toEqual({ added: 1, updated: 0, skipped: null });
@@ -266,13 +268,31 @@ describe("runEnrich", () => {
     it("is unaffected when candidates carry no orgName at all", async () => {
       const b = await biz();
       const fake = new FakeEnrichmentProvider();
-      fake.searchPeople = async () => [
+      fake.searchPeople = async () => ({ people: [
         { apolloId: "fake-noorg-owner", firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: null },
-      ];
+      ], totalFound: 1, scope: "any" });
       const d = deps(fake);
       const r = await runEnrich(b.id, OWNER, d);
       expect(r.skipped).toBeNull();
       expect(r.added).toBe(1);
+    });
+  });
+
+  describe("location cascade activity message suffix (Task 2)", () => {
+    it("appends ' (matched in <city>, <state>)' to the success message when the search matched in the city scope", async () => {
+      const b = await biz({ name: "Kids R Kids", websiteUrl: "https://www.kidsrkids.com", formattedAddress: "1820 Pearland Pkwy, Pearland, TX 77581, USA" });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        // apolloId matches FakeEnrichmentProvider.enrichPerson's `fake-<domain>-(owner|gm)`
+        // pattern so the default fake reveal resolves an email, and this run actually adds a
+        // contact (a null reveal would make `added` 0 and never log the success message below).
+        { apolloId: "fake-kidsrkids.com-owner", firstName: "Jamie", lastName: null, name: "Jamie", title: "Preschool Director", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Kids R Kids" },
+      ], totalFound: 20, scope: "city" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(r.added).toBe(1);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log[0].message).toMatch(/ \(matched in Pearland, TX\)$/);
     });
   });
 });

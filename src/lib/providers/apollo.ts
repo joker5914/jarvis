@@ -5,7 +5,8 @@ import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { normalizeName } from "@/lib/jobs/shared";
 import { prisma } from "@/lib/db";
 import { discardBody } from "@/lib/net/safeFetch";
-import type { ApolloCreditUsage, EnrichPerson, EnrichmentProvider } from "./types";
+import { stateNameFor } from "@/lib/geo/usStates";
+import type { ApolloCreditUsage, EnrichPerson, EnrichmentProvider, PeopleSearchQuery, PeopleSearchResult, PeopleSearchScope } from "./types";
 
 const BASE = "https://api.apollo.io/api/v1";
 export const ORG_SEARCH_PATH = "/mixed_companies/search";
@@ -224,6 +225,13 @@ function titleRank(title: string | null | undefined): number {
   return i === -1 ? ENRICH_CONFIG.preferredTitles.length : i;
 }
 
+/** Best match first: preferred-title rank ascending, then a verified/available email ahead of
+ * none, for ties. Extracted from searchPeople (Plan 9 Task 2) so the cascade's per-scope mapping
+ * step can call it once per attempt without duplicating the sort. */
+function rank(people: EnrichPerson[]): EnrichPerson[] {
+  return [...people].sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
+}
+
 function qs(params: Record<string, string | number | boolean | string[] | undefined>): string {
   const u = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -296,13 +304,25 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
     return { id: org.id, primaryDomain: org.primary_domain ?? null };
   }
 
-  // `max` is accepted for interface stability (a future/other provider may use it to bound its
-  // own request page size) but unused here: People Search is free of Apollo credits, so this
-  // always fetches a full page (searchPageSize) and returns the whole ranked list — the caller
-  // (runEnrich) is the one that slices to `max` once it starts spending on paid reveals, so it
-  // can also report how many total candidates were found, not just how many it acted on.
+  /**
+   * Local-first location cascade (Plan 9 Task 2): tries the lead's city, then its state, then no
+   * location filter at all, stopping at the first scope that returns any candidates — so a
+   * franchise-brand domain (e.g. kidsrkids.com) surfaces the local owner/director instead of the
+   * head office a plain domain search would return. Each attempt is one `withBudget("apollo", …)`
+   * call (People Search itself costs no Apollo credits, only counts toward the app's own daily
+   * call budget), so the cascade costs at most 3 budget units. `person_locations[]` takes natural
+   * place names ("Pearland, Texas", "Texas, United States"), verified live 2026-09-17 — see
+   * stateNameFor. When `q.city` is set but `q.state` isn't, the city scope is skipped: a bare city
+   * name is ambiguous (there are many Pearlands) without a state to disambiguate it.
+   *
+   * `max` is accepted for interface stability (a future/other provider may use it to bound its
+   * own request page size) but unused here: each attempt always fetches a full page
+   * (searchPageSize) and ranks locally — the caller (runEnrich) is the one that slices to `max`
+   * once it starts spending on paid reveals, so it can also report how many total candidates were
+   * found, not just how many it acted on.
+   */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability, see comment above
-  async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
+  async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
     await checkPlanBlocked(PEOPLE_SEARCH_PATH);
     const key = await requireKey();
     const base: Record<string, string | number | boolean | string[] | undefined> = {
@@ -317,26 +337,39 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       filter = { q_organization_domains_list: [q.domain] };
     } else {
       const org = await this.searchOrganization(q.orgName, q.city);
-      if (!org) return [];
+      if (!org) return { people: [], totalFound: 0, scope: "any" };
       filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] };
     }
-    const r = await withBudget("apollo", () =>
-      post<{ people?: SearchPerson[] }>(key, PEOPLE_SEARCH_PATH, { ...base, ...filter }),
-    );
-    const people = (r.data?.people ?? []).map<EnrichPerson>((p) => ({
-      apolloId: p.id,
-      firstName: p.first_name ?? null,
-      lastName: null, // search results obfuscate last names
-      name: p.first_name ?? null,
-      title: p.title ?? null,
-      email: null,
-      emailStatus: null,
-      linkedinUrl: null,
-      hasEmail: !!p.has_email,
-      orgName: p.organization?.name ?? null,
-    }));
-    people.sort((a, b) => titleRank(a.title) - titleRank(b.title) || Number(b.hasEmail) - Number(a.hasEmail));
-    return people;
+    const stateName = stateNameFor(q.state);
+    const scopes: { scope: PeopleSearchScope; loc?: string }[] = [];
+    if (q.city && stateName) scopes.push({ scope: "city", loc: `${q.city}, ${stateName}` });
+    if (stateName) scopes.push({ scope: "state", loc: `${stateName}, United States` });
+    scopes.push({ scope: "any" });
+    let last: PeopleSearchResult = { people: [], totalFound: 0, scope: "any" };
+    for (const s of scopes) {
+      const r = await withBudget("apollo", () =>
+        post<{ people?: SearchPerson[]; total_entries?: number }>(key, PEOPLE_SEARCH_PATH, {
+          ...base,
+          ...filter,
+          ...(s.loc ? { person_locations: [s.loc] } : {}),
+        }),
+      );
+      const people = rank((r.data?.people ?? []).map<EnrichPerson>((p) => ({
+        apolloId: p.id,
+        firstName: p.first_name ?? null,
+        lastName: null, // search results obfuscate last names
+        name: p.first_name ?? null,
+        title: p.title ?? null,
+        email: null,
+        emailStatus: null,
+        linkedinUrl: null,
+        hasEmail: !!p.has_email,
+        orgName: p.organization?.name ?? null,
+      })));
+      last = { people, totalFound: r.data?.total_entries ?? people.length, scope: s.scope };
+      if (people.length > 0) return last;
+    }
+    return last;
   }
 
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {

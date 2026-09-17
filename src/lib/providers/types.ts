@@ -132,17 +132,39 @@ export type ApolloCreditUsage = {
   fetchedAt: Date;
 };
 
+/** Input to `EnrichmentProvider.searchPeople`. `state` is a 2-letter USPS code (or null) — see
+ * `src/lib/geo/usStates.ts` for the abbreviation → full-name conversion the Apollo provider needs
+ * before it can filter by `person_locations[]`, which takes natural place names. */
+export type PeopleSearchQuery = { domain: string | null; orgName: string; city: string | null; state: string | null };
+
+/** Which location scope a `searchPeople` cascade attempt matched in, narrowest first. "any" means
+ * either no city/state was available to filter by, or every narrower scope came back empty. */
+export type PeopleSearchScope = "city" | "state" | "any";
+
+export type PeopleSearchResult = {
+  people: EnrichPerson[];
+  /** Apollo's `total_entries` for the scope that matched (or for the last attempted scope when
+   * every scope came back empty) — a free (no-credit) headcount signal, not sliced to `max` or
+   * to `people.length`. Used by the Task 3 chain-headcount guard. */
+  totalFound: number;
+  scope: PeopleSearchScope;
+};
+
 export interface EnrichmentProvider {
   /**
    * Cheap people lookup by employer domain (fallback: org name + city). Never returns emails.
-   * Returns the full ranked candidate page (best match first — see ApolloEnrichmentProvider's
-   * titleRank/hasEmail sort), NOT sliced to `max`: the search itself costs no credits, so callers
-   * that only want to reveal/pay for `max` of them (runEnrich) do their own `.slice(0, max)` at
-   * the point they start spending, while still being able to report how many candidates existed
-   * in total. `max` is kept on the signature as a hint a provider MAY use to bound its own
+   * Runs a location cascade — city, then state, then anywhere — stopping at the first scope with
+   * a result (see ApolloEnrichmentProvider.searchPeople for the exact rule, including when the
+   * city scope is skipped as ambiguous), so a franchise-brand domain surfaces its *local*
+   * decision-maker instead of the head office. Returns the full ranked candidate page for
+   * whichever scope matched (best match first — see ApolloEnrichmentProvider's `rank()` helper),
+   * NOT sliced to `max`: the search itself costs no credits, so callers that only want to
+   * reveal/pay for `max` of them (runEnrich) do their own `.slice(0, max)` at the point they
+   * start spending, while still being able to report how many candidates existed in total via
+   * `totalFound`. `max` is kept on the signature as a hint a provider MAY use to bound its own
    * request page size, not a hard cap on the result length.
    */
-  searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]>;
+  searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult>;
   /** Paid reveal for one person (email, LinkedIn). Null when Apollo has no match. */
   enrichPerson(apolloId: string): Promise<EnrichPerson | null>;
   /** Live account balance (0 credits to call). Null when unavailable (no key, non-200, network

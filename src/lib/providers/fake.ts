@@ -8,6 +8,8 @@ import type {
   EnrichmentProvider,
   GeocodeProvider,
   GeocodeResult,
+  PeopleSearchQuery,
+  PeopleSearchResult,
   ProjectDetail,
   ProjectRegistryProvider,
   ProjectSummary,
@@ -127,17 +129,22 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
   // `max` unused (see EnrichmentProvider.searchPeople's doc comment): the fake mirrors Apollo's
   // real behavior of returning the full ranked page and leaving the `max` slice to the caller.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability
-  async searchPeople(q: { domain: string | null; orgName: string; city: string | null }, max: number): Promise<EnrichPerson[]> {
+  async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
     this.calls.search++;
     const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;
     // Defaults to the queried org name (i.e. the real business's own name in the normal runEnrich
     // flow), so orgNameMatches always accepts these by default — tests that want to exercise the
     // targeting guard (Task 4) override searchPeople directly with a mismatched orgName, the same
     // way other tests already override it to simulate provider errors.
-    return [
+    const people: EnrichPerson[] = [
       { apolloId: `fake-${domain}-owner`, firstName: "Maria", lastName: null, name: "Maria", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: q.orgName },
       { apolloId: `fake-${domain}-gm`, firstName: "Lee", lastName: null, name: "Lee", title: "General Manager", email: null, emailStatus: null, linkedinUrl: null, hasEmail: false, orgName: q.orgName },
     ];
+    // Deterministic scope mirroring the real cascade's contract: "city" when both a city and a
+    // state were given (real Apollo would try the city scope first), "any" otherwise — see
+    // ApolloEnrichmentProvider.searchPeople for the actual location-cascade behavior this stands
+    // in for in fake mode.
+    return { people, totalFound: people.length, scope: q.city && q.state ? "city" : "any" };
   }
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
     this.calls.enrich++;
