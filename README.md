@@ -197,6 +197,13 @@ queued for it), then remove the variable.
   outbound requests from Railway's own egress IPs; if a target site
   allowlists or geofences traffic, allow Railway's IP ranges (see Railway's
   docs for the current list) rather than your own.
+- **Pinned base image.** The `Dockerfile`'s `FROM` lines pin
+  `node:22.22.3-bookworm-slim` to a specific digest (both stages carry the
+  same one) so the runner isn't rebuilt against a base image that changed
+  underneath it, and it runs as the image's built-in non-root `node` user
+  (uid 1000). To bump the pin: `docker pull node:<tag>`, then
+  `docker image inspect node:<tag> --format '{{index .RepoDigests 0}}'`, and
+  paste the printed `node@sha256:…` into both `FROM` lines.
 
 ## More detail
 
