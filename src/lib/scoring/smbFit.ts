@@ -51,7 +51,10 @@ const TRAILING_LEGAL_SUFFIX_RE = /\b(?:llc|inc|co|corp|ltd|pllc|pc)\.?$/i;
  */
 export function chainKeyFor(name: string): string {
   const collapsed = name.trim().replace(/\s+/g, " ").toLowerCase();
-  return collapsed.replace(TRAILING_LEGAL_SUFFIX_RE, "").trim();
+  // Also trim leading/trailing non-alphanumerics ("Pet Paradise (Pearland)", "Joe's Diner!"):
+  // hasWord's  needs a word character at both ends of the pattern, so a key that starts or ends
+  // with punctuation could never match its own name. Internal punctuation stays.
+  return collapsed.replace(TRAILING_LEGAL_SUFFIX_RE, "").trim().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
 }
 
 export type SmbFitThresholds = { highFitThreshold: number; mediumFitThreshold: number };

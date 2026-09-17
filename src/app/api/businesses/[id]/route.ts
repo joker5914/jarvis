@@ -86,6 +86,9 @@ export const PATCH = handle(async (req, ctx) => {
     // add a second copy).
     const cfg = await loadConfig(actor.id);
     const key = chainKeyFor(existing.name);
+    // An empty key would match every business (hasWord(text, "") is true); refuse rather than
+    // rely on the overrides schema's falsy-entry filter to save us.
+    if (!key) throw new ApiError(400, "This business name cannot be used as a chain pattern");
     const chains = new Set(cfg.exclusion.chains);
     chains.add(key);
     const overrides = { ...cfg.overrides, exclusion: { ...cfg.overrides.exclusion, chains: [...chains] } };
@@ -119,9 +122,17 @@ export const PATCH = handle(async (req, ctx) => {
     // scoring/zip-search passes stop matching this key too), but only this business's own row and
     // reasons change here — hence `rescore: { scanned: 1, ... }`.
     const cfg = await loadConfig(actor.id);
-    const key = chainKeyFor(existing.name);
+    // Remove the entry that actually excluded this row (recorded as "chain:<entry>" by
+    // scoreSmbFit — for a look-alike such as "Zumiez Outlet" that is "zumiez", not its own key)
+    // as well as its own key, so the next table-wide rescore cannot re-exclude it.
+    const keys = new Set<string>([chainKeyFor(existing.name)]);
+    for (const r of existing.exclusionReasons) {
+      if (r.startsWith("chain:") && !r.startsWith("chain:apollo_headcount:")) keys.add(r.slice("chain:".length));
+    }
     const chains = new Set(cfg.exclusion.chains);
-    if (chains.delete(key)) {
+    let removed = false;
+    for (const k of keys) removed = chains.delete(k) || removed;
+    if (removed) {
       const overrides = { ...cfg.overrides, exclusion: { ...cfg.overrides.exclusion, chains: [...chains] } };
       await saveOverrides(actor.id, overrides);
     }

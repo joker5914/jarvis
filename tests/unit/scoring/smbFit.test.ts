@@ -156,11 +156,15 @@ describe("chainKeyFor", () => {
     ["Denny's Diner", "denny's diner"],
     ["Chick-fil-A Pearland", "chick-fil-a pearland"],
     ["Zumiez LLC", "zumiez"],
+    ["Pet Paradise (Pearland)", "pet paradise (pearland"],
+    ["Joe's Diner!", "joe's diner"],
+    ["#1 Nails & Spa", "1 nails & spa"],
+    ["LLC", ""],
   ])("keys %s as %s", (name, key) => {
     expect(chainKeyFor(name)).toBe(key);
   });
 
-  it.each([["H&R Block"], ["Denny's Diner"], ["Chick-fil-A Pearland"], ["Zumiez LLC"]])(
+  it.each([["H&R Block"], ["Denny's Diner"], ["Chick-fil-A Pearland"], ["Zumiez LLC"], ["Pet Paradise (Pearland)"], ["Joe's Diner!"], ["#1 Nails & Spa"], ["Salon 5."]])(
     "the key it produces for %s always matches that same name's lowercase text via hasWord",
     (name) => {
       expect(hasWord(name.toLowerCase(), chainKeyFor(name))).toBe(true);
