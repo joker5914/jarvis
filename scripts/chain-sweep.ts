@@ -2,12 +2,22 @@
 //
 // Plan 9 Task 3: table-wide version of runEnrich's chain-headcount guard. For every non-excluded
 // business with a usable domain (domainFromUrl already filters out shared/social/booking-platform
-// hosts — see src/lib/jobs/enrich.ts), runs one Apollo People Search with no location filter and
-// per_page 1 through the configured provider (so withBudget()'s daily call cap and the plan-block
-// memo both apply, exactly like a live Enrich click) and reads totalAtDomain — a free (no-credit)
-// national headcount. Dry run (default) only reports; --apply marks a match the same way
-// runEnrich's guard does (exclusion: "enterprise", a "chain:apollo_headcount:<n>" reason) and then
-// re-scores so name-alike businesses pick up the same chain entry.
+// hosts — see src/lib/jobs/enrich.ts), runs one Apollo People Search with no location filter
+// through the configured provider (so withBudget()'s daily call cap and the plan-block memo both
+// apply, exactly like a live Enrich click) and reads totalAtDomain — a free (no-credit),
+// title/seniority-filtered decision-maker count (see ENRICH_CONFIG.chainHeadcountMin's doc
+// comment; it is NOT a raw employee headcount). The `1` passed as searchPeople's `max` argument is
+// only a hint the provider may ignore — ApolloEnrichmentProvider.searchPeople always fetches a
+// full ENRICH_CONFIG.searchPageSize page regardless, so this sweep's per-business cost is the same
+// whether `max` is 1 or 10.
+//
+// Dry run (default) only reports; --apply marks a match the same way runEnrich's guard does
+// (exclusion: "enterprise", a "chain:apollo_headcount:<n>" reason).
+//
+// Fix round (review N2): unlike the "Not an SMB" PATCH action, --apply does NOT call
+// rescoreExclusions — it marks only the specific businesses this sweep found over the threshold,
+// not their name-alikes. Re-run the sweep (or use "Not an SMB" on one of the flagged leads, which
+// does re-score) to catch look-alikes too.
 //
 // The app's own daily Apollo call budget (Settings -> ProviderConfig.dailyBudget/usedToday) bounds
 // how many businesses one run can examine; raise it to at least the business count first for full
@@ -16,7 +26,7 @@
 import { prisma } from "@/lib/db";
 import { getActor } from "@/lib/actor";
 import { getProviders } from "@/lib/providers";
-import { domainFromUrl } from "@/lib/jobs/enrich";
+import { domainFromUrl, redactApiKeyLike } from "@/lib/jobs/enrich";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 
@@ -32,14 +42,21 @@ async function main() {
   }
 
   const actor = await getActor();
-  const businesses = await prisma.business.findMany({
+  // N4 (fix round review): --limit must apply AFTER skipping shared/social/booking-platform hosts
+  // (domainFromUrl returns null for those), not before — otherwise `--limit 50` could examine
+  // fewer than 50 actual businesses whenever some of the first N rows have no usable domain.
+  const candidates = await prisma.business.findMany({
     where: { ownerId: actor.id, exclusion: "none", websiteUrl: { not: null } },
     orderBy: { createdAt: "asc" },
-    ...(limit ? { take: limit } : {}),
+    select: { id: true, name: true, websiteUrl: true },
   });
+  const withDomain = candidates
+    .map((b) => ({ ...b, domain: domainFromUrl(b.websiteUrl) }))
+    .filter((b): b is typeof b & { domain: string } => b.domain !== null);
+  const businesses = limit ? withDomain.slice(0, limit) : withDomain;
 
   console.log(
-    `Checking up to ${businesses.length} business(es)${limit ? ` (--limit ${limit})` : ""} for a domain-wide headcount >= ${ENRICH_CONFIG.chainHeadcountMin}.`,
+    `Checking ${businesses.length} business(es) with a usable domain${limit ? ` (--limit ${limit})` : ""} for a decision-maker count >= ${ENRICH_CONFIG.chainHeadcountMin}.`,
   );
   console.log(
     "This app's Apollo daily call budget (Settings -> Apollo) bounds how many can be examined in one run — raise it to at least the business count above for full coverage.\n",
@@ -52,22 +69,20 @@ async function main() {
   let budgetExhausted = false;
 
   for (const b of businesses) {
-    const domain = domainFromUrl(b.websiteUrl);
-    if (!domain) continue;
     try {
-      const search = await provider.searchPeople({ domain, orgName: b.name, city: null, state: null, metro: null }, 1);
+      const search = await provider.searchPeople({ domain: b.domain, orgName: b.name, city: null, state: null, metro: null }, 1);
       checked++;
       const total = search.totalAtDomain;
       const isChain = total !== null && total >= ENRICH_CONFIG.chainHeadcountMin;
-      console.log(`${domain}\t${total ?? "?"}\t${isChain ? "chain?" : ""}`);
-      if (isChain && total !== null) toMark.push({ id: b.id, name: b.name, domain, total });
+      console.log(`${b.domain}\t${total ?? "?"}\t${isChain ? "chain?" : ""}`);
+      if (isChain && total !== null) toMark.push({ id: b.id, name: b.name, domain: b.domain, total });
     } catch (e) {
       if (e instanceof BudgetExhaustedError) {
         console.log("\nApollo daily budget exhausted — stopping sweep early (results above are still valid).");
         budgetExhausted = true;
         break;
       }
-      console.error(`${domain}\terror\t${(e as Error).message}`);
+      console.error(`${b.domain}\terror\t${redactApiKeyLike((e as Error).message).slice(0, 200)}`);
     }
   }
 
@@ -92,14 +107,14 @@ async function main() {
     await prisma.activityLog.create({
       data: { ownerId: actor.id, businessId: m.id, kind: "status_changed", message: `Excluded as chain: ${reason}` },
     });
-    console.log(`Marked ${m.name} (${m.domain}) as a chain (${m.total} people at domain).`);
+    console.log(`Marked ${m.name} (${m.domain}) as a chain (${m.total} decision-makers at domain).`);
   }
 
   await prisma.$disconnect();
 }
 
 main().catch(async (err) => {
-  console.error(err);
+  console.error(redactApiKeyLike(String(err?.message ?? err)));
   await prisma.$disconnect();
   process.exit(1);
 });

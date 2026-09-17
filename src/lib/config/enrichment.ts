@@ -20,10 +20,26 @@ export const ENRICH_CONFIG = {
   monthlyCreditCapMax: 5000,
   /** How long ApolloEnrichmentProvider.creditUsage() memoizes a successful fetch before refetching. */
   creditUsageTtlMs: 5 * 60_000,
-  /** Plan 9 Task 3: a domain with at least this many people in Apollo (any location — the
-   * unlocated first call's total_entries, i.e. searchPeople's totalAtDomain) is a national chain,
-   * not an SMB — deliberately high so a franchise brand (kidsrkids.com: 139) stays eligible while
-   * a true national head office (hrblock.com: 6,579) is excluded before a credit is spent. */
+  /**
+   * Plan 9 Task 3: a domain with at least this many *decision-maker* hits in Apollo's People
+   * Search — not a raw employee headcount — is a national chain, not an SMB. Every People Search
+   * call (below) already filters by `preferredTitles`/`seniorities`, so the `total_entries` Apollo
+   * returns (searchPeople's `totalAtDomain`, from the unlocated first call, any location) counts
+   * only title/seniority-matching people, not the whole company. Deliberately high so a franchise
+   * brand stays eligible while a true national head office is excluded before a credit is spent.
+   *
+   * Fix round (review N1): the doc comment and the runEnrich/isEnrichIssueMessage wording both
+   * used to say "people"/"headcount", which read as a raw employee count — corrected everywhere to
+   * "decision-makers" to match what Apollo is actually counting here.
+   *
+   * Measured 2026-09-17 with live zero-credit probes at this title/seniority filter:
+   * hrblock.com 4,753 (excluded — well over the threshold), zumiez.com 726 and petparadise.com 89
+   * (both below threshold at this granularity — caught instead by the seed chain list, see
+   * exclusion.ts), snapfitness.com 850 (franchise-owned — stays eligible either way, consistent
+   * with keeping "snap fitness" off the seed list), kidsrkids.com 31 (a real franchise SMB
+   * prospect). Changing `preferredTitles`/`seniorities` changes what Apollo counts here too, so
+   * this threshold should be re-measured if those change.
+   */
   chainHeadcountMin: 1000,
   preferredTitles: ["owner", "founder", "general manager", "office manager", "president", "ceo", "manager"],
   seniorities: ["owner", "founder", "c_suite", "vp", "director", "manager"],

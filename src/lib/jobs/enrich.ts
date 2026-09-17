@@ -130,19 +130,23 @@ export async function runEnrich(
     const { city, state } = regionFromAddress(b.formattedAddress);
     const metro = cfg.enrichment.metroLocation ?? null;
     const search = await deps.providers.enrichment.searchPeople({ domain, orgName: b.name, city, state, metro }, maxPeople);
-    // Chain-headcount guard (Plan 9 Task 3): a domain with this many people in Apollo, at any
-    // location, is a national chain, not an SMB prospect — reads search.totalAtDomain (the
-    // *national* headcount from the cascade's unlocated first call), never search.totalFound
-    // (which can be a much smaller scoped count, e.g. just a franchise's local city/metro page).
-    // Costs no credit: this runs before the reveal loop below, and returns without touching
-    // lastEnrichedAt so a later manual override (the "Not an SMB" undo path) can still re-enrich.
+    // Chain-headcount guard (Plan 9 Task 3): a domain with this many *decision-maker* hits in
+    // Apollo (title/seniority-filtered — see the ENRICH_CONFIG.chainHeadcountMin doc comment for
+    // why this isn't a raw employee count), at any location, is a national chain, not an SMB
+    // prospect — reads search.totalAtDomain (the *national* count from the cascade's unlocated
+    // first call), never search.totalFound (which can be a much smaller scoped count, e.g. just a
+    // franchise's local city/metro page). Costs no credit: this runs before the reveal loop below,
+    // and returns without touching lastEnrichedAt so a later manual override (the "Restore as SMB"
+    // undo path) can still re-enrich. The persisted reason string keeps the `apollo_headcount`
+    // name (not renamed to match the "decision-makers" wording) since it's a stored, matched-on
+    // contract — see rescoreExclusions and the PATCH route's clearChain branch.
     if (domain && search.totalAtDomain !== null && search.totalAtDomain >= ENRICH_CONFIG.chainHeadcountMin) {
       const reason = `chain:apollo_headcount:${search.totalAtDomain}`;
       await prisma.business.update({
         where: { id: businessId },
         data: { exclusion: "enterprise", exclusionReasons: [...new Set([...b.exclusionReasons, reason])] },
       });
-      await log(`Enrichment skipped: ${search.totalAtDomain} people at ${domain} in Apollo — not an SMB (marked as chain)`);
+      await log(`Enrichment skipped: ${search.totalAtDomain} decision-makers at ${domain} in Apollo — not an SMB (marked as chain)`);
       return { added: 0, updated: 0, skipped: "chain" as const };
     }
     const people = search.people;
@@ -301,7 +305,9 @@ export async function runEnrich(
 }
 
 /** Strips anything shaped like an "x-api-key" header value from a log message. Defense in depth
- * only — see the M3 comment at its call site for why this should never actually trigger. */
-function redactApiKeyLike(message: string): string {
+ * only — see the M3 comment at its call site for why this should never actually trigger. Exported
+ * (fix round, review N3) so scripts/chain-sweep.ts's per-business error logging reuses the exact
+ * same redaction instead of a second hand-copy of the pattern. */
+export function redactApiKeyLike(message: string): string {
   return message.replace(/x-api-key[^\s]*/gi, "[redacted]");
 }

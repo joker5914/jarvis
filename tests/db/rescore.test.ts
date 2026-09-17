@@ -73,4 +73,39 @@ describe("rescoreExclusions", () => {
     expect(after.exclusion).toBe("enterprise");
     expect(after.exclusionReasons).toEqual(["chain:apollo_headcount:2000"]);
   });
+
+  // B3 (fix round review): rescoreExclusions only ever passes { name, sameNameCount } to
+  // scoreSmbFit — never estimatedCost/workType — so it has no way to regenerate a TDLR
+  // cost/right-of-way reason. Before the fix, nextReasons was built purely from
+  // fit.exclusionReasons + the apollo_headcount carve-out, so a cost_over_ reason (or any other
+  // reason this pass can't reproduce) would have been silently dropped, un-excluding the business.
+  it("keeps a TDLR-promoted business excluded by a cost_over_ reason unrelated to any chain match, and logs no 'Exclusion lifted' row", async () => {
+    const tdlr = await biz({ name: "Hightower Business Park", exclusion: "enterprise", exclusionReasons: ["cost_over_2000000"] });
+
+    const result = await rescoreExclusions(OWNER, cfgWithChains(["zumiez"]));
+
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: tdlr.id } });
+    expect(after.exclusion).toBe("enterprise");
+    expect(after.exclusionReasons).toEqual(["cost_over_2000000"]);
+    const activity = await prisma.activityLog.findMany({ where: { businessId: tdlr.id } });
+    expect(activity).toHaveLength(0);
+  });
+
+  // The missing "restored" case: once a chain entry is removed from the effective list (e.g. via
+  // the "Restore as SMB" un-mark path clearing it for one business, or a Settings edit), a
+  // business that was excluded ONLY because of that name match should come back — with the
+  // "Exclusion lifted" activity row and the `restored` counter incremented.
+  it("restores a business once the chain list shrinks and its only reason no longer applies", async () => {
+    const wasZumiez = await biz({ name: "Zumiez", exclusion: "enterprise", exclusionReasons: ["chain:zumiez"] });
+
+    const result = await rescoreExclusions(OWNER, cfgWithChains(["walmart"])); // "zumiez" no longer configured
+    expect(result).toEqual({ scanned: 1, newlyExcluded: 0, restored: 1 });
+
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: wasZumiez.id } });
+    expect(after.exclusion).toBe("none");
+    expect(after.exclusionReasons).toEqual([]);
+    const activity = await prisma.activityLog.findMany({ where: { businessId: wasZumiez.id } });
+    expect(activity).toHaveLength(1);
+    expect(activity[0].message).toBe("Exclusion lifted");
+  });
 });

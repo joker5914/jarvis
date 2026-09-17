@@ -66,6 +66,6 @@ describe("isEnrichIssueMessage: org-mismatch skip", () => {
 
 describe("isEnrichIssueMessage: chain-headcount skip (Plan 9 Task 3)", () => {
   it("surfaces the chain-headcount skip so LeadDetail explains why the People list is empty", () => {
-    expect(isEnrichIssueMessage("Enrichment skipped: 6579 people at hrblock.com in Apollo — not an SMB (marked as chain)")).toBe(true);
+    expect(isEnrichIssueMessage("Enrichment skipped: 4753 decision-makers at hrblock.com in Apollo — not an SMB (marked as chain)")).toBe(true);
   });
 });
