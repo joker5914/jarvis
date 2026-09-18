@@ -1,8 +1,10 @@
 /**
  * Generic USPS state-abbreviation → full-name map (Plan 9 Task 2). Apollo's `person_locations[]`
  * filter takes natural place names ("Pearland, Texas", "Texas, United States"), not the 2-letter
- * codes this app stores everywhere else (see `regionFromAddress` in src/lib/jobs/enrich.ts), so
- * the location cascade needs a lookup to bridge the two. Deliberately not region-specific — see
+ * codes this app stores everywhere else (see `regionFromAddress` in src/lib/extract/address.ts,
+ * re-exported from src/lib/jobs/enrich.ts for its existing callers — moved there in Plan 10 Task 4
+ * so a client-side module could use it without pulling in enrich.ts's prisma import), so the
+ * location cascade needs a lookup to bridge the two. Deliberately not region-specific — see
  * the Global Constraints note in the Plan 9 doc ("No region literals outside
  * src/lib/config/region.ts; never hard-code Texas or Houston"): this is a plain 50-states-plus-DC
  * table, not an assumption about which state the app operates in.

@@ -171,6 +171,24 @@ export type PeopleSearchResult = {
    * the Task 3 chain-headcount guard — see ENRICH_CONFIG.chainHeadcountMin. */
   totalAtDomain: number | null;
   scope: PeopleSearchScope;
+  /** Whole-branch review H1: the org domain Organization Search resolved on the no-domain
+   * branch (`org.primaryDomain`), or null/absent when the domain branch was used instead (nothing
+   * new to resolve), the org-search call found no matching organization, or Apollo has no primary
+   * domain on file for the org it did find. Callers (`findCandidates`, `runEnrich`) persist a
+   * non-null value onto `Business.apolloOrgDomain` so `buildPeopleSearchQuery` can route every
+   * later call for this lead through the free, domain-filtered branch instead of paying for
+   * another Organization Search. Optional (rather than always required) so the many existing
+   * fake-provider overrides in tests that only care about the location cascade — always for a
+   * business that already has a website domain, so org search never runs for them — don't all
+   * need updating; callers read it as `?? null`. */
+  resolvedDomain?: string | null;
+  /** Whole-branch review H1: how many real Apollo credits this call spent on Organization Search
+   * (1 per page — see ApolloEnrichmentProvider.searchOrganization's doc comment; 0 or absent when
+   * the domain branch was used, since People Search itself never costs a credit). The provider
+   * layer doesn't write to the database itself, so it reports this back for the caller to log as a
+   * `credit_spent` ActivityLog row; callers read it as `?? 0`. Optional for the same test-override
+   * reason as `resolvedDomain` above. */
+  orgSearchCredits?: number;
 };
 
 export interface EnrichmentProvider {

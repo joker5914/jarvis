@@ -558,4 +558,70 @@ describe("runEnrich", () => {
       });
     });
   });
+
+  // Whole-branch review H1/L2/M3.
+  describe("credit ledger, suppressed reveal, and revealed marking (whole-branch review)", () => {
+    it("M3: a direct apolloId reveal for a suppressed person is skipped, with no provider call and no credit spent", async () => {
+      const b = await biz({ suppressedApolloIds: ["fake-bellanails.com-owner"] });
+      const d = deps();
+      const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "suppressed" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment skipped: that person was removed as not the decision-maker");
+      const creditLog = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "credit_spent" } });
+      expect(creditLog).toHaveLength(0);
+    });
+
+    it("PATCH suppress's idempotent no-op branch is unaffected by this — a suppressed id skipped here never reaches lastEnrichedAt", async () => {
+      const b = await biz({ suppressedApolloIds: ["fake-bellanails.com-owner"] });
+      await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.lastEnrichedAt).toBeNull();
+    });
+
+    it("H1: a direct reveal that returns an email logs one credit_spent row; one that returns no email logs none", async () => {
+      const bWithEmail = await biz();
+      await runEnrich(bWithEmail.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" }); // has email
+      const emailLog = await prisma.activityLog.findMany({ where: { businessId: bWithEmail.id, kind: "credit_spent" } });
+      expect(emailLog).toHaveLength(1);
+      expect(emailLog[0].message).toBe("Apollo credit: email revealed");
+
+      const bNoEmail = await biz();
+      await runEnrich(bNoEmail.id, OWNER, deps(), { apolloId: "fake-bellanails.com-gm" }); // no email, LinkedIn only
+      const noEmailLog = await prisma.activityLog.findMany({ where: { businessId: bNoEmail.id, kind: "credit_spent" } });
+      expect(noEmailLog).toHaveLength(0);
+    });
+
+    it("L2: a direct reveal marks the matching candidate's revealedAt in the stored candidate set", async () => {
+      const b = await biz({
+        candidates: {
+          fetchedAt: new Date().toISOString(),
+          scope: "any",
+          totalAtDomain: 1,
+          candidates: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", title: "Owner", hasEmail: true, orgName: null, rank: 0, revealedAt: null }],
+        },
+      });
+      await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      const set = after.candidates as unknown as { candidates: { apolloId: string; revealedAt: string | null }[] };
+      expect(set.candidates[0].revealedAt).not.toBeNull();
+    });
+
+    it("L2: the auto-reveal loop also marks revealedAt for the person it reveals", async () => {
+      const b = await biz({
+        candidates: {
+          fetchedAt: new Date().toISOString(),
+          scope: "any",
+          totalAtDomain: 1,
+          candidates: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", title: "Owner", hasEmail: true, orgName: null, rank: 0, revealedAt: null }],
+        },
+      });
+      await runEnrich(b.id, OWNER, deps());
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      const set = after.candidates as unknown as { candidates: { apolloId: string; revealedAt: string | null }[] };
+      expect(set.candidates[0].revealedAt).not.toBeNull();
+    });
+  });
 });

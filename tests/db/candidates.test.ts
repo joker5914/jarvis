@@ -92,4 +92,30 @@ describe("findCandidates", () => {
     await findCandidates(b.id, OWNER, d);
     expect(d.enrichment.calls.enrich).toBe(0);
   });
+
+  // Whole-branch review H1: a no-domain lead's free "Find people" call falls back to a credited
+  // Organization Search — this resolves and persists `apolloOrgDomain` so a later call can route
+  // through the free domain branch instead, and logs the real spend to the credit ledger (since
+  // Contact rows alone never see an Organization Search — nothing gets revealed here at all).
+  it("H1: a no-domain business gets apolloOrgDomain resolved and persisted, and logs one credit_spent row for the Organization Search", async () => {
+    const b = await biz({ websiteUrl: null });
+    const d = deps();
+    const set = await findCandidates(b.id, OWNER, d);
+    expect(d.enrichment.calls.orgSearch).toBe(1);
+    expect(set.candidates.length).toBeGreaterThan(0);
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.apolloOrgDomain).toBeTruthy();
+    const logs = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "credit_spent" } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].message).toBe("Apollo credit: organization search");
+  });
+
+  it("H1: once apolloOrgDomain is memoized, a later findCandidates call is free (no Organization Search, no credit logged)", async () => {
+    const b = await biz({ websiteUrl: null, apolloOrgDomain: "bellanailsspa.example" });
+    const d = deps();
+    await findCandidates(b.id, OWNER, d);
+    expect(d.enrichment.calls.orgSearch).toBe(0);
+    const logs = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "credit_spent" } });
+    expect(logs).toHaveLength(0);
+  });
 });

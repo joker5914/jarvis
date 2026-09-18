@@ -5,6 +5,8 @@ import { getActor } from "@/lib/actor";
 import { ApiError, handle, json, parseJson } from "@/lib/api";
 import { getBusinessDetail } from "@/lib/leads/queries";
 import { normalizeEmail, normalizePhone } from "@/lib/extract/normalize";
+import { recomputeContactQuality, validateEmails } from "@/lib/jobs/zipSearch";
+import { getProviders } from "@/lib/providers";
 
 /** Trim + collapse internal whitespace (Plan 10 Task 3 amendment) — applied to every
  * `personName`/`primaryPerson` this route writes, so a hand-typed "Albert   Reyes" or
@@ -56,6 +58,26 @@ const postBodySchema = z.object({
  * (and `primaryPersonTitle`, when the form left title blank) now follows that existing name
  * rather than whatever the rep just retyped in the name field, so a slightly different
  * spelling/case never splits the primary contact from its own Contact rows in `groupPeople`.
+ *
+ * Fix round (whole-branch review, L1): the canonical name/title is now resolved in a first pass
+ * over every row this request touches, *before* any write happens — the previous version resolved
+ * it progressively during the same loop that also created rows, so a row with no existing match
+ * (processed before a later row's match resolved the canonical identity) got written under the
+ * rep's raw typed name instead. Now every new Contact row this call creates is written with
+ * `personName: canonicalName` unconditionally, so two rows submitted in the same request (e.g. a
+ * new phone number alongside an email that already belongs to a known "Albert Reyes") always agree
+ * on one identity instead of `groupPeople` splitting them into two different people.
+ *
+ * Fix round (whole-branch review, M4): a submission that would write no Contact row at all and
+ * isn't setting a primary either (`setPrimary: false` with neither email nor phone) does nothing
+ * whatsoever — refused with a 400 rather than silently discarding whatever the rep typed (a title,
+ * a note) into thin air.
+ *
+ * Fix round (whole-branch review, M5): `recomputeContactQuality` runs after every successful add
+ * (a manual email/phone changes the score the same way an Apollo-sourced one would), and a newly
+ * submitted email gets one `validateEmails` pass (a single MX lookup) so it doesn't sit as
+ * "unchecked" until the next unrelated enrich/zip-search touches this business — failures are
+ * tolerated (the add itself has already succeeded; a slow/broken MX check shouldn't roll it back).
  */
 export const POST = handle(async (req, ctx) => {
   const { id } = await ctx.params;
@@ -83,6 +105,13 @@ export const POST = handle(async (req, ctx) => {
   if (email) rows.push({ type: "email", value: email });
   if (phone) rows.push({ type: "phone", value: phone });
 
+  // M4: a submission with no email/phone (nothing to write as a Contact row) and not setting a
+  // primary either would do literally nothing — a title or note typed into that form would just
+  // be silently dropped. Checked before the transaction; cheap, no DB round trip needed.
+  if (rows.length === 0 && !setPrimary) {
+    throw new ApiError(400, "Add an email or phone, or set this person as primary.");
+  }
+
   await prisma.$transaction(async (tx) => {
     const existing = await tx.business.findFirst({
       where: { id, ownerId: actor.id },
@@ -97,42 +126,56 @@ export const POST = handle(async (req, ctx) => {
       throw new ApiError(400, `${name} already has a contact — add an email, phone, or title to add a new entry.`);
     }
 
-    // Fix round (Task 4 re-review): if a submitted email/phone matches a row that already carries
-    // a `personName`, that row IS the canonical identity for this person — the primary pointer
-    // below must follow it (and its title, when the form left title blank), not whatever the rep
-    // just typed, or a re-add under a slightly different spelling/case would point `primaryPerson`
-    // at a name that no longer matches any of this person's own Contact rows. Only the first such
-    // row encountered sets the canonical name/title (rows are processed email-then-phone).
-    let canonicalName = name;
-    let canonicalTitle = title;
-    let canonicalFromExisting = false;
-
+    // L1: pass 1 — resolve the canonical identity from any row this request touches that already
+    // carries a `personName`, before any write happens. `canonicalTitle` stays whatever that same
+    // row's own `personTitle` was (or null) — never the form's `title` — so the two can be told
+    // apart at the write sites below (an existing row's title is still overwritten outright by a
+    // non-blank form title; a brand-new row prefers the already-known canonical title, per L1).
+    let canonicalName: string | null = null;
+    let canonicalTitle: string | null = null;
+    const existingRowByKey = new Map<string, Awaited<ReturnType<typeof tx.contact.findUnique>>>();
     for (const r of rows) {
       const existingRow = await tx.contact.findUnique({ where: { businessId_type_value: { businessId: id, type: r.type, value: r.value } } });
+      existingRowByKey.set(`${r.type}:${r.value}`, existingRow);
+      if (existingRow?.personName && canonicalName === null) {
+        canonicalName = existingRow.personName;
+        canonicalTitle = existingRow.personTitle ?? null;
+      }
+    }
+    canonicalName ??= name; // nothing on file yet for this person — this submission's own name is canonical
+
+    // Pass 2: write, now that every row agrees on the same canonical identity.
+    for (const r of rows) {
+      const existingRow = existingRowByKey.get(`${r.type}:${r.value}`);
       if (existingRow) {
         // Never touch `source`/`apolloId` — an Apollo-sourced row stays Apollo-sourced (and
         // therefore still suppressible), regardless of who just hand-added the same email/phone.
         const data: { personName?: string; personTitle?: string } = {};
         // Only fill a *missing* name — never overwrite one, so an existing row (Apollo or
         // otherwise) doesn't get split from its sibling email/LinkedIn row under a different name.
-        if (!existingRow.personName) data.personName = name;
+        if (!existingRow.personName) data.personName = canonicalName;
+        // A non-blank form title still overwrites an existing row's own title outright (unchanged
+        // from before L1 — this is about *this* row's title, not the cross-row canonical one).
         if (title) data.personTitle = title;
         if (Object.keys(data).length > 0) await tx.contact.update({ where: { id: existingRow.id }, data });
-        if (existingRow.personName && !canonicalFromExisting) {
-          canonicalName = existingRow.personName;
-          if (!title && existingRow.personTitle) canonicalTitle = existingRow.personTitle;
-          canonicalFromExisting = true;
-        }
       } else {
-        await tx.contact.create({ data: { ownerId: actor.id, businessId: id, type: r.type, value: r.value, source: "manual", personName: name, personTitle: title } });
+        // L1: a brand-new row has no title of its own to defer to — prefer the identity's
+        // already-known canonical title over the form's, falling back to the form's title only
+        // when nothing was already on file.
+        await tx.contact.create({ data: { ownerId: actor.id, businessId: id, type: r.type, value: r.value, source: "manual", personName: canonicalName, personTitle: canonicalTitle ?? title } });
       }
     }
 
     if (setPrimary) {
-      await tx.business.update({ where: { id }, data: { primaryPerson: canonicalName, primaryPersonTitle: canonicalTitle } });
+      // The primary pointer keeps the form's title taking priority when given (unchanged — see
+      // the Task 3 fix-round test "a submitted form title still wins..."), falling back to the
+      // canonical title only when the form left title blank.
+      await tx.business.update({ where: { id }, data: { primaryPerson: canonicalName, primaryPersonTitle: title ?? canonicalTitle } });
     }
     if (note) {
-      const line = `Contact note (${name}): ${note}`;
+      // L1: the note is attributed to the canonical name, not the rep's raw typed one, so a note
+      // added alongside a re-typed "Al" still reads as being about "Albert Reyes" in the log.
+      const line = `Contact note (${canonicalName}): ${note}`;
       // Atomic AND serialized (fix round, Task 4 re-review): a single UPDATE ... CASE statement,
       // not a read-then-write against a pre-fetched `notes` value — the earlier version read
       // `existing.notes` once at the top of the transaction and wrote `existing.notes + line`
@@ -144,9 +187,22 @@ export const POST = handle(async (req, ctx) => {
       await tx.$executeRaw`UPDATE "Business" SET "notes" = CASE WHEN "notes" = '' THEN ${line} ELSE "notes" || E'\n' || ${line} END WHERE "id" = ${id}`;
     }
     await tx.activityLog.create({
-      data: { ownerId: actor.id, businessId: id, kind: "poc_updated", message: `Added ${name}${title ? `, ${title}` : ""} by hand${setPrimary ? " (set as primary)" : ""}` },
+      data: { ownerId: actor.id, businessId: id, kind: "poc_updated", message: `Added ${canonicalName}${title ? `, ${title}` : ""} by hand${setPrimary ? " (set as primary)" : ""}` },
     });
   });
+
+  // M5: quality/validation follow-up outside the transaction (both hit the database on their own
+  // and don't need to be part of this one atomic write) — a newly submitted email gets a single MX
+  // check so it doesn't sit "unchecked" until some unrelated job touches this business next, and
+  // the contact-quality score/band reflect whatever this add just changed either way.
+  if (email) {
+    try {
+      await validateEmails([id], { providers: getProviders(), log: () => {} });
+    } catch {
+      // Tolerated: the add itself already succeeded — a slow/broken MX lookup shouldn't undo it.
+    }
+  }
+  await recomputeContactQuality(id);
 
   const business = await getBusinessDetail(id, actor.id);
   return json({ business }, 200);
@@ -215,10 +271,15 @@ export const PATCH = handle(async (req, ctx) => {
   // suppressApolloId branch
   const apolloId = body.suppressApolloId as string;
 
-  // Idempotent (fix round): suppressing an id that's already suppressed is a no-op 200 — no
-  // Contact deletes (there's nothing left to delete after the first call), no activity row (the
-  // "Removed ..." row was already written once), no candidates/suppressedApolloIds rewrite.
+  // Idempotent (fix round): suppressing an id that's already suppressed is a no-op 200 for the
+  // parts that matter — no activity row (the "Removed ..." row was already written once), no
+  // candidates/suppressedApolloIds rewrite. Whole-branch review M3: the delete itself still runs
+  // (a query that normally deletes zero rows, since the first suppress already ran it, is cheap)
+  // as a defensive guard against a revealed Apollo row somehow existing again for an id this
+  // business already suppressed — better to actually enforce "never comes back" than to trust that
+  // it can't happen and skip the check.
   if (existing.suppressedApolloIds.includes(apolloId)) {
+    await prisma.contact.deleteMany({ where: { businessId: id, source: "apollo", apolloId } });
     const business = await getBusinessDetail(id, actor.id);
     return json({ business }, 200);
   }
@@ -260,6 +321,10 @@ export const PATCH = handle(async (req, ctx) => {
       data: { ownerId: actor.id, businessId: id, kind: "poc_updated", message: `Removed ${removedName} (not the decision-maker)` },
     }),
   ]);
+  // M5: suppression just hard-deleted Contact rows (see the deleteMany above), which can change
+  // the quality score/band (e.g. losing the only named person on file) — recompute so the badge
+  // doesn't keep showing a score for contacts that no longer exist.
+  await recomputeContactQuality(id);
 
   const business = await getBusinessDetail(id, actor.id);
   return json({ business }, 200);

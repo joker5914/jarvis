@@ -50,6 +50,11 @@ type Detail = {
   // only ever consulted by `groupPeople`'s synthesized-row fallback below, for a primary who has
   // no Contact row of their own to carry a title.
   primaryPersonTitle: string | null;
+  // Whole-branch review H1: a domain Organization Search resolved for this lead on a previous
+  // no-website "Find people" call — once set, every later call is free (see buildPeopleSearchQuery
+  // in src/lib/jobs/enrich.ts), so the client-side `candidatesCostCredit` hint below must account
+  // for it the same way the server's own `costsCredit` gate does.
+  apolloOrgDomain: string | null;
 };
 
 type CreditStatus = {
@@ -86,6 +91,10 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [enriching, setEnriching] = useState(false);
   const [chainActionPending, setChainActionPending] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
+  // H1: set when POST /candidates refused a no-domain lead's repeat click with a retryable 409
+  // ("reused for 24 hours") — PeopleSection shows "Refresh anyway (1 credit)" while this is true,
+  // and a click then sends `{ force: true }`. Reset on any non-409 response.
+  const [findPeopleRetryable, setFindPeopleRetryable] = useState(false);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
   // different lead) so a stale timer never touches this component's state after it's gone.
@@ -216,16 +225,24 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   // "Find people" / "Refresh candidates" (Plan 10 Task 2): a free (usually) Apollo People
   // Search that lists candidates without revealing anyone — no credit watcher needed, just a
-  // reload once the set is stored.
-  async function findPeople() {
-    const res = await fetch(`/api/businesses/${id}/candidates`, { method: "POST" });
+  // reload once the set is stored. H1: `force` re-sends after a "reused for 24 hours" 409.
+  async function findPeople(force = false) {
+    const res = await fetch(`/api/businesses/${id}/candidates`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(force ? { force: true } : {}),
+    });
     const data = await res.json().catch(() => ({}));
     if (res.status === 409) {
+      // H1: only a `retryable` 409 (the 24h reuse throttle) arms the "Refresh anyway" state — a
+      // provider/settings 409 is a different kind of failure and shouldn't offer to pay through it.
+      setFindPeopleRetryable(!!data.retryable);
       toast.error(data.error ?? "Could not find people", data.settingsHref
         ? { action: { label: "Settings", onClick: () => router.push(data.settingsHref) } }
         : undefined);
       return;
     }
+    setFindPeopleRetryable(false);
     if (!res.ok) { toast.error(data.error ?? "Could not find people"); return; }
     const count = data.candidates?.candidates?.length ?? 0;
     const base = count > 0 ? `Found ${count} candidate${count === 1 ? "" : "s"}` : "No people found in Apollo";
@@ -347,10 +364,12 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   // Client-side hint only, computed the same way the server does: POST /candidates falls back to
   // a credited Organization Search whenever `domainFromUrl` finds no usable domain (no website at
   // all, or a page hosted on a shared platform like Booksy/Clover/Wix — see
-  // src/lib/extract/domains.ts's SHARED_HOSTS). A plain `websiteUrl == null` check used to miss
-  // the platform-hosted case (fix round for 3eed43d), understating the cost before the click; the
-  // actual `data.costsCredit` in the response (used in `findPeople` above) remains the authority.
-  const candidatesCostCredit = domainFromUrl(b.websiteUrl) === null;
+  // src/lib/extract/domains.ts's SHARED_HOSTS) AND no `apolloOrgDomain` has been memoized yet from
+  // a previous no-domain search (H1, whole-branch review) — once one has, every later call routes
+  // through the free, domain-filtered branch instead. A plain `websiteUrl == null` check used to
+  // miss the platform-hosted case (fix round for 3eed43d), understating the cost before the click;
+  // the actual `data.costsCredit` in the response (used in `findPeople` above) remains the authority.
+  const candidatesCostCredit = domainFromUrl(b.websiteUrl) === null && !b.apolloOrgDomain;
   const revealedApolloIds = new Set(b.contacts.map((c) => c.apolloId).filter((x): x is string => x != null));
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
@@ -382,11 +401,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             </>
           )}
           {b.websiteUrl && (
-            <Button size="sm" variant="outline" nativeButton={false} render={<a href={b.websiteUrl} target="_blank" rel="noreferrer" />}>
+            <Button size="sm" variant="outline" nativeButton={false} render={<a href={b.websiteUrl} target="_blank" rel="noopener noreferrer" />}>
               Website{b.websiteReachable === false ? " (unreachable)" : ""}
             </Button>
           )}
-          <Button size="sm" variant="outline" nativeButton={false} render={<a href={linkedinSearch} target="_blank" rel="noreferrer" />}>
+          <Button size="sm" variant="outline" nativeButton={false} render={<a href={linkedinSearch} target="_blank" rel="noopener noreferrer" />}>
             Search LinkedIn
           </Button>
         </div>
@@ -462,7 +481,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                     <span className="min-w-0 truncate" title={c.value}>
                       {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
                         : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
-                        : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
+                        : <a href={c.value} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
                       {c.personName && <span className="text-muted-foreground"> · {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
@@ -488,6 +507,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         people={people}
         candidates={b.candidates}
         costsCredit={candidatesCostCredit}
+        findPeopleRetryable={findPeopleRetryable}
         primaryPerson={b.primaryPerson}
         revealedApolloIds={revealedApolloIds}
         suppressedApolloIds={b.suppressedApolloIds}

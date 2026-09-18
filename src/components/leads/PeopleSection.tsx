@@ -27,6 +27,7 @@ export function PeopleSection({
   people,
   candidates,
   costsCredit,
+  findPeopleRetryable,
   primaryPerson,
   revealedApolloIds,
   suppressedApolloIds,
@@ -53,6 +54,12 @@ export function PeopleSection({
    * click — the response's own `costsCredit` (LeadDetail's `findPeople`) is what the success
    * toast reports, since this prop is never overwritten by it. */
   costsCredit: boolean;
+  /** H1 (whole-branch review): the last "Find people" click on this no-domain lead was refused
+   * with a 409 (`retryable: true`) because the stored candidate list is still within the 24-hour
+   * reuse window — the button now shows "Refresh anyway (1 credit)" and a click sends
+   * `{ force: true }`. Reset (by `LeadDetail`) on any non-409 response, so a later normal refresh
+   * doesn't get stuck reading "anyway". */
+  findPeopleRetryable: boolean;
   /** `Business.primaryPerson` — the manual pointer a rep sets by hand. Passed straight through
    * to `pocConfidence` (not derived from `people`'s own `isPrimary` flags): a hand-added primary
    * contact with only a name and title creates no Contact row (Task 3), so `people` alone can't
@@ -68,7 +75,9 @@ export function PeopleSection({
   enriching: boolean;
   credits: CreditStatus | null;
   lastEnrichedAt: string | null;
-  onFindPeople: () => Promise<void>;
+  /** H1: `force` re-sends the request as `{ force: true }` after a 409 "reused for 24 hours"
+   * refusal — see `findPeopleRetryable` above. */
+  onFindPeople: (force?: boolean) => Promise<void>;
   onReveal: (apolloId: string) => Promise<void>;
   /** PATCH /people { primaryPerson: name } — the "Set as primary" ghost button on a non-primary
    * row. */
@@ -110,7 +119,9 @@ export function PeopleSection({
   async function handleFind() {
     setFinding(true);
     try {
-      await onFindPeople();
+      // H1: once a 409 has told us this exact call is retryable, every subsequent click from this
+      // button pays for it outright rather than bouncing off the same 409 again.
+      await onFindPeople(findPeopleRetryable);
     } finally {
       setFinding(false);
     }
@@ -153,9 +164,17 @@ export function PeopleSection({
     }
   }
 
-  const findLabel = candidates ? "Refresh candidates" : "Find people";
+  // H1: once the last click came back "reused for 24 hours" (retryable), the button switches to
+  // an explicit one-step confirm to pay for another Organization Search rather than silently
+  // retrying and bouncing off the same 409 — a normal (non-retry) refresh keeps its usual label.
+  const findLabel = findPeopleRetryable ? "Refresh anyway" : candidates ? "Refresh candidates" : "Find people";
   const findButtonLabel = costsCredit ? `${findLabel} (1 credit)` : findLabel;
   const revealDisabled = enriching || revealingId !== null;
+  // L4: a reveal button can be disabled for two different reasons — this exact click is already
+  // in flight (revealingId set, "Revealing…" already says so), or an unrelated auto-enrich run is
+  // in progress (the top "Enrich"/"Re-enrich" button) and every reveal is disabled to avoid racing
+  // it. Only the second case needs its own explanatory hint.
+  const enrichingElsewhere = enriching && revealingId === null;
 
   return (
     <section className="border-t pt-4 space-y-3" data-testid="people-section">
@@ -163,6 +182,10 @@ export function PeopleSection({
       <p className={`text-xs ${confidenceClass}`} data-testid="poc-confidence">
         {confidence.label}
       </p>
+      {/* L4 (whole-branch review): moved directly under the confidence line — it used to sit
+          below the whole People list, separated from the confidence read it's actually context
+          for ("how stale is this?"). */}
+      {lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(lastEnrichedAt)}</p>}
       {/* Plan 10 Task 4: owner-search links and a call prompt, shown whenever the best-known
           contact isn't already a decision-maker (or nobody's set primary by hand) — a manager,
           staff, or nobody at all still leaves the rep needing another way to find the owner. */}
@@ -197,7 +220,7 @@ export function PeopleSection({
                   </span>
                   <span className="flex shrink-0 items-center gap-1">
                     <SourceBadge source={p.source} />
-                    {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
+                    {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noopener noreferrer">LinkedIn</a>}
                     {p.email && <CopyButton value={p.email} label={p.email} />}
                   </span>
                 </div>
@@ -232,7 +255,6 @@ export function PeopleSection({
           })}
         </ul>
       )}
-      {lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(lastEnrichedAt)}</p>}
 
       <div className="space-y-2 rounded-md border p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -256,11 +278,21 @@ export function PeopleSection({
             <span className="whitespace-nowrap text-xs text-muted-foreground">Searched {timeAgo(candidates.fetchedAt)}</span>
           )}
         </div>
+        {/* L4: explains why every "Reveal" button below is disabled when it isn't this
+            component's own in-flight click (that case already reads "Revealing…") — an
+            unrelated auto-enrich run (the top Enrich/Re-enrich button) is in progress. */}
+        {enrichingElsewhere && visibleCandidates.length > 0 && (
+          <p className="text-xs text-muted-foreground">Enrichment in progress — try again in a moment</p>
+        )}
 
         {visibleCandidates.length > 0 && (
           <ul className="space-y-1.5" data-testid="candidate-list">
             {visibleCandidates.map((c) => {
-              const revealed = revealedApolloIds.has(c.apolloId);
+              // L2 (whole-branch review): a candidate can be "revealed" without ever producing a
+              // Contact row (Apollo had no email/LinkedIn for them) — runEnrich stamps
+              // `revealedAt` on the stored candidate either way, so this doesn't only trust
+              // `revealedApolloIds` (which only ever sees rows that actually got created).
+              const revealed = revealedApolloIds.has(c.apolloId) || c.revealedAt != null;
               return (
                 <li
                   key={c.apolloId}

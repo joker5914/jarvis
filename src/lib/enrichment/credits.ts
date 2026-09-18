@@ -45,9 +45,22 @@ export function creditCycleStart(now: Date, cycleRenewsOn: string | null, tz: st
   return utcForLocal(yy, mm, Math.min(renewDay, daysIn(yy, mm)), 0, 0, tz);
 }
 
-/** Apollo charges one credit per verified net-new email; that's the only thing we store that maps to a credit. */
+/**
+ * Whole-branch review H1/M1: counts `ActivityLog` rows with `kind: "credit_spent"` — one written
+ * per real Apollo spend (a person reveal that returned an email, or an Organization Search page;
+ * see `src/lib/jobs/enrich.ts`'s `logCreditSpent` and `src/lib/enrichment/candidates.ts`'s
+ * `findCandidates`) — instead of counting `Contact` rows directly. Two problems that fixed:
+ * (1) M1: "not the decision-maker" suppression (`PATCH /businesses/:id/people`) hard-deletes a
+ * revealed person's Apollo Contact rows, which used to make the credit they'd already cost
+ * silently vanish from this count too, understating real spend for the rest of the cycle; the
+ * ledger row is never deleted, so the count survives a suppression. (2) H1: the no-website
+ * "Find people" fallback (Organization Search) spends a real credit but never creates a Contact
+ * row at all, so it was invisible to this count entirely before the ledger existed. Migration
+ * `20260918010100_credit_ledger_backfill` seeds one `credit_spent` row per pre-existing
+ * Apollo-sourced email Contact row so history before this change still counts correctly.
+ */
 export async function creditsUsed(ownerId: string, since: Date): Promise<number> {
-  return prisma.contact.count({ where: { ownerId, source: "apollo", type: "email", createdAt: { gte: since } } });
+  return prisma.activityLog.count({ where: { ownerId, kind: "credit_spent", createdAt: { gte: since } } });
 }
 
 export type CreditStatus = {

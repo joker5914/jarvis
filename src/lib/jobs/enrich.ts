@@ -1,14 +1,27 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { checkPause, upsertIgnoringConflict, type JobDeps } from "./shared";
 import { validateEmails, recomputeContactQuality } from "./zipSearch";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import { loadConfig, type RuntimeConfig } from "@/lib/config/runtime";
 import { creditStatus } from "@/lib/enrichment/credits";
+import { markCandidateRevealed, type CandidateSet } from "@/lib/enrichment/candidates";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
 import { stateNameFor } from "@/lib/geo/usStates";
 import type { EnrichPerson, PeopleSearchQuery } from "@/lib/providers/types";
+
+/** Whole-branch review H1: writes one `credit_spent` ActivityLog row for a real Apollo spend —
+ * either a person reveal that returned an email, or an Organization Search page (see
+ * PeopleSearchResult.orgSearchCredits). Providers never write to the database themselves, so
+ * every caller that can trigger a real spend (this file, and findCandidates in
+ * src/lib/enrichment/candidates.ts) logs it explicitly; `creditsUsed` (src/lib/enrichment/
+ * credits.ts) counts these rows instead of Contact rows so a suppression (which deletes Contact
+ * rows) can no longer silently "give back" credits that were actually spent (M1). */
+async function logCreditSpent(ownerId: string, businessId: string, what: "email revealed" | "organization search") {
+  await prisma.activityLog.create({ data: { ownerId, businessId, kind: "credit_spent", message: `Apollo credit: ${what}` } });
+}
 
 // domainFromUrl and its SHARED_HOSTS list (social/review hosts plus every known booking/POS/
 // site-builder platform domain from PLATFORM_EMAIL_DOMAINS — see that module for why a page on
@@ -55,10 +68,15 @@ export function canonicalLinkedin(url: string): string | null {
  * the credited reveal always search the same way.
  */
 export function buildPeopleSearchQuery(
-  b: { websiteUrl: string | null; formattedAddress: string | null; name: string },
+  b: { websiteUrl: string | null; formattedAddress: string | null; name: string; apolloOrgDomain?: string | null },
   cfg: RuntimeConfig,
 ): PeopleSearchQuery {
-  const domain = domainFromUrl(b.websiteUrl);
+  // Whole-branch review H1: a website domain always wins when there is one; `apolloOrgDomain` —
+  // the domain a *previous* no-domain call resolved via the credited Organization Search fallback
+  // (see PeopleSearchResult.resolvedDomain) — is the fallback for a lead with no usable website at
+  // all, so every call after the first routes through the free, domain-filtered People Search
+  // branch instead of paying for Organization Search again.
+  const domain = domainFromUrl(b.websiteUrl) ?? b.apolloOrgDomain ?? null;
   const { city, state } = regionFromAddress(b.formattedAddress);
   const metro = cfg.enrichment.metroLocation ?? null;
   return { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities };
@@ -134,7 +152,7 @@ export async function runEnrich(
   ownerId: string,
   deps: JobDeps,
   opts: { force?: boolean; people?: number; apolloId?: string } = {},
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | "reveal_failed" | null }> {
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | "reveal_failed" | "suppressed" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
@@ -174,13 +192,26 @@ export async function runEnrich(
   let added = 0;
   let updated = 0;
   let contactRows = 0;
+  // Whole-branch review L2: the stored candidate list, mutated in memory as reveals happen below
+  // and written back (if it changed) alongside `lastEnrichedAt` — see each `candidateSet` spread
+  // at the business.update calls further down. Starts from `b.candidates` (already loaded above,
+  // no extra query) and stays null when this business has never had "Find people" run on it.
+  let candidateSet = b.candidates as unknown as CandidateSet | null;
   try {
     await checkPause(deps);
     // Plan 10 Task 1: a reveal the rep chose from the candidate list (POST /enrich { apolloId })
-    // skips the search entirely (no candidate re-ranking, no org-mismatch guard, no suppression
-    // filter — the rep already picked this specific person) and spends at most the one credit
-    // this single enrichPerson() call costs, still subject to the credit cap checked above.
+    // skips the search entirely (no candidate re-ranking, no org-mismatch guard — the rep already
+    // picked this specific person) and spends at most the one credit this single enrichPerson()
+    // call costs, still subject to the credit cap checked above.
     if (opts.apolloId) {
+      // M3 (whole-branch review): a person the rep already suppressed as "not the decision-maker"
+      // must never come back through this path either — the auto-reveal loop below already
+      // filters `suppressedApolloIds` before picking who to reveal, but a direct `apolloId` reveal
+      // bypasses that loop entirely, so it needs its own check. No provider call, no credit spent.
+      if (b.suppressedApolloIds.includes(opts.apolloId)) {
+        await log("Enrichment skipped: that person was removed as not the decision-maker");
+        return { added: 0, updated: 0, skipped: "suppressed" as const };
+      }
       const full = await deps.providers.enrichment.enrichPerson(opts.apolloId);
       // Fix round (R5): Apollo had no match for the id the rep clicked (a candidate that's gone
       // stale, or a provider-side miss) — distinct from a successful reveal that simply had no
@@ -193,9 +224,24 @@ export async function runEnrich(
         return { added: 0, updated: 0, skipped: "reveal_failed" as const };
       }
       const { added: personAdded, updated: personUpdated, contactRows: revealContactRows } = await upsertPersonContacts(businessId, ownerId, full, opts.apolloId);
+      // H1: a real Apollo credit was only actually spent when the reveal came back with an email
+      // (matches the auto-loop's own `willPay && full.email` decrement below) — logged so
+      // creditsUsed() (now counting credit_spent rows, not Contact rows) reflects real spend.
+      if (full.email) await logCreditSpent(ownerId, businessId, "email revealed");
+      // L2: mark this candidate revealed regardless of whether it produced a Contact row, so the
+      // picker doesn't offer to spend another credit on a person Apollo already had no email or
+      // LinkedIn for.
+      const revealedAt = new Date().toISOString();
+      if (candidateSet) candidateSet = markCandidateRevealed(candidateSet, opts.apolloId, revealedAt);
       await validateEmails([businessId], deps);
       await recomputeContactQuality(businessId);
-      await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
+      await prisma.business.update({
+        where: { id: businessId },
+        data: {
+          lastEnrichedAt: new Date(),
+          candidates: (candidateSet ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
+        },
+      });
       const revealUpdated = personUpdated ? 1 : 0;
       await log(
         `Enriched via Apollo: revealed ${full.title ?? "person"} chosen by you; ${revealContactRows} new contact${revealContactRows === 1 ? "" : "s"}, ${revealUpdated} updated`,
@@ -205,6 +251,11 @@ export async function runEnrich(
     const query = buildPeopleSearchQuery(b, cfg);
     const { domain, city, state, metro } = query;
     const search = await deps.providers.enrichment.searchPeople(query, maxPeople);
+    // H1: Organization Search is the one part of a free auto-enrich search that costs a real
+    // Apollo credit (the no-domain fallback, before either `domain` or `apolloOrgDomain` is
+    // known) — log each one, and memoize a resolved domain so this lead never pays for it again.
+    for (let i = 0; i < (search.orgSearchCredits ?? 0); i++) await logCreditSpent(ownerId, businessId, "organization search");
+    const resolvedApolloOrgDomain = search.resolvedDomain ?? undefined;
     // Chain-headcount guard (Plan 9 Task 3): a domain with this many *decision-maker* hits in
     // Apollo (title/seniority-filtered by the same cfg.enrichment lists passed above — see the
     // ENRICH_CONFIG.chainHeadcountMin doc comment for why this isn't a raw employee count), at
@@ -301,8 +352,18 @@ export async function runEnrich(
       reveals++;
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
-      if (willPay && full.email) remaining--;
+      if (willPay && full.email) {
+        remaining--;
+        // H1: a real credit was spent (this reveal was paid for and came back with an email) —
+        // logged so creditsUsed() reflects it. A person already known free (willPay false, e.g. a
+        // test double that pre-attaches an email to the search hit) never costs a credit, so it's
+        // never logged here either, matching the decrement above exactly.
+        await logCreditSpent(ownerId, businessId, "email revealed");
+      }
       if (full.email) withEmail++;
+      // L2: mark revealed regardless of whether a Contact row ends up created below — a person
+      // Apollo has no email or LinkedIn for still shouldn't offer a second "Reveal" click.
+      if (candidateSet) candidateSet = markCandidateRevealed(candidateSet, p.apolloId, new Date().toISOString());
       // added/updated are counted per person (at most one increment to each per person, per
       // run), not per contact row: a person with both a fresh email and a fresh LinkedIn row
       // still counts once toward `added`, matching how the API/UI report "N people enriched".
@@ -326,13 +387,27 @@ export async function runEnrich(
       // the Organization Search credit on the same lead, only to hit the same mismatch again.
       // Force via Re-enrich still bypasses the recheckDays gate at the top of this function, so a
       // user who wants to retry a specific lead right away still can.
-      await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
+      await prisma.business.update({
+        where: { id: businessId },
+        data: {
+          lastEnrichedAt: new Date(),
+          apolloOrgDomain: resolvedApolloOrgDomain,
+          candidates: (candidateSet ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
+        },
+      });
       await log(`Enrichment skipped: Apollo matched a different company (${skippedOrg})`);
       return { added: 0, updated: 0, skipped: "org_mismatch" as const };
     }
     await validateEmails([businessId], deps);
     await recomputeContactQuality(businessId);
-    await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
+    await prisma.business.update({
+      where: { id: businessId },
+      data: {
+        lastEnrichedAt: new Date(),
+        apolloOrgDomain: resolvedApolloOrgDomain,
+        candidates: (candidateSet ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
+      },
+    });
     const found = people.length;
     if (found === 0) {
       // Search itself came back empty (no domain/name match at all) — distinct from "found

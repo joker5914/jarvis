@@ -23,6 +23,13 @@ export type Candidate = {
   hasEmail: boolean;
   orgName: string | null;
   rank: number;
+  /** Whole-branch review L2: set (ISO timestamp) by `runEnrich` the moment this candidate is
+   * actually revealed — whether or not that reveal produced a Contact row (a person with no email
+   * and no LinkedIn on file still counts as "already looked at," so the picker shouldn't offer to
+   * spend another credit on them). `PeopleSection` treats a candidate as revealed when either this
+   * is set OR a Contact row carries a matching `apolloId` (the common case, when the reveal did
+   * produce a row) — the two can disagree exactly in that no-contact-row case. Null until then. */
+  revealedAt: string | null;
 };
 
 /** The stored, free candidate list for one business — persisted on `Business.candidates` /
@@ -35,6 +42,17 @@ export type CandidateSet = {
   totalAtDomain: number | null;
   candidates: Candidate[];
 };
+
+/** Whole-branch review L2: returns a copy of `set` with the candidate matching `apolloId`
+ * stamped `revealedAt` — a no-op copy (still returns a new object, for consistent update
+ * semantics at the call site) when no candidate in the set has that id, e.g. a reveal-by-id for a
+ * candidate that was never in the free search results (an id typed some other way, or a set
+ * fetched before this exact person showed up). Pure and dependency-free so it's trivially unit
+ * testable and safe to call from `runEnrich` (src/lib/jobs/enrich.ts) without pulling any prisma
+ * code into this module. */
+export function markCandidateRevealed(set: CandidateSet, apolloId: string, revealedAt: string): CandidateSet {
+  return { ...set, candidates: set.candidates.map((c) => (c.apolloId === apolloId ? { ...c, revealedAt } : c)) };
+}
 
 /**
  * Free "Find people" step (Plan 10 Task 1): runs the same Apollo People Search `runEnrich` uses
@@ -70,11 +88,28 @@ export async function findCandidates(businessId: string, ownerId: string, deps: 
     hasEmail: p.hasEmail,
     orgName: p.orgName,
     rank: i,
+    revealedAt: null,
   }));
   const set: CandidateSet = { fetchedAt: new Date().toISOString(), scope: search.scope, totalAtDomain: search.totalAtDomain, candidates };
   await prisma.business.update({
     where: { id: businessId },
-    data: { candidates: set as unknown as Prisma.InputJsonValue, candidatesAt: new Date() },
+    data: {
+      candidates: set as unknown as Prisma.InputJsonValue,
+      candidatesAt: new Date(),
+      // Whole-branch review H1: only ever set from a *resolved* domain — `?? undefined` leaves
+      // the column untouched (not cleared to null) on a call that didn't need Organization Search
+      // (had a domain already, or one is already memoized) or whose org search found nothing.
+      ...(search.resolvedDomain ? { apolloOrgDomain: search.resolvedDomain } : {}),
+    },
   });
+  // Whole-branch review H1: Organization Search is the one branch of a free "Find people" call
+  // that actually costs a real Apollo credit (see PeopleSearchResult.orgSearchCredits's doc
+  // comment) — logged here, not inside the provider layer, since providers don't write to the
+  // database themselves.
+  for (let i = 0; i < (search.orgSearchCredits ?? 0); i++) {
+    await prisma.activityLog.create({
+      data: { ownerId, businessId, kind: "credit_spent", message: "Apollo credit: organization search" },
+    });
+  }
   return set;
 }

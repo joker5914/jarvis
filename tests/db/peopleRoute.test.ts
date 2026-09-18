@@ -3,6 +3,9 @@ import type { NextRequest } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { POST as peoplePost, PATCH as peoplePatch } from "@/app/api/businesses/[id]/people/route";
+import { creditsUsed } from "@/lib/enrichment/credits";
+import { groupPeople } from "@/lib/leads/groupPeople";
+import { recomputeContactQuality } from "@/lib/jobs/zipSearch";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -137,6 +140,28 @@ describe("POST /businesses/:id/people — add a person by hand (Plan 10 Task 3)"
     expect(body.business.primaryPersonTitle).toBe("Owner");
   });
 
+  // L1 (whole-branch review): the canonical name must be resolved BEFORE any row is written, not
+  // progressively during the same loop that writes them — otherwise a brand-new row processed
+  // before the row that actually resolves the canonical identity gets written under the rep's raw
+  // typed name, splitting one person into two in groupPeople.
+  it("L1: typed 'Al' + an existing email row already named 'Albert Reyes' + a brand-new phone number writes the new phone row under the canonical name, not the typed one", async () => {
+    const b = await biz();
+    await prisma.contact.create({
+      data: { ownerId: OWNER, businessId: b.id, type: "email", value: "albert@pearland-coffee.com", source: "apollo", personName: "Albert Reyes", personTitle: "Owner", apolloId: "fake-albert" },
+    });
+    const res = await peoplePost(jsonReq({ name: "Al", email: "albert@pearland-coffee.com", phone: "281-555-1234" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const phoneRow = await prisma.contact.findUniqueOrThrow({ where: { businessId_type_value: { businessId: b.id, type: "phone", value: "+12815551234" } } });
+    expect(phoneRow.personName).toBe("Albert Reyes"); // canonical, not the typed "Al"
+    expect(phoneRow.personTitle).toBe("Owner"); // canonical title (form gave none)
+
+    // Proves it actually fixes the groupPeople split: both rows resolve to exactly one person.
+    const business = await prisma.business.findUniqueOrThrow({ where: { id: b.id }, include: { contacts: true } });
+    const people = groupPeople(business.contacts, business.primaryPerson, business.primaryPersonTitle);
+    expect(people).toHaveLength(1);
+    expect(people[0].name).toBe("Albert Reyes");
+  });
+
   it("writes an activity row for the add", async () => {
     const b = await biz();
     const res = await peoplePost(jsonReq({ name: "Albert", title: "Owner", email: "albert@pearland-coffee.com" }), ctxFor(b.id));
@@ -159,6 +184,24 @@ describe("POST /businesses/:id/people — add a person by hand (Plan 10 Task 3)"
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.business.primaryPerson).toBe("Existing Primary");
+  });
+
+  // M4 (whole-branch review): a submission with no email/phone AND setPrimary: false would write
+  // absolutely nothing — no Contact row, no primary pointer change — silently discarding whatever
+  // the rep typed (a title, in this case). Refused outright instead.
+  it("M4: no email/phone and setPrimary: false is a 400 — nothing would have been written", async () => {
+    const b = await biz();
+    const res = await peoplePost(jsonReq({ name: "Albert", title: "Owner", setPrimary: false }), ctxFor(b.id));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Add an email or phone, or set this person as primary.");
+    expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(0);
+  });
+
+  it("M4: an email with setPrimary: false is still a valid 200 (there IS something to write)", async () => {
+    const b = await biz();
+    const res = await peoplePost(jsonReq({ name: "Albert", email: "albert@pearland-coffee.com", setPrimary: false }), ctxFor(b.id));
+    expect(res.status).toBe(200);
   });
 
   it("a name with only a title (no email/phone) creates zero contact rows but still sets primaryPerson/primaryPersonTitle", async () => {
@@ -220,6 +263,25 @@ describe("POST /businesses/:id/people — add a person by hand (Plan 10 Task 3)"
     const other = await prisma.business.create({ data: { ownerId: "some-other-owner", name: "Other Owner's People Biz", source: "zip_search" } });
     const res = await peoplePost(jsonReq({ name: "Albert" }), ctxFor(other.id));
     expect(res.status).toBe(404);
+  });
+
+  // M5 (whole-branch review): a manual add changes the contact-quality inputs (a named person
+  // with a title, an email that then gets MX-validated) the same way an Apollo-sourced one would,
+  // so the score/band must be recomputed, not left at whatever it was before the add.
+  it("M5: recomputes the contact-quality band after adding an emailed, titled owner", async () => {
+    const b = await biz();
+    const before = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(before.contactQualityBand).toBe("red");
+    expect(before.contactQualityScore).toBe(0);
+    const res = await peoplePost(jsonReq({ name: "Albert", title: "Owner", email: "albert@pearland-coffee.com" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.contactQualityScore).toBeGreaterThan(0);
+    expect(after.contactQualityBand).not.toBe("red");
+    // The submitted email also got its one MX check (fake mode's domainHasMx defaults to true for
+    // any domain not containing "nomx") rather than sitting "unchecked" until an unrelated job runs.
+    const emailRow = await prisma.contact.findUniqueOrThrow({ where: { businessId_type_value: { businessId: b.id, type: "email", value: "albert@pearland-coffee.com" } } });
+    expect(emailRow.validationStatus).toBe("valid");
   });
 
   it("missing name is a 400 (zod)", async () => {
@@ -320,6 +382,42 @@ describe("PATCH /businesses/:id/people { suppressApolloId } — \"not the decisi
 
     const activity = await prisma.activityLog.findFirst({ where: { businessId: b.id, kind: "poc_updated" }, orderBy: { createdAt: "desc" } });
     expect(activity?.message).toBe("Removed Addison Neel (not the decision-maker)");
+  });
+
+  // M5 (whole-branch review): suppression hard-deletes Contact rows, which can lower the
+  // contact-quality score/band (e.g. losing the only named, titled person on file) — must be
+  // recomputed, not left showing a score for contacts that no longer exist.
+  it("M5: recomputes the contact-quality band after suppressing the only named person", async () => {
+    const b = await bizWithRevealedApollo();
+    // bizWithRevealedApollo seeds Contact rows directly via prisma, bypassing any route that
+    // would recompute quality — establish the real baseline first (score/band are otherwise just
+    // the schema default, 0/"red", regardless of what contacts exist) so this test actually
+    // proves suppression's recompute, not just that a fresh business starts at zero.
+    await recomputeContactQuality(b.id);
+    const before = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(before.contactQualityScore).toBeGreaterThan(0); // named_person + social_link, at least
+
+    const res = await peoplePatch(jsonReq({ suppressApolloId: "fake-addison" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+    expect(after.contactQualityScore).toBe(0);
+    expect(after.contactQualityBand).toBe("red");
+  });
+
+  // M1 (whole-branch review): suppression hard-deletes the revealed person's Contact rows, but
+  // must never make an already-spent credit "disappear" from the ledger — creditsUsed() now
+  // counts credit_spent ActivityLog rows (which suppression never touches), not Contact rows.
+  it("M1: suppressing a revealed person does not decrement creditsUsed — the credit_spent ledger row survives the Contact delete", async () => {
+    const b = await bizWithRevealedApollo();
+    await prisma.activityLog.create({
+      data: { ownerId: OWNER, businessId: b.id, kind: "credit_spent", message: "Apollo credit: email revealed" },
+    });
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(1);
+
+    const res = await peoplePatch(jsonReq({ suppressApolloId: "fake-addison" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    expect(await prisma.contact.count({ where: { businessId: b.id, source: "apollo" } })).toBe(0);
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(1); // unchanged
   });
 
   it("does not clear primaryPerson when it names someone else", async () => {

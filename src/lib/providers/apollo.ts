@@ -362,11 +362,20 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
       page: 1,
     };
     let filter: Record<string, string | number | boolean | string[] | undefined>;
+    // resolvedDomain/orgSearchCredits (whole-branch review H1): set once, before fetchScope is
+    // defined below, so every PeopleSearchResult this call returns — including the early
+    // no-org-match return right here — carries the same values. searchOrganization makes exactly
+    // one billed API call when it runs at all (per_page: 1), so orgSearchCredits is 0 or 1, never
+    // more, for a single searchPeople invocation.
+    let resolvedDomain: string | null = null;
+    let orgSearchCredits = 0;
     if (q.domain) {
       filter = { q_organization_domains_list: [q.domain] };
     } else {
       const org = await this.searchOrganization(q.orgName, q.city);
-      if (!org) return { people: [], totalFound: 0, totalAtDomain: null, scope: "any" };
+      orgSearchCredits = 1; // the call above was made (and billed) regardless of whether it matched
+      if (!org) return { people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain, orgSearchCredits };
+      resolvedDomain = org.primaryDomain;
       filter = org.primaryDomain ? { q_organization_domains_list: [org.primaryDomain] } : { organization_ids: [org.id] };
     }
 
@@ -399,6 +408,8 @@ export class ApolloEnrichmentProvider implements EnrichmentProvider {
         totalFound: totalEntries ?? people.length,
         totalAtDomain: knownTotalAtDomain ?? totalEntries ?? null,
         scope,
+        resolvedDomain,
+        orgSearchCredits,
       };
     };
 

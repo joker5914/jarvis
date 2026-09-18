@@ -136,7 +136,7 @@ describe("pocConfidence", () => {
 
   it("nobody revealed but candidates exist to choose from: Candidates found — choose who to reveal", () => {
     const set = candidateSet({
-      candidates: [{ apolloId: "fake-1", firstName: "Lee", title: "General Manager", hasEmail: false, orgName: null, rank: 0 }],
+      candidates: [{ apolloId: "fake-1", firstName: "Lee", title: "General Manager", hasEmail: false, orgName: null, rank: 0, revealedAt: null }],
     });
     expect(conf([], set)).toEqual({ level: "none", label: "Candidates found — choose who to reveal" });
   });

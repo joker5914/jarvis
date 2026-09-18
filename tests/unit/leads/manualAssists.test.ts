@@ -48,7 +48,7 @@ describe("assistLinks", () => {
     );
   });
 
-  it("produces a tel: link from a parseable business phone", () => {
+  it("produces a tel: link and a nationally-formatted telDisplay from a parseable 10-digit business phone", () => {
     const links = assistLinks({
       name: "Bella Nails",
       formattedAddress: null,
@@ -56,20 +56,23 @@ describe("assistLinks", () => {
       phone: "(713) 555-0100",
     });
     expect(links.tel).toBe("tel:+17135550100");
+    expect(links.telDisplay).toBe("(713) 555-0100");
   });
 
   it("accepts an already-E.164 phone (Google phone contact) unchanged", () => {
     const links = assistLinks({ name: "Bella Nails", formattedAddress: null, websiteUrl: null, phone: "+17135550100" });
     expect(links.tel).toBe("tel:+17135550100");
+    expect(links.telDisplay).toBe("(713) 555-0100");
   });
 
-  it("tel is null when the phone is missing", () => {
+  it("tel and telDisplay are null when the phone is missing", () => {
     const links = assistLinks({ name: "Bella Nails", formattedAddress: null, websiteUrl: null, phone: null });
     expect(links.tel).toBeNull();
+    expect(links.telDisplay).toBeNull();
   });
 
-  it("tel is null when the phone doesn't parse", () => {
-    const links = assistLinks({ name: "Bella Nails", formattedAddress: null, websiteUrl: null, phone: "123" });
-    expect(links.tel).toBeNull();
+  it("tel and telDisplay are null when the phone doesn't parse (not 10 digits, or 11 not starting with 1)", () => {
+    expect(assistLinks({ name: "Bella Nails", formattedAddress: null, websiteUrl: null, phone: "123" }).tel).toBeNull();
+    expect(assistLinks({ name: "Bella Nails", formattedAddress: null, websiteUrl: null, phone: "+44 20 7946 0958" }).tel).toBeNull();
   });
 });

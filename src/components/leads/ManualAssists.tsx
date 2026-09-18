@@ -17,15 +17,33 @@ export function ManualAssists({
   return (
     <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs" data-testid="manual-assists">
       <span className="text-muted-foreground">Find the owner:</span>
-      <Button size="xs" variant="ghost" nativeButton={false} render={<a href={links.linkedinPeople} target="_blank" rel="noopener noreferrer" />}>
+      <Button
+        size="xs"
+        variant="ghost"
+        nativeButton={false}
+        aria-label="Find the owner on LinkedIn"
+        render={<a href={links.linkedinPeople} target="_blank" rel="noopener noreferrer" />}
+      >
         LinkedIn
       </Button>
       <span className="text-muted-foreground">·</span>
-      <Button size="xs" variant="ghost" nativeButton={false} render={<a href={links.facebookPages} target="_blank" rel="noopener noreferrer" />}>
+      <Button
+        size="xs"
+        variant="ghost"
+        nativeButton={false}
+        aria-label="Find the owner on Facebook"
+        render={<a href={links.facebookPages} target="_blank" rel="noopener noreferrer" />}
+      >
         Facebook
       </Button>
       <span className="text-muted-foreground">·</span>
-      <Button size="xs" variant="ghost" nativeButton={false} render={<a href={links.googleOwner} target="_blank" rel="noopener noreferrer" />}>
+      <Button
+        size="xs"
+        variant="ghost"
+        nativeButton={false}
+        aria-label="Find the owner on Google"
+        render={<a href={links.googleOwner} target="_blank" rel="noopener noreferrer" />}
+      >
         Google
       </Button>
       {links.tel && (
@@ -37,7 +55,7 @@ export function ManualAssists({
           data-testid="call-owner-button"
           render={<a href={links.tel} />}
         >
-          Call and ask for the owner ({links.tel.slice("tel:".length)})
+          Call and ask for the owner ({links.telDisplay})
         </Button>
       )}
     </div>

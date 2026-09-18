@@ -525,6 +525,61 @@ describe("candidates route (Plan 10 Task 1)", () => {
     expect(getRes.status).toBe(404);
   });
 
+  // Whole-branch review H1: an unthrottled repeat "Find people" click on a no-domain lead would
+  // otherwise re-spend the credited Organization Search fallback every time — a second call
+  // within 24 hours is refused (409, retryable) unless the caller passes { force: true }.
+  describe("H1: no-domain 24-hour reuse throttle", () => {
+    // The fake provider's default searchPeople always resolves a synthetic apolloOrgDomain on a
+    // no-domain query, which — correctly, per H1 — makes the very next call free (see "a lead with
+    // a memoized apolloOrgDomain..." below), so the throttle never has anything to bite on with
+    // the default fake. The throttle matters for the lead this org search never resolves a domain
+    // for at all (no org match, or a matched org with no primary_domain on file) — simulated here
+    // by overriding searchPeople to mirror that exact real-provider shape.
+    it("a second POST within 24h on a no-domain lead whose org search never resolves a domain is a retryable 409, and { force: true } bypasses it", async () => {
+      const spy = vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockResolvedValue({
+        people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain: null, orgSearchCredits: 1,
+      });
+      try {
+        const b = await biz("none"); // no websiteUrl -> no-domain branch
+        const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+        expect(first.status).toBe(200);
+        const afterFirst = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+        expect(afterFirst.apolloOrgDomain).toBeNull(); // never resolved — this is the case the throttle exists for
+
+        const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+        expect(second.status).toBe(409);
+        const secondBody = await second.json();
+        expect(secondBody.error).toMatch(/reused for 24 hours/i);
+        expect(secondBody.retryable).toBe(true);
+
+        const forced = await candidatesPost(jsonReq({ force: true }), ctxFor(b.id));
+        expect(forced.status).toBe(200);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("does not throttle a business with a usable website domain (never costs a credit to begin with)", async () => {
+      const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+      const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(first.status).toBe(200);
+      const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(second.status).toBe(200);
+    });
+
+    // Once a no-domain lead's Organization Search has resolved apolloOrgDomain, later calls are
+    // free — simulated here by backdating candidatesAt (past the 24h window) and setting
+    // apolloOrgDomain directly, the way a real second day's click would arrive already resolved.
+    it("a lead with a memoized apolloOrgDomain is never throttled even within 24h, since it no longer costs a credit", async () => {
+      const b = await biz("none");
+      const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(first.status).toBe(200);
+      await prisma.business.update({ where: { id: b.id }, data: { apolloOrgDomain: "bella-nails-spa.example" } });
+      const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(second.status).toBe(200);
+    });
+  });
+
   it("POST /businesses/:id/candidates returns 409 with settingsHref when Apollo is disabled", async () => {
     const snapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
     await prisma.providerConfig.upsert({ where: { provider: "apollo" }, update: { enabled: false }, create: { provider: "apollo", enabled: false } });

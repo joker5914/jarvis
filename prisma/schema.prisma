@@ -191,6 +191,15 @@ model Business {
    *  business — filtered out of every future findCandidates()/runEnrich() search result so a
    *  dismissed person never resurfaces. */
   suppressedApolloIds     String[]        @default([])
+  /** Whole-branch review H1: the org domain Apollo's Organization Search resolved for this
+   *  business the first time a no-website ("no domain") search paid for that credited fallback —
+   *  see `PeopleSearchResult.resolvedDomain`. Once set, `buildPeopleSearchQuery` (src/lib/jobs/
+   *  enrich.ts) uses it as the query's `domain`, so every later "Find people"/enrich call routes
+   *  through the free, domain-filtered People Search branch instead of paying for another
+   *  Organization Search. Null until a no-domain search successfully resolves one (Apollo may
+   *  also have no primary domain on file for the org, in which case this stays null and the
+   *  credited fallback keeps being used). */
+  apolloOrgDomain         String?
   searches                SearchBusiness[]
   contacts                Contact[]
   tags                    BusinessTag[]
