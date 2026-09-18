@@ -14,7 +14,16 @@ export const leadInclude = {
   projects: { select: { id: true, timingWindow: true, completionDate: true }, orderBy: { completionDate: "asc" as const }, take: 1 },
 } satisfies Prisma.BusinessInclude;
 
-export type LeadRow = Prisma.BusinessGetPayload<{ include: typeof leadInclude }>;
+// Plan 10 Task 1 (fix round, R1): the free candidate list, the manual primary-contact pointer,
+// and the Apollo suppression list are detail-only data — no list/table/CSV-export code reads
+// them, and shipping every row's candidate JSON over the wire on every page load (and into the
+// export) would only add weight for nothing anyone renders. `include` alone doesn't restrict
+// Business's own scalar columns (Prisma returns every scalar unless `select`/`omit` narrows
+// them), so the list query needs its own `omit`; `getBusinessDetail` below has no such omit, so
+// the lead drawer still gets all four.
+const listOnlyOmit = { candidates: true, candidatesAt: true, primaryPerson: true, suppressedApolloIds: true } as const satisfies Prisma.BusinessOmit;
+
+export type LeadRow = Prisma.BusinessGetPayload<{ include: typeof leadInclude; omit: typeof listOnlyOmit }>;
 
 export async function listBusinesses(f: LeadFilters, ownerId: string) {
   const where = buildBusinessWhere(f, ownerId);
@@ -22,6 +31,7 @@ export async function listBusinesses(f: LeadFilters, ownerId: string) {
     prisma.business.findMany({
       where,
       include: leadInclude,
+      omit: listOnlyOmit,
       orderBy: buildBusinessOrderBy(f),
       skip: (f.page - 1) * f.pageSize,
       take: f.pageSize,

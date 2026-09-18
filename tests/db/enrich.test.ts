@@ -482,5 +482,80 @@ describe("runEnrich", () => {
       const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
       expect(contact).toMatchObject({ value: "owner@domb", apolloId: "fake-domB-owner" });
     });
+
+    // Fix round R5: a reveal-by-id targets one specific candidate, so "Apollo has no match" is a
+    // failure worth surfacing distinctly from a successful reveal that just had nothing to give —
+    // and, since apolloId already bypasses the recheckDays gate, lastEnrichedAt must stay null so
+    // a retry isn't blocked by the recency check it never went through in the first place.
+    it("R5: logs 'Enrichment failed: Apollo could not reveal the chosen person', leaves lastEnrichedAt null, and returns skipped: 'reveal_failed' when the provider has no match", async () => {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      fake.enrichPerson = async () => null;
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-unknown-id" });
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "reveal_failed" });
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment failed: Apollo could not reveal the chosen person");
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.lastEnrichedAt).toBeNull();
+      expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(0);
+    });
+
+    // Fix round R4: the id stored on the contact row must be the one the rep actually clicked
+    // (opts.apolloId), never whatever id a paid reveal happens to echo back on the person object
+    // — Business.suppressedApolloIds and Business.candidates both key on the requested id.
+    it("R4: stores the requested apolloId on the contact row, not the one the provider echoes back", async () => {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      fake.enrichPerson = async () => ({
+        apolloId: "echoed-id-from-provider",
+        firstName: "Al", lastName: "Bert", name: "Al Bert", title: "Owner",
+        email: "al@bellanails.com", emailStatus: "verified", linkedinUrl: null, hasEmail: true, orgName: null,
+      });
+      const d = deps(fake);
+      await runEnrich(b.id, OWNER, d, { apolloId: "requested-id" });
+      const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+      expect(contact.apolloId).toBe("requested-id");
+    });
+
+    describe("apolloId backfill scoped to Apollo-sourced rows (R3)", () => {
+      it("never backfills apolloId onto an existing website-sourced row, and leaves 'updated' at 0 when nothing else changes", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "website", personName: "Maria Lopez", personTitle: "Owner" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact.source).toBe("website");
+        expect(contact.apolloId).toBeNull();
+        expect(r.updated).toBe(0);
+      });
+
+      it("backfills apolloId onto an existing Apollo-sourced row missing it, but a backfill-only change does not count toward 'updated'", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "apollo", personName: "Maria Lopez", personTitle: "Owner" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact.apolloId).toBe("fake-bellanails.com-owner");
+        expect(r.updated).toBe(0);
+      });
+
+      it("a backfill alongside a genuine name/title change still counts toward 'updated'", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "apollo" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact).toMatchObject({ apolloId: "fake-bellanails.com-owner", personName: "Maria Lopez", personTitle: "Owner" });
+        expect(r.updated).toBe(1);
+      });
+    });
   });
 });

@@ -99,12 +99,77 @@ export function buildPeopleSearchQuery(
   return { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities };
 }
 
+/**
+ * Creates or updates the email/linkedin Contact rows for one revealed Apollo person. Shared by
+ * both the `apolloId` reveal branch and the auto-search/reveal loop below (fix round, R8 — pulled
+ * out of both so they can't drift on this logic).
+ *
+ * `apolloId` is the id recorded on the row — the candidate's own id (from `Business.candidates`
+ * or the search hit that produced `person`), never `person`'s own `apolloId` field as echoed back
+ * by a paid reveal (fix round, R4): the two should always agree in practice, but the stored id is
+ * what Task 3's suppression (`Business.suppressedApolloIds`) and the candidate list both key on,
+ * so this always trusts what was actually requested over what the provider echoed.
+ *
+ * Backfills `personName`/`personTitle` onto an existing row missing them regardless of its
+ * source (e.g. a website-sourced email Apollo later confirms belongs to the same person).
+ * `apolloId` itself is backfilled only onto a row whose source is already `"apollo"` (fix round,
+ * R3): a website/manual contact must never be relabeled as Apollo-sourced data just because it
+ * happens to share an email/linkedin value with a revealed person. A backfill-only update
+ * (nothing but `apolloId` changed) does not count toward the returned `updated` — only a genuine
+ * name/title change does.
+ */
+async function upsertPersonContacts(
+  businessId: string,
+  ownerId: string,
+  person: Pick<EnrichPerson, "name" | "title" | "email" | "linkedinUrl">,
+  apolloId: string,
+): Promise<{ added: boolean; updated: boolean; contactRows: number }> {
+  const personName = person.name;
+  const personTitle = person.title;
+  const rows: { type: "email" | "linkedin"; value: string }[] = [];
+  if (person.email) rows.push({ type: "email", value: person.email.toLowerCase() });
+  if (person.linkedinUrl) {
+    const li = canonicalLinkedin(person.linkedinUrl);
+    if (li) rows.push({ type: "linkedin", value: li });
+  }
+  let added = false;
+  let updated = false;
+  let contactRows = 0;
+  for (const r of rows) {
+    const existing = await prisma.contact.findUnique({ where: { businessId_type_value: { businessId, type: r.type, value: r.value } } });
+    if (existing) {
+      const data: { personName?: string; personTitle?: string; apolloId?: string } = {};
+      let contentChanged = false;
+      if (!existing.personName && personName) {
+        data.personName = personName;
+        contentChanged = true;
+      }
+      if (!existing.personTitle && personTitle) {
+        data.personTitle = personTitle;
+        contentChanged = true;
+      }
+      if (existing.source === "apollo" && !existing.apolloId) data.apolloId = apolloId;
+      if (Object.keys(data).length > 0) {
+        await prisma.contact.update({ where: { id: existing.id }, data });
+        if (contentChanged) updated = true;
+      }
+      continue;
+    }
+    await upsertIgnoringConflict(() =>
+      prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle, apolloId } }),
+    );
+    added = true;
+    contactRows++;
+  }
+  return { added, updated, contactRows };
+}
+
 export async function runEnrich(
   businessId: string,
   ownerId: string,
   deps: JobDeps,
   opts: { force?: boolean; people?: number; apolloId?: string } = {},
-): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | null }> {
+): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | "reveal_failed" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
@@ -152,49 +217,25 @@ export async function runEnrich(
     // this single enrichPerson() call costs, still subject to the credit cap checked above.
     if (opts.apolloId) {
       const full = await deps.providers.enrichment.enrichPerson(opts.apolloId);
-      let revealAdded = 0;
-      let revealUpdated = 0;
-      let revealContactRows = 0;
-      if (full) {
-        const personName = full.name;
-        const personTitle = full.title;
-        const rows: { type: "email" | "linkedin"; value: string }[] = [];
-        if (full.email) rows.push({ type: "email", value: full.email.toLowerCase() });
-        if (full.linkedinUrl) {
-          const li = canonicalLinkedin(full.linkedinUrl);
-          if (li) rows.push({ type: "linkedin", value: li });
-        }
-        let personAdded = false;
-        let personUpdated = false;
-        for (const r of rows) {
-          const existing = await prisma.contact.findUnique({ where: { businessId_type_value: { businessId, type: r.type, value: r.value } } });
-          if (existing) {
-            const data: { personName?: string; personTitle?: string; apolloId?: string } = {};
-            if (!existing.personName && personName) data.personName = personName;
-            if (!existing.personTitle && personTitle) data.personTitle = personTitle;
-            if (!existing.apolloId) data.apolloId = full.apolloId;
-            if (Object.keys(data).length > 0) {
-              await prisma.contact.update({ where: { id: existing.id }, data });
-              personUpdated = true;
-            }
-            continue;
-          }
-          await upsertIgnoringConflict(() =>
-            prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle, apolloId: full.apolloId } }),
-          );
-          personAdded = true;
-          revealContactRows++;
-        }
-        if (personAdded) revealAdded++;
-        if (personUpdated) revealUpdated++;
+      // Fix round (R5): Apollo had no match for the id the rep clicked (a candidate that's gone
+      // stale, or a provider-side miss) — distinct from a successful reveal that simply had no
+      // email/LinkedIn to give. lastEnrichedAt is deliberately left untouched so the rep can just
+      // retry (no recheckDays gate to fight, since apolloId already bypasses it above), and the
+      // "Enrichment failed" prefix is one isEnrichIssueMessage already recognizes, so it surfaces
+      // under the Enrich button the same way any other failed attempt does.
+      if (!full) {
+        await log("Enrichment failed: Apollo could not reveal the chosen person");
+        return { added: 0, updated: 0, skipped: "reveal_failed" as const };
       }
+      const { added: personAdded, updated: personUpdated, contactRows: revealContactRows } = await upsertPersonContacts(businessId, ownerId, full, opts.apolloId);
       await validateEmails([businessId], deps);
       await recomputeContactQuality(businessId);
       await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
+      const revealUpdated = personUpdated ? 1 : 0;
       await log(
-        `Enriched via Apollo: revealed ${full?.title ?? "person"} chosen by you; ${revealContactRows} new contact${revealContactRows === 1 ? "" : "s"}, ${revealUpdated} updated`,
+        `Enriched via Apollo: revealed ${full.title ?? "person"} chosen by you; ${revealContactRows} new contact${revealContactRows === 1 ? "" : "s"}, ${revealUpdated} updated`,
       );
-      return { added: revealAdded, updated: revealUpdated, skipped: null };
+      return { added: personAdded ? 1 : 0, updated: revealUpdated, skipped: null };
     }
     const query = buildPeopleSearchQuery(b, cfg);
     const { domain, city, state, metro } = query;
@@ -296,42 +337,14 @@ export async function runEnrich(
       if (!full) continue;
       if (willPay && full.email) remaining--;
       if (full.email) withEmail++;
-      const personName = full.name;
-      const personTitle = full.title;
-      const rows: { type: "email" | "linkedin"; value: string }[] = [];
-      if (full.email) rows.push({ type: "email", value: full.email.toLowerCase() });
-      if (full.linkedinUrl) {
-        const li = canonicalLinkedin(full.linkedinUrl);
-        if (li) rows.push({ type: "linkedin", value: li });
-      }
       // added/updated are counted per person (at most one increment to each per person, per
       // run), not per contact row: a person with both a fresh email and a fresh LinkedIn row
       // still counts once toward `added`, matching how the API/UI report "N people enriched".
-      // contactRows tracks the raw row count separately, for the activity message.
-      let personAdded = false;
-      let personUpdated = false;
-      for (const r of rows) {
-        const existing = await prisma.contact.findUnique({ where: { businessId_type_value: { businessId, type: r.type, value: r.value } } });
-        if (existing) {
-          const data: { personName?: string; personTitle?: string; apolloId?: string } = {};
-          if (!existing.personName && personName) data.personName = personName;
-          if (!existing.personTitle && personTitle) data.personTitle = personTitle;
-          // Plan 10 Task 1: backfill apolloId on an existing row (e.g. one first created from the
-          // website before Apollo confirmed the same email) so a later "not the decision-maker"
-          // suppression (Task 3) can find and remove it.
-          if (!existing.apolloId) data.apolloId = p.apolloId;
-          if (Object.keys(data).length > 0) {
-            await prisma.contact.update({ where: { id: existing.id }, data });
-            personUpdated = true;
-          }
-          continue;
-        }
-        await upsertIgnoringConflict(() =>
-          prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle, apolloId: p.apolloId } }),
-        );
-        personAdded = true;
-        contactRows++;
-      }
+      // contactRows tracks the raw row count separately, for the activity message. apolloId is
+      // p.apolloId (the candidate's own id from this search) rather than full.apolloId, per
+      // upsertPersonContacts's doc comment (R4).
+      const { added: personAdded, updated: personUpdated, contactRows: rowsAdded } = await upsertPersonContacts(businessId, ownerId, full, p.apolloId);
+      contactRows += rowsAdded;
       if (personAdded) added++;
       if (personUpdated) updated++;
     }

@@ -8,6 +8,8 @@ import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
 import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
 import { POST as candidatesPost, GET as candidatesGet } from "@/app/api/businesses/[id]/candidates/route";
 import { PEOPLE_SEARCH_PATH, __setPlanBlockedForTests, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
+import { FakeEnrichmentProvider } from "@/lib/providers/fake";
+import { ProviderPlanError, ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -448,11 +450,63 @@ describe("candidates route (Plan 10 Task 1)", () => {
     expect(postBody.candidates.candidates.length).toBeGreaterThan(0);
     expect(postBody.candidates.candidates[0]).toHaveProperty("apolloId");
     expect(postBody.candidates.fetchedAt).toBeTruthy();
+    // biz("none") has no websiteUrl, so this call fell back to the no-domain branch (R7).
+    expect(postBody.costsCredit).toBe(true);
 
     const getRes = await candidatesGet(jsonReq(), ctxFor(b.id));
     expect(getRes.status).toBe(200);
     const getBody = await getRes.json();
     expect(getBody.candidates).toEqual(postBody.candidates);
+  });
+
+  // Fix round R7: a business with a usable website domain never falls back to Organization
+  // Search, so this specific "Find people" click is free — costsCredit must say so.
+  it("POST /businesses/:id/candidates returns costsCredit: false for a business with a usable domain", async () => {
+    const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+    const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.costsCredit).toBe(false);
+  });
+
+  // Fix round R7: the no-domain branch's Organization Search fallback costs one real Apollo
+  // credit, so it must be gated behind the same credit-cap check the enrich route uses, and
+  // refuse the same way (409 + settingsHref) rather than silently attempting a call that would
+  // push the owner over their configured cap.
+  it("POST /businesses/:id/candidates returns 409 at the credit cap for a no-domain business (R7)", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    try {
+      const b = await biz("none"); // no websiteUrl -> no-domain branch
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/credit cap|out of credits/i);
+      expect(body.settingsHref).toBe("/settings");
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
+  });
+
+  // A domain business never spends a credit here, so the credit cap must not gate it at all —
+  // proves the R7 gate is scoped to the no-domain branch, not applied unconditionally.
+  it("POST /businesses/:id/candidates ignores the credit cap for a business with a usable domain", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    try {
+      const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(200);
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
+  });
+
+  // Fix round R6: mirrors POST /businesses/:id/enrich's exclusion refusal.
+  it("POST /businesses/:id/candidates returns 409 'Excluded businesses are not enriched' for an excluded business", async () => {
+    const b = await biz("enterprise");
+    const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Excluded businesses are not enriched");
   });
 
   it("GET /businesses/:id/candidates returns { candidates: null } before any 'Find people' call", async () => {
@@ -485,5 +539,71 @@ describe("candidates route (Plan 10 Task 1)", () => {
       if (snapshot) await prisma.providerConfig.update({ where: { provider: "apollo" }, data: snapshot });
       else await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
     }
+  });
+
+  // Fix round R2: providerGateError()'s proactive configured/enabled/plan-block checks can go
+  // stale between that check and the actual findCandidates call (a live 403 the worker hasn't
+  // seen yet, a key disabled mid-request, etc.) — the route's catch block must still turn these
+  // three typed provider errors into the same 409 + settingsHref shape the proactive checks give,
+  // mirroring runEnrich's own catch block. Forced here by spying on the fake provider (PROVIDER_
+  // MODE=fake in db tests never throws these itself) since findCandidates has no other injection
+  // point through the route.
+  describe("R2: catch-block 409s for typed provider errors from the underlying search", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("ProviderPlanError -> 409 with the Apollo plan-block message and settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(
+        new ProviderPlanError("apollo", PEOPLE_SEARCH_PATH, "API_INACCESSIBLE"),
+      );
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+      expect(body.settingsHref).toBe("/settings");
+    });
+
+    it("ProviderNotConfiguredError -> 409 'Apollo API key is not configured' with settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(new ProviderNotConfiguredError("apollo"));
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo API key is not configured");
+      expect(body.settingsHref).toBe("/settings");
+    });
+
+    it("ProviderDisabledError -> 409 'Apollo is disabled in Settings' with settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(new ProviderDisabledError("apollo"));
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo is disabled in Settings");
+      expect(body.settingsHref).toBe("/settings");
+    });
+  });
+});
+
+// Fix round R9: an empty apolloId ("" fails the route's `z.string().min(1)`) must be a 400, not
+// silently coerced to "no apolloId" (which would run the auto-search path instead of failing loud).
+describe("apolloId validation (R9)", () => {
+  let prevJobMode: string | undefined;
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/:id/enrich { apolloId: '' } returns 400", async () => {
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq({ apolloId: "" }), ctxFor(b.id));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.issues?.[0]?.message).toMatch(/>=1 character/i);
   });
 });

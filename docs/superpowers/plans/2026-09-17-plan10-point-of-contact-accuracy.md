@@ -31,11 +31,12 @@
 | `src/lib/enrichment/candidates.ts` (**new**) | `findCandidates(businessId, ownerId, deps)`: free search → ranked candidate list stored on the business; `Candidate` type; suppression filter |
 | `src/lib/jobs/enrich.ts` | `runEnrich` accepts `apolloId` (reveal exactly that candidate, no search); honours `suppressedApolloIds` on the auto path |
 | `src/lib/jobs/queues.ts` | `EnrichJobData.apolloId?` |
+| `src/lib/jobs/enqueue.ts` | `enqueueEnrich`'s pg-boss `singletonKey` is per-target (`` `${businessId}:${apolloId ?? "auto"}` ``), not a bare `businessId`, so a queued auto-enrich can't dedupe away a reveal-by-id (or vice versa) |
 | `src/app/api/businesses/[id]/candidates/route.ts` (**new**) | `POST` runs `findCandidates`; `GET` returns the stored list |
-| `src/app/api/businesses/[id]/enrich/route.ts` | body gains `apolloId` |
+| `src/app/api/businesses/[id]/enrich/route.ts` | body gains `apolloId`; `queued === false` (pg-boss refused the per-target key) is a 409, not a 202 |
 | `src/app/api/businesses/[id]/people/route.ts` (**new**) | `POST` add a manual person; `PATCH` set primary / suppress an Apollo person |
 | `src/lib/leads/pocConfidence.ts` (**new**) | `pocConfidence(people, candidates) → { level, label }` |
-| `src/lib/leads/queries.ts` | detail include carries the new columns |
+| `src/lib/leads/queries.ts` | `getBusinessDetail`'s include carries the new columns; `listBusinesses` explicitly `omit`s them (list/CSV rows never need the candidate JSON) |
 | `src/components/leads/LeadDetail.tsx` (+ `PeopleSection.tsx`, `AddPersonForm.tsx`, `ManualAssists.tsx` **new**) | candidate picker, confidence line, primary marker, add/suppress actions, search links and call prompt |
 | `tests/db/candidates.test.ts`, `tests/db/enrich.test.ts`, `tests/db/peopleRoute.test.ts`, `tests/unit/leads/pocConfidence.test.ts`, `tests/unit/leads/manualAssists.test.ts` | behaviour |
 
@@ -58,16 +59,27 @@ export type Candidate = {
 };
 export type CandidateSet = { fetchedAt: string; scope: PeopleSearchScope; totalAtDomain: number | null; candidates: Candidate[] };
 /** Free People Search via the provider (goes through withBudget, plan-block, org-mismatch guard when domain is null);
- * filters out `suppressedApolloIds`; stores the set on Business.candidates/candidatesAt; returns it. Never reveals. */
+ * filters out `suppressedApolloIds`; stores the set on Business.candidates/candidatesAt; returns it. Never reveals.
+ * On the no-domain branch the search falls back to Apollo's Organization Search, which — unlike People Search
+ * itself — costs one real Apollo credit; the route gates that case behind the same credit-cap check the enrich
+ * route uses and reports it back as `costsCredit: true` in the 200 body (false when a domain search was free). */
 export async function findCandidates(businessId: string, ownerId: string, deps: JobDeps): Promise<CandidateSet>;
-// runEnrich opts gains `apolloId?: string`: when set, skip the search, reveal that id only (credit cap and
-// recency rules unchanged; `force` implied), and log `Enriched via Apollo: revealed <title> chosen by you; …`.
+// runEnrich opts gains `apolloId?: string`: when set, skip the search, reveal that id only (credit cap
+// unchanged; recency gate bypassed — `force` implied), and log `Enriched via Apollo: revealed <title> chosen
+// by you; …`. When the provider has no match for that id, logs `Enrichment failed: Apollo could not reveal the
+// chosen person`, leaves lastEnrichedAt untouched, and returns `skipped: "reveal_failed"`.
 // EnrichJobData gains `apolloId?: string`; POST /enrich body gains `apolloId: z.string().min(1).optional()`.
+// enqueueEnrich's pg-boss singletonKey is `${businessId}:${apolloId ?? "auto"}`, not a bare businessId — the
+// enrich queue is `policy: "stately"` (one job per state per singletonKey), so a bare businessId key would let
+// a queued auto-enrich silently dedupe away (boss.send returns null) a later reveal-by-id for a *different*
+// candidate, or two different reveals queued back to back. POST /enrich now turns `queued === false` into a 409
+// `{ error: "An enrichment for this lead is already queued" }` instead of a false-positive 202.
 ```
 - Candidate rows carry the first name and title Apollo already shows for free; last names stay obfuscated until a reveal.
+- `POST /candidates` also refuses an excluded business with the same 409 `"Excluded businesses are not enriched"` the enrich route uses, and turns a live `ProviderPlanError`/`ProviderNotConfiguredError`/`ProviderDisabledError` from the search call itself into the same 409 + `settingsHref` shape the proactive configured/enabled/plan-block checks give (defense in depth, mirroring `runEnrich`'s own catch block).
 
 - [x] **Step 1: Failing tests**
-`tests/db/candidates.test.ts`: (a) `findCandidates` on a business with a domain stores a `CandidateSet` with the fake provider's two people ranked Owner first, `scope`/`totalAtDomain` from the result, `candidatesAt` set; (b) a suppressed id is filtered out; (c) org-mismatch on the no-domain branch yields an empty set and no activity row (reuse Task 4's guard via the provider call — assert `calls.enrich === 0`).
+`tests/db/candidates.test.ts`: (a) `findCandidates` on a business with a domain stores a `CandidateSet` with the fake provider's two people ranked Owner first, `scope`/`totalAtDomain` from the result, `candidatesAt` set; (b) a suppressed id is filtered out; (c) org-mismatch on the no-domain branch yields an empty set and no activity row (reuse Plan 9 Task 4's guard — `orgNameMatches` — via the provider call — assert `calls.enrich === 0`).
 `tests/db/enrich.test.ts`: (d) `runEnrich(id, owner, deps, { apolloId: "fake-…-gm" })` reveals exactly that person (`calls.search === 0`, `calls.enrich === 1`), respects the credit cap, writes the "chosen by you" row; (e) the auto path skips a suppressed id and reveals the next candidate.
 `tests/db/businessEnrichRoute.test.ts`: (f) `POST /enrich { apolloId }` → 202 with `estimatedCredits: 1`; (g) `POST /candidates` → 200 with the set; `GET /candidates` returns it; 404 for another owner's business.
 
@@ -98,7 +110,7 @@ Rules, in order: a manual primary → `primary`, label `Primary contact set by y
 
 - [ ] **Step 1: Failing tests** for every rule above, including "Production/Operations Manager" → `manager`, "Store Manager" → `manager`, "Owner" → `decision_maker`, "Barista" → `staff`, precedence of a manual primary over an Apollo owner.
 - [ ] **Step 2: Run, expect failures.**
-- [ ] **Step 3: Implement** the pure function; render the label under the People heading (muted text; amber for `staff`/`manager`), and the candidate picker from Task 1: each candidate row shows title, `has email` / `no email`, and a `Reveal (1 credit)` button (disabled when `!hasEmail`, hint `Apollo has no email for this person`), plus a `Find people` button that calls `POST /candidates` (label `Refresh candidates` when a set exists; show `Searched <time ago>`). Sentence case; 375 px: rows stack; no overflow.
+- [ ] **Step 3: Implement** the pure function; render the label under the People heading (muted text; amber for `staff`/`manager`), and the candidate picker from Task 1: each candidate row shows title, `has email` / `no email`, and a `Reveal (1 credit)` button (disabled when `!hasEmail`, hint `Apollo has no email for this person`), plus a `Find people` button that calls `POST /candidates` (label `Refresh candidates` when a set exists; show `Searched <time ago>`) — no domain on the business means that call costs a credit (Task 1's fix round, R7), so a business with no usable website domain (`domainFromUrl` would return null) renders the button as `Find people (1 credit)` / `Refresh candidates (1 credit)` up front, and the `costsCredit` flag the route's 200 body carries confirms it after the call. Sentence case; 375 px: rows stack; no overflow.
 - [ ] **Step 4: tsc, lint, unit exit 0.**
 - [ ] **Step 5: Commit** `feat(leads): contact confidence label and candidate picker in the People section`.
 
@@ -119,10 +131,13 @@ Rules, in order: a manual primary → `primary`, label `Primary contact set by y
 //   → 400 when neither email nor phone nor title is given AND the name already exists; 200 { business }.
 // PATCH /api/businesses/:id/people  body: { primaryPerson: string | null } | { suppressApolloId: string }
 //   → primaryPerson: must match an existing personName on this business (or null to clear); 
-//   → suppressApolloId: adds to Business.suppressedApolloIds, deletes that person's Apollo-sourced Contact rows (email/linkedin) and clears
-//     primaryPerson if it pointed at them, removes them from Business.candidates, writes activity `Removed <name> (not the decision-maker)`.
+//   → suppressApolloId: adds to Business.suppressedApolloIds, deletes Contact rows matching `source: "apollo" AND
+//     apolloId: <id>` (never a website/manual row that merely shares an email/linkedin value — see Task 1's fix
+//     round, R3: apolloId is only ever backfilled onto an already-Apollo-sourced row in the first place) and
+//     clears primaryPerson if it pointed at them, removes them from Business.candidates, writes activity
+//     `Removed <name> (not the decision-maker)`.
 ```
-- Suppression needs the Apollo id of a revealed person: `Contact.apolloId` (added and populated in Task 1) links each Apollo-sourced row to the person, and `candidates` carries the id for people not yet revealed.
+- Suppression needs the Apollo id of a revealed person: `Contact.apolloId` (added and populated in Task 1, scoped to `source: "apollo"` rows only) links each Apollo-sourced row to the person, and `candidates` carries the id for people not yet revealed.
 
 - [ ] **Step 1: Failing tests**: add person with email + title sets primary and creates two contacts; add person with only a name → 400; primary must exist; suppress deletes Apollo rows, clears primary, adds the id, logs the row; `groupPeople` output marks `isPrimary`; `pocConfidence` returns `primary` afterwards.
 - [ ] **Step 2: Run, expect failures.**

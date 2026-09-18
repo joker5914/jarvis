@@ -10,9 +10,12 @@ import type { PeopleSearchScope } from "@/lib/providers/types";
 /** One person from a free Apollo People Search result, before any credit has been spent on
  * them: only what Apollo's search response already shows for free — a first name and a title,
  * never a last name or an email address (those only resolve on a paid reveal, via
- * `runEnrich`'s `apolloId` option). `rank` is the candidate's position in the provider's own
- * ranking (0 = best match), preserved after the suppression filter below so a picker can render
- * candidates in that order without re-deriving it. */
+ * `runEnrich`'s `apolloId` option). `rank` is a dense 0-based index (0 = best match) assigned
+ * *after* the org-mismatch and suppression filters below run — it preserves the provider's own
+ * relative ranking order among the survivors, but is renumbered contiguously rather than
+ * carrying over each candidate's original position in the unfiltered page (fix round, R9: the
+ * previous wording implied the latter), so a picker can render candidates in rank order without
+ * re-deriving anything or seeing gaps where a mismatched/suppressed candidate was dropped. */
 export type Candidate = {
   apolloId: string;
   firstName: string | null;
