@@ -1,31 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useLineListBuffer } from "./useLineListBuffer";
 import type { ExclusionConfig } from "./types";
 
-const linesToArray = (v: string) => v.split("\n").map((s) => s.trim()).filter(Boolean);
-
 export function ExclusionCard({ value, onChange }: { value: ExclusionConfig; onChange: (next: ExclusionConfig) => void }) {
-  // The textareas keep their own raw text so a newline the user just typed isn't immediately
-  // collapsed by re-deriving `value.chains.join("\n")` (which drops trailing blank lines) on
-  // every keystroke. They only resync from `value` when it changes identity from outside this
-  // component (e.g. a reload after save), not on every local edit.
-  const [chainsText, setChainsText] = useState(value.chains.join("\n"));
-  const [positiveText, setPositiveText] = useState(value.positiveKeywords.join("\n"));
-  const [softText, setSoftText] = useState(value.softNegativeKeywords.join("\n"));
-  const lastValue = useRef(value);
-  useEffect(() => {
-    if (lastValue.current !== value) {
-      lastValue.current = value;
-      setChainsText(value.chains.join("\n"));
-      setPositiveText(value.positiveKeywords.join("\n"));
-      setSoftText(value.softNegativeKeywords.join("\n"));
-    }
-  }, [value]);
+  // The textareas keep their own raw text so a space or newline the user just typed isn't
+  // immediately collapsed by re-deriving `value.chains.join("\n")` (which drops trailing blank
+  // lines) on every keystroke. They only resync from `value` when the list's *content* changes
+  // from outside this component (e.g. a reload after save) -- see useLineListBuffer.
+  const [chainsText, setChainsText] = useLineListBuffer(value.chains, (chains) => onChange({ ...value, chains }));
+  const [positiveText, setPositiveText] = useLineListBuffer(value.positiveKeywords, (positiveKeywords) => onChange({ ...value, positiveKeywords }));
+  const [softText, setSoftText] = useLineListBuffer(value.softNegativeKeywords, (softNegativeKeywords) => onChange({ ...value, softNegativeKeywords }));
 
   return (
     <Card>
@@ -40,10 +29,7 @@ export function ExclusionCard({ value, onChange }: { value: ExclusionConfig; onC
             data-testid="exclusion-chains"
             rows={4}
             value={chainsText}
-            onChange={(e) => {
-              setChainsText(e.target.value);
-              onChange({ ...value, chains: linesToArray(e.target.value) });
-            }}
+            onChange={(e) => setChainsText(e.target.value)}
           />
         </div>
         <div className="space-y-1">
@@ -53,10 +39,7 @@ export function ExclusionCard({ value, onChange }: { value: ExclusionConfig; onC
             data-testid="exclusion-positive"
             rows={4}
             value={positiveText}
-            onChange={(e) => {
-              setPositiveText(e.target.value);
-              onChange({ ...value, positiveKeywords: linesToArray(e.target.value) });
-            }}
+            onChange={(e) => setPositiveText(e.target.value)}
           />
         </div>
         <div className="space-y-1">
@@ -66,10 +49,7 @@ export function ExclusionCard({ value, onChange }: { value: ExclusionConfig; onC
             data-testid="exclusion-soft"
             rows={4}
             value={softText}
-            onChange={(e) => {
-              setSoftText(e.target.value);
-              onChange({ ...value, softNegativeKeywords: linesToArray(e.target.value) });
-            }}
+            onChange={(e) => setSoftText(e.target.value)}
           />
         </div>
         <div className="grid gap-4 sm:grid-cols-2">

@@ -71,12 +71,20 @@ came back empty, "(no local match; searched nationally)" so a head-office
 fallback is visible rather than looking identical to "no location
 information was available to search with."
 
-**Chains never get a credit spent on them (Plan 9).** A domain with **1,000
-or more** decision-maker hits in Apollo's People Search — title/seniority-
-filtered (owner, founder, GM, manager, etc. — never a raw employee
-headcount), at any location — is treated as a national chain, not an SMB,
-and excluded before any paid reveal (`exclusionReasons` gets
-`chain:apollo_headcount:<n>`). The threshold is deliberately high so a
+**Chains never get a credit spent on them (Plan 9).** A domain with, by
+default, **1,000 or more** decision-maker hits in Apollo's People Search —
+title/seniority-filtered (owner, founder, GM, manager, etc. by default —
+never a raw employee headcount), at any location — is treated as a national
+chain, not an SMB, and excluded before any paid reveal (`exclusionReasons`
+gets `chain:apollo_headcount:<n>`). The chain cutoff and the two filters
+that feed it are per-owner Settings, not code constants: they live together
+in the **Decision-maker targeting** section of the Apollo enrichment card
+(Settings), and an owner who hasn't touched them gets these same defaults.
+They're grouped there because they're coupled — the title/seniority lists
+decide which people Apollo's count includes, and the cutoff is a threshold
+on that same count, so changing either list invalidates a threshold
+measured against the old one; re-check it against a few known companies
+before trusting it again. The default threshold is deliberately high so a
 franchise brand (e.g. Snap Fitness, where the *local* owner is a real SMB
 prospect even though the brand nationally is huge) stays eligible. The lead
 drawer's **"Not an SMB (chain)"** action adds that business's name to the
@@ -279,16 +287,31 @@ CI fails on any **critical** advisory affecting runtime dependencies; re-run
 The app deploys as two Railway services (web + worker) built from the same
 repo and `Dockerfile`, plus a Railway Postgres plugin.
 
-**Deploy order for the metro area setting (Plan 9).** Deploy both the
-**web** and **worker** services on a build that includes Plan 9 *before*
-typing a value into the Settings "Metro area for enrichment" field.
-`overridesSchema` only recognizes `enrichment.metroLocation` starting with
-this build; a pre-Plan-9 build's zod schema doesn't know that key and
-rejects the *whole* settings row as invalid rather than ignoring the one
-unknown field — this happened live. The same risk runs in reverse: **clear
-the metro area field back to blank before rolling either service back to a
-pre-Plan-9 build**, so the stored overrides row doesn't carry a key the
-older build will choke on.
+**Deploy order for a new Settings field.** A running server only recognizes
+the override keys its own build's schema knows about. Before commit
+`39dca90` (`fix(config): salvage valid AppConfig overrides instead of
+discarding the row`), an unrecognized key made `overridesSchema` reject the
+*whole* stored row rather than ignoring just that field — this happened
+live the first time `enrichment.metroLocation` shipped to one service
+before the other. From `39dca90` onward, `loadConfig` salvages everything
+in the row that still validates and drops only the unrecognized or invalid
+entries (logging exactly which keys it dropped), so a build gap between
+**web** and **worker** no longer resets every setting to default — it only
+leaves whichever fields the older service's build doesn't know about (e.g.
+`enrichment.metroLocation`, or the decision-maker targeting fields
+`enrichment.chainHeadcountMin`, `enrichment.preferredTitles`,
+`enrichment.seniorities`) temporarily unapplied on that service until it's
+upgraded too.
+
+The older guidance — deploy both services on a build that includes the new
+field *before* setting it in Settings, and **clear the field back to blank
+before rolling either service back** — only still applies when rolling back
+to a build that predates `39dca90`. On any build from `39dca90` onward,
+rolling back just drops the newer key(s) on the older service and keeps the
+rest of the row intact, so no clearing step is needed. One caveat: saving
+Settings from the rolled-back build's UI rewrites the whole row, so the newer
+keys are then gone for good rather than temporarily ignored — re-enter them
+after rolling forward.
 
 ### 1. Create the project
 

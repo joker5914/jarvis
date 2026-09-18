@@ -20,7 +20,7 @@ const wordList = z
 /** For a filter where an empty list is not "no opinion" but "match everything" -- dropping
  * `person_titles[]`/`person_seniorities[]` from the Apollo query would widen the search to every
  * employee and leave `chainHeadcountMin` counting a population it was never calibrated against. */
-const nonEmptyWordList = wordList.refine((a) => a.length > 0, { message: "must list at least one entry" });
+const nonEmptyWordList = (field: string) => wordList.refine((a) => a.length > 0, { message: `${field}: must list at least one entry` });
 
 export const overridesSchema = z
   .object({
@@ -70,8 +70,10 @@ export const overridesSchema = z
          * filters below decide which people Apollo counts, and `chainHeadcountMin` is a threshold
          * on that count -- see the ENRICH_CONFIG doc comments. */
         chainHeadcountMin: z.number().int().min(1).max(ENRICH_CONFIG.chainHeadcountMinMax).optional(),
-        preferredTitles: nonEmptyWordList.optional(),
-        seniorities: nonEmptyWordList.pipe(z.array(z.string().regex(SENIORITY_TOKEN))).optional(),
+        preferredTitles: nonEmptyWordList("Titles").optional(),
+        seniorities: nonEmptyWordList("Seniorities")
+          .pipe(z.array(z.string().regex(SENIORITY_TOKEN)))
+          .optional(),
       })
       .strict()
       .optional(),
@@ -153,8 +155,34 @@ function dropAt(root: object, path: readonly PropertyKey[]): string | null {
       delete parent[key];
       return path.slice(0, end).join(".");
     }
+    // `parent` is a real object and this is the depth it should own `key` at -- if it doesn't,
+    // the target was already removed by an earlier issue in this same pass (e.g. two malformed
+    // `seniorities` elements both resolve here once the first issue dropped the whole array).
+    // Climbing further from here would delete an unrelated ancestor -- e.g. the second issue
+    // wiping out `enrichment.monthlyCreditCap` along with it -- so there is nothing left to drop.
+    return null;
   }
   return null;
+}
+
+/** Last resort when the granular per-field salvage in `salvageOverrides` can't isolate (or can't
+ * converge on) the offending field: drop whole top-level sections, one at a time, until the
+ * remainder validates. A live server then keeps serving the sections that are intact instead of
+ * discarding the entire row -- this should only ever trigger on a row `dropAt` can't handle. */
+export function salvageBySection(candidate: Record<PropertyKey, unknown>, dropped: string[]): { overrides: ConfigOverrides; dropped: string[] } {
+  // Keep every section that validates on its own; drop (and name) each one that does not. Judging
+  // sections independently means a valid `enrichment` never disappears because `exclusion` was
+  // the broken one, and `dropped` lists everything removed rather than only the last section.
+  const kept: Record<PropertyKey, unknown> = {};
+  const removed: string[] = [];
+  for (const section of Object.keys(candidate)) {
+    const r = overridesSchema.safeParse({ [section]: candidate[section] });
+    if (r.success) kept[section] = candidate[section];
+    else removed.push(section);
+  }
+  const r = overridesSchema.safeParse(kept);
+  if (r.success) return { overrides: r.data, dropped: [...dropped, ...removed] };
+  return { overrides: {}, dropped: [...dropped, ...removed, "<root>"] };
 }
 
 /**
@@ -210,9 +238,13 @@ export function salvageOverrides(raw: unknown): { overrides: ConfigOverrides; dr
         removed = true;
       }
     }
-    if (!removed) return { overrides: {}, dropped: [...dropped, "<root>"] };
+    if (!removed) {
+      console.warn(`[config] salvage pass could not isolate a droppable field for the remaining issues; falling back to whole-section drops`);
+      return salvageBySection(candidate, dropped);
+    }
   }
-  return { overrides: {}, dropped: [...dropped, "<root>"] };
+  console.warn(`[config] exhausted 20 salvage passes without converging; falling back to whole-section drops`);
+  return salvageBySection(candidate, dropped);
 }
 
 export async function loadConfig(ownerId: string): Promise<RuntimeConfig> {
