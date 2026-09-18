@@ -139,8 +139,11 @@ Fix round for 3eed43d: the decision-maker regex is word-bounded (an unbounded `p
 //   → creates Contact rows with source "manual" (email → type email lower-cased through normalizeEmail; phone →
 //     type phone, normalized to E.164 through normalizePhone — the same normalizer zipSearch/promote already use,
 //     not the raw typed string — 400 when it doesn't normalize, same as an invalid email; a note goes into
-//     Business.notes appended as "Contact note (<name>): …", read and written inside the same $transaction as the
-//     rest of the call rather than in a separate pre-fetch, so a concurrent edit can't produce a lost update);
+//     Business.notes appended as "Contact note (<name>): …" via a single parameterized
+//     `UPDATE ... CASE` statement inside the same $transaction as the rest of the call — atomic
+//     AND serialized against a concurrent add, not a read-then-write of a pre-fetched value (fix
+//     round, Task 4 re-review — see that task's own follow-up (a) for why the read-then-write
+//     version wasn't actually serialized against a second concurrent writer));
 //     when `setPrimary` (default true) sets Business.primaryPerson = name; writes activity
 //     `Added <name>[, <title>] by hand[ (set as primary)]`.
 //   → 400 when neither email nor phone nor title is given AND the name already exists; 200 { business }.
@@ -171,7 +174,7 @@ Fix round for 3eed43d: the decision-maker regex is word-bounded (an unbounded `p
 
 Also decided ahead of coding, from the Task 2 review: `PeopleSection`'s `Person` type gained a fourth field, `apolloId: string | null`, alongside `key`/`email`/`linkedin` — `groupPeople` sets it from whichever contact row is first seen for that name — so "Not the decision-maker" can be scoped to `source === "apollo" && apolloId != null` rather than to `source === "apollo"` alone (a manual row can theoretically share the `apollo` source label without ever carrying an id). The Leads table gained a "Contact" column (it had none before): `primaryPerson` when set, else the first named contact — `src/lib/leads/queries.ts`'s `listOnlyOmit` drops `primaryPerson` from its omit list to support this (keeping `candidates`/`candidatesAt`/`suppressedApolloIds`/`primaryPersonTitle` omitted), and `tests/db/leadQueriesOmit.test.ts` was updated to match. Two loose ends from the Task 2 review were also closed here rather than left for a later fix round: `pocConfidence`'s `chief` match was tightened to `chief executive|chief\s+\w+\s+officer`, and each "Reveal" button's visible label now includes the candidate's first name ("Reveal Lee (1 credit)") instead of carrying a differing `aria-label` — both in `src/lib/leads/pocConfidence.ts` / `src/components/leads/PeopleSection.tsx`, with tests in `tests/unit/leads/pocConfidence.test.ts`.
 
-**Fix round (review of c971c52):** `chief\s+\w+\s+officer` only matched a single word between "chief" and "officer," missing real multi-word C-suite titles ("Chief Human Resources Officer," "Chief Diversity and Inclusion Officer") — widened to `chief(?:\s+\w+){1,3}\s+officer`; "Chief Barista" is still excluded (no trailing "officer"). `groupPeople` and `LeadsTable`'s `leadContactName` were both extracted into pure, dependency-free modules (`src/lib/leads/groupPeople.ts`, `src/lib/leads/leadContactName.ts`) so they're unit-tested directly (`tests/unit/leads/groupPeople.test.ts`, `tests/unit/leads/leadContactName.test.ts`) instead of only indirectly through the components. `PeopleSection`'s 5s "Confirm remove" timer now clears on unmount. `AddPersonForm` catches a `fetch` rejection (not just a non-2xx response) and surfaces it inline plus a toast. `POST /people`'s contact-row upsert no longer rewrites an existing row's `source`/`apolloId`, and only fills a missing `personName` (see the Interfaces block above); phone is normalized through `normalizePhone`/E.164; the whole handler runs in one `$transaction` so the `notes` append reads and writes atomically. `PATCH { suppressApolloId }` is now idempotent (repeat suppress of an already-suppressed id is a no-op 200) and 404s on an id that matches neither a Contact row nor the stored candidate list.
+**Fix round (review of c971c52):** `chief\s+\w+\s+officer` only matched a single word between "chief" and "officer," missing real multi-word C-suite titles ("Chief Human Resources Officer," "Chief Diversity and Inclusion Officer") — widened to `chief(?:\s+\w+){1,3}\s+officer`; "Chief Barista" is still excluded (no trailing "officer"). `groupPeople` and `LeadsTable`'s `leadContactName` were both extracted into pure, dependency-free modules (`src/lib/leads/groupPeople.ts`, `src/lib/leads/leadContactName.ts`) so they're unit-tested directly (`tests/unit/leads/groupPeople.test.ts`, `tests/unit/leads/leadContactName.test.ts`) instead of only indirectly through the components. `PeopleSection`'s 5s "Confirm remove" timer now clears on unmount. `AddPersonForm` catches a `fetch` rejection (not just a non-2xx response) and surfaces it inline plus a toast. `POST /people`'s contact-row upsert no longer rewrites an existing row's `source`/`apolloId`, and only fills a missing `personName` (see the Interfaces block above); phone is normalized through `normalizePhone`/E.164; the whole handler runs in one `$transaction`, and the `notes` append is atomic and serialized (a single `UPDATE ... CASE` statement, not a read-then-write — fix round, Task 4 re-review, follow-up (a)). `PATCH { suppressApolloId }` is now idempotent (repeat suppress of an already-suppressed id is a no-op 200) and 404s on an id that matches neither a Contact row nor the stored candidate list.
 
 - [x] **Step 1: Failing tests**: add person with email + title sets primary and creates two contacts; add person with only a name → 400; add person with only a name + title (no email/phone) and a new name → 200, zero contact rows, `primaryPerson` still set, `groupPeople`/`pocConfidence` still see them via the synthesized row; primary must exist; suppress deletes Apollo rows, clears primary, adds the id, logs the row; `groupPeople` output marks `isPrimary`; `pocConfidence` returns `primary` afterwards.
 - [x] **Step 2: Run, expect failures.**
@@ -200,11 +203,11 @@ export function assistLinks(b: { name: string; formattedAddress: string | null; 
 ```
 - Render as a compact row under the confidence label when level is `manager`, `staff` or `none`: `Find the owner: LinkedIn · Facebook · Google`, and when `tel` exists: `Call and ask for the owner` (a `tel:` link with the number). Links open in a new tab (`rel="noopener noreferrer"`). `Button` rendered as `<a>` uses `nativeButton={false}`.
 
-- [ ] **Step 1: Failing tests**: URL shapes and encoding (a name with `&` and an apostrophe), city taken from `regionFromAddress`, `tel` null for a missing/unparseable phone.
-- [ ] **Step 2: Run, expect failures.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: tsc, lint, unit exit 0.**
-- [ ] **Step 5: Commit** `feat(leads): owner-search links and a call prompt when no decision-maker is known`.
+- [x] **Step 1: Failing tests**: URL shapes and encoding (a name with `&` and an apostrophe), city taken from `regionFromAddress`, `tel` null for a missing/unparseable phone.
+- [x] **Step 2: Run, expect failures.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: tsc, lint, unit exit 0.**
+- [x] **Step 5: Commit** `feat(leads): owner-search links and a call prompt when no decision-maker is known`.
 
 ---
 

@@ -109,6 +109,34 @@ describe("POST /businesses/:id/people — add a person by hand (Plan 10 Task 3)"
     expect(row.personTitle).toBe("Owner");
   });
 
+  // Fix round (Task 4 re-review): a submitted email/phone landing on a row that already has a
+  // personName means that row IS the person's canonical identity — the primary pointer must
+  // follow it, not whatever the rep happened to retype, or the primary would split from its own
+  // Contact rows the next time groupPeople runs.
+  it("a submitted email that matches an existing named row sets primaryPerson to that row's canonical name and title, not the form's typed name", async () => {
+    const b = await biz();
+    await prisma.contact.create({
+      data: { ownerId: OWNER, businessId: b.id, type: "email", value: "albert@pearland-coffee.com", source: "apollo", personName: "Albert Reyes", personTitle: "Owner", apolloId: "fake-albert" },
+    });
+    const res = await peoplePost(jsonReq({ name: "Al", email: "albert@pearland-coffee.com" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.business.primaryPerson).toBe("Albert Reyes"); // canonical, not the typed "Al"
+    expect(body.business.primaryPersonTitle).toBe("Owner"); // canonical title, since the form gave none
+  });
+
+  it("a submitted form title still wins over the existing row's title for the primary", async () => {
+    const b = await biz();
+    await prisma.contact.create({
+      data: { ownerId: OWNER, businessId: b.id, type: "email", value: "albert@pearland-coffee.com", source: "apollo", personName: "Albert Reyes", personTitle: "Assistant Manager", apolloId: "fake-albert" },
+    });
+    const res = await peoplePost(jsonReq({ name: "Al", title: "Owner", email: "albert@pearland-coffee.com" }), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.business.primaryPerson).toBe("Albert Reyes");
+    expect(body.business.primaryPersonTitle).toBe("Owner");
+  });
+
   it("writes an activity row for the add", async () => {
     const b = await biz();
     const res = await peoplePost(jsonReq({ name: "Albert", title: "Owner", email: "albert@pearland-coffee.com" }), ctxFor(b.id));

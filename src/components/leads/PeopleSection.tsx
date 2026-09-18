@@ -5,17 +5,12 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
 import type { CandidateSet } from "@/lib/enrichment/candidates";
-import type { PersonLike } from "@/lib/leads/pocConfidence";
 import { pocConfidence } from "@/lib/leads/pocConfidence";
+import type { Person } from "@/lib/leads/groupPeople";
 import { AddPersonForm } from "./AddPersonForm";
 import { CopyButton } from "./CopyButton";
+import { ManualAssists } from "./ManualAssists";
 import { SourceBadge } from "./SourceBadge";
-
-// apolloId (Plan 10 Task 3): carried on the row only so "Not the decision-maker" can be scoped to
-// an actually-revealed Apollo person (source "apollo" AND an apolloId — a manual row can share
-// `source: "manual"` but never has one). Set once from whichever contact row LeadDetail's
-// groupPeople first saw for this name, same as `source` already was.
-export type Person = PersonLike & { key: string; email: string | null; linkedin: string | null; apolloId: string | null };
 
 type CreditStatus = { remaining: number };
 
@@ -28,6 +23,7 @@ type CreditStatus = { remaining: number };
  */
 export function PeopleSection({
   businessId,
+  business,
   people,
   candidates,
   costsCredit,
@@ -46,6 +42,9 @@ export function PeopleSection({
   /** Plan 10 Task 3: needed by `AddPersonForm`, which posts to
    * `/api/businesses/:id/people` itself. */
   businessId: string;
+  /** Plan 10 Task 4: the fields `assistLinks` needs to build the owner-search links and call
+   * prompt — passed straight through to `ManualAssists`. */
+  business: { name: string; formattedAddress: string | null; websiteUrl: string | null; phone: string | null };
   people: Person[];
   candidates: CandidateSet | null;
   /** Client-side hint, computed with the same `domainFromUrl` rule the server uses: this
@@ -164,6 +163,12 @@ export function PeopleSection({
       <p className={`text-xs ${confidenceClass}`} data-testid="poc-confidence">
         {confidence.label}
       </p>
+      {/* Plan 10 Task 4: owner-search links and a call prompt, shown whenever the best-known
+          contact isn't already a decision-maker (or nobody's set primary by hand) — a manager,
+          staff, or nobody at all still leaves the rep needing another way to find the owner. */}
+      {(confidence.level === "manager" || confidence.level === "staff" || confidence.level === "none") && (
+        <ManualAssists business={business} />
+      )}
 
       {people.length === 0 ? (
         <p className="text-sm text-muted-foreground">No named contacts yet.</p>

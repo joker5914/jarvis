@@ -1,4 +1,4 @@
-import type { Person } from "@/components/leads/PeopleSection";
+import type { PersonLike } from "@/lib/leads/pocConfidence";
 
 // apolloId (Plan 10 Task 2): links an Apollo-sourced contact row back to the candidate it was
 // revealed from, so PeopleSection can tell an already-revealed candidate apart from one still
@@ -11,6 +11,17 @@ export type GroupableContact = {
   source: string;
   apolloId: string | null;
 };
+
+// apolloId on the grouped row (Plan 10 Task 3): carried from whichever contact row is first seen
+// for that name, same as `source`, so PeopleSection can scope "Not the decision-maker" to an
+// actually-revealed Apollo person (source "apollo" AND an apolloId — a manual row can share
+// `source: "manual"` but never has one).
+//
+// Fix round (Task 4 re-review): this type used to live in PeopleSection.tsx, and this file
+// imported it from there — a lib module reaching into a component module for a type it is itself
+// responsible for producing. Moved here so the dependency runs the ordinary direction:
+// PeopleSection now imports `Person` from this module instead.
+export type Person = PersonLike & { key: string; email: string | null; linkedin: string | null; apolloId: string | null };
 
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. `isPrimary` (Plan 10 Task 2)

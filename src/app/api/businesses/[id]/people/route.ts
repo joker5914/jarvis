@@ -37,17 +37,25 @@ const postBodySchema = z.object({
  * synthesizes a bare row for a `primaryPerson` with no `Contact` row of its own, using
  * `primaryPersonTitle` for the title if one was given.
  *
- * Fix round (review): the whole read-validate-write sequence now runs inside one
- * `prisma.$transaction`, so the `notes` append reads the row's current value and writes the
- * appended value atomically rather than risking a lost update against a concurrent edit. Two
- * correctness bugs in the per-row contact upsert are also fixed here: adding a person whose
- * email/phone already exists as an *Apollo*-sourced row used to (a) relabel that row
- * `source: "manual"`, which made it immune to "not the decision-maker" suppression (that only
- * ever deletes `source: "apollo"` rows — see the PATCH handler below), and (b) overwrite its
- * `personName`, which could split that person's email and LinkedIn rows into two different
- * "people" the next time `groupPeople` ran (they'd only match up again if it happened to be
- * retyped identically). Now an existing row's `source`/`apolloId` are never touched, and
- * `personName` is only filled in when the row doesn't already have one.
+ * Fix round (review): the whole read-validate-write sequence runs inside one
+ * `prisma.$transaction`. The `notes` append itself (Task 4 re-review — see below) is a single
+ * atomic *and serialized* `UPDATE ... CASE` statement rather than a read-then-write against a
+ * pre-fetched `notes` value, so two concurrent adds are properly ordered against each other
+ * instead of one silently clobbering the other. Two correctness bugs in the per-row contact
+ * upsert are also fixed here: adding a person whose email/phone already exists as an
+ * *Apollo*-sourced row used to (a) relabel that row `source: "manual"`, which made it immune to
+ * "not the decision-maker" suppression (that only ever deletes `source: "apollo"` rows — see the
+ * PATCH handler below), and (b) overwrite its `personName`, which could split that person's email
+ * and LinkedIn rows into two different "people" the next time `groupPeople` ran (they'd only
+ * match up again if it happened to be retyped identically). Now an existing row's
+ * `source`/`apolloId` are never touched, and `personName` is only filled in when the row doesn't
+ * already have one.
+ *
+ * Fix round (Task 4 re-review): when a submitted email/phone lands on a row that *already* has a
+ * `personName`, that row is the canonical identity for this person — `Business.primaryPerson`
+ * (and `primaryPersonTitle`, when the form left title blank) now follows that existing name
+ * rather than whatever the rep just retyped in the name field, so a slightly different
+ * spelling/case never splits the primary contact from its own Contact rows in `groupPeople`.
  */
 export const POST = handle(async (req, ctx) => {
   const { id } = await ctx.params;
@@ -78,7 +86,7 @@ export const POST = handle(async (req, ctx) => {
   await prisma.$transaction(async (tx) => {
     const existing = await tx.business.findFirst({
       where: { id, ownerId: actor.id },
-      select: { id: true, primaryPerson: true, notes: true, contacts: { select: { personName: true } } },
+      select: { id: true, primaryPerson: true, contacts: { select: { personName: true } } },
     });
     if (!existing) throw new ApiError(404, "Business not found");
 
@@ -88,6 +96,16 @@ export const POST = handle(async (req, ctx) => {
     if (!hasIdentifyingInfo && nameAlreadyExists) {
       throw new ApiError(400, `${name} already has a contact — add an email, phone, or title to add a new entry.`);
     }
+
+    // Fix round (Task 4 re-review): if a submitted email/phone matches a row that already carries
+    // a `personName`, that row IS the canonical identity for this person — the primary pointer
+    // below must follow it (and its title, when the form left title blank), not whatever the rep
+    // just typed, or a re-add under a slightly different spelling/case would point `primaryPerson`
+    // at a name that no longer matches any of this person's own Contact rows. Only the first such
+    // row encountered sets the canonical name/title (rows are processed email-then-phone).
+    let canonicalName = name;
+    let canonicalTitle = title;
+    let canonicalFromExisting = false;
 
     for (const r of rows) {
       const existingRow = await tx.contact.findUnique({ where: { businessId_type_value: { businessId: id, type: r.type, value: r.value } } });
@@ -100,18 +118,31 @@ export const POST = handle(async (req, ctx) => {
         if (!existingRow.personName) data.personName = name;
         if (title) data.personTitle = title;
         if (Object.keys(data).length > 0) await tx.contact.update({ where: { id: existingRow.id }, data });
+        if (existingRow.personName && !canonicalFromExisting) {
+          canonicalName = existingRow.personName;
+          if (!title && existingRow.personTitle) canonicalTitle = existingRow.personTitle;
+          canonicalFromExisting = true;
+        }
       } else {
         await tx.contact.create({ data: { ownerId: actor.id, businessId: id, type: r.type, value: r.value, source: "manual", personName: name, personTitle: title } });
       }
     }
 
-    await tx.business.update({
-      where: { id },
-      data: {
-        ...(setPrimary ? { primaryPerson: name, primaryPersonTitle: title } : {}),
-        ...(note ? { notes: existing.notes ? `${existing.notes}\nContact note (${name}): ${note}` : `Contact note (${name}): ${note}` } : {}),
-      },
-    });
+    if (setPrimary) {
+      await tx.business.update({ where: { id }, data: { primaryPerson: canonicalName, primaryPersonTitle: canonicalTitle } });
+    }
+    if (note) {
+      const line = `Contact note (${name}): ${note}`;
+      // Atomic AND serialized (fix round, Task 4 re-review): a single UPDATE ... CASE statement,
+      // not a read-then-write against a pre-fetched `notes` value — the earlier version read
+      // `existing.notes` once at the top of the transaction and wrote `existing.notes + line`
+      // back, which is atomic (one transaction) but not serialized against a second concurrent
+      // add under Postgres's default READ COMMITTED isolation: two adds racing this way could
+      // both read the same starting value and one append would silently overwrite the other. This
+      // statement instead reads and appends to the row's *current* value in the same round trip,
+      // so concurrent adds are properly ordered and neither note is lost.
+      await tx.$executeRaw`UPDATE "Business" SET "notes" = CASE WHEN "notes" = '' THEN ${line} ELSE "notes" || E'\n' || ${line} END WHERE "id" = ${id}`;
+    }
     await tx.activityLog.create({
       data: { ownerId: actor.id, businessId: id, kind: "poc_updated", message: `Added ${name}${title ? `, ${title}` : ""} by hand${setPrimary ? " (set as primary)" : ""}` },
     });

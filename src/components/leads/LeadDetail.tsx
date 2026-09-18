@@ -484,6 +484,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
       <PeopleSection
         businessId={id}
+        business={{ name: b.name, formattedAddress: b.formattedAddress, websiteUrl: b.websiteUrl, phone: b.phone }}
         people={people}
         candidates={b.candidates}
         costsCredit={candidatesCostCredit}
