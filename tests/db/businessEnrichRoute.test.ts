@@ -6,7 +6,10 @@ import { saveOverrides } from "@/lib/config/runtime";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
 import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
+import { POST as candidatesPost, GET as candidatesGet } from "@/app/api/businesses/[id]/candidates/route";
 import { PEOPLE_SEARCH_PATH, __setPlanBlockedForTests, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
+import { FakeEnrichmentProvider } from "@/lib/providers/fake";
+import { ProviderPlanError, ProviderNotConfiguredError, ProviderDisabledError } from "@/lib/providers/errors";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
 const OWNER = "local-user";
@@ -355,6 +358,17 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     expect(body2.estimatedCredits).toBe(3);
   });
 
+  // Plan 10 Task 1 (f): a candidate reveal is always exactly one person, regardless of the
+  // configured/default `people` count — estimatedCredits must say 1, not e.g. maxPeople=3.
+  it("POST /businesses/:id/enrich { apolloId } 202 body carries estimatedCredits: 1 even with a higher configured maxPeople", async () => {
+    await saveOverrides(OWNER, { enrichment: { maxPeople: 3 } });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq({ apolloId: "fake-bellanails.example-gm" }), ctxFor(b.id));
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.estimatedCredits).toBe(1);
+  });
+
   it("POST /businesses/:id/enrich validates `people` with zod: out-of-range is a 400, absent body still queues", async () => {
     const bTooHigh = await biz("none");
     const resTooHigh = await enrichPost(jsonReq({ people: 6 }), ctxFor(bTooHigh.id));
@@ -409,5 +423,242 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.estimatedCredits).toBe(1);
+  });
+});
+
+// Plan 10 Task 1 (g): POST runs findCandidates inline (a free call) and returns the stored set;
+// GET returns whatever is currently stored (or null before the first "Find people" call).
+describe("candidates route (Plan 10 Task 1)", () => {
+  let prevJobMode: string | undefined;
+
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    await prisma.business.deleteMany({ where: { name: "Other Owner's Biz" } });
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/:id/candidates returns 200 with the free candidate set, and GET returns the stored set", async () => {
+    const b = await biz("none");
+    const postRes = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(postRes.status).toBe(200);
+    const postBody = await postRes.json();
+    expect(postBody.candidates.candidates.length).toBeGreaterThan(0);
+    expect(postBody.candidates.candidates[0]).toHaveProperty("apolloId");
+    expect(postBody.candidates.fetchedAt).toBeTruthy();
+    // biz("none") has no websiteUrl, so this call fell back to the no-domain branch (R7).
+    expect(postBody.costsCredit).toBe(true);
+
+    const getRes = await candidatesGet(jsonReq(), ctxFor(b.id));
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.candidates).toEqual(postBody.candidates);
+  });
+
+  // Fix round R7: a business with a usable website domain never falls back to Organization
+  // Search, so this specific "Find people" click is free — costsCredit must say so.
+  it("POST /businesses/:id/candidates returns costsCredit: false for a business with a usable domain", async () => {
+    const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+    const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.costsCredit).toBe(false);
+  });
+
+  // Fix round R7: the no-domain branch's Organization Search fallback costs one real Apollo
+  // credit, so it must be gated behind the same credit-cap check the enrich route uses, and
+  // refuse the same way (409 + settingsHref) rather than silently attempting a call that would
+  // push the owner over their configured cap.
+  it("POST /businesses/:id/candidates returns 409 at the credit cap for a no-domain business (R7)", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    try {
+      const b = await biz("none"); // no websiteUrl -> no-domain branch
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/credit cap|out of credits/i);
+      expect(body.settingsHref).toBe("/settings");
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
+  });
+
+  // A domain business never spends a credit here, so the credit cap must not gate it at all —
+  // proves the R7 gate is scoped to the no-domain branch, not applied unconditionally.
+  it("POST /businesses/:id/candidates ignores the credit cap for a business with a usable domain", async () => {
+    await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+    try {
+      const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(200);
+    } finally {
+      await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+    }
+  });
+
+  // Fix round R6: mirrors POST /businesses/:id/enrich's exclusion refusal.
+  it("POST /businesses/:id/candidates returns 409 'Excluded businesses are not enriched' for an excluded business", async () => {
+    const b = await biz("enterprise");
+    const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Excluded businesses are not enriched");
+  });
+
+  it("GET /businesses/:id/candidates returns { candidates: null } before any 'Find people' call", async () => {
+    const b = await biz("none");
+    const res = await candidatesGet(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.candidates).toBeNull();
+  });
+
+  it("returns 404 for another owner's business, on both POST and GET", async () => {
+    const other = await prisma.business.create({ data: { ownerId: "some-other-owner", name: "Other Owner's Biz", source: "zip_search" } });
+    const postRes = await candidatesPost(jsonReq(), ctxFor(other.id));
+    expect(postRes.status).toBe(404);
+    const getRes = await candidatesGet(jsonReq(), ctxFor(other.id));
+    expect(getRes.status).toBe(404);
+  });
+
+  // Whole-branch review H1: an unthrottled repeat "Find people" click on a no-domain lead would
+  // otherwise re-spend the credited Organization Search fallback every time — a second call
+  // within 24 hours is refused (409, retryable) unless the caller passes { force: true }.
+  describe("H1: no-domain 24-hour reuse throttle", () => {
+    // The fake provider's default searchPeople always resolves a synthetic apolloOrgDomain on a
+    // no-domain query, which — correctly, per H1 — makes the very next call free (see "a lead with
+    // a memoized apolloOrgDomain..." below), so the throttle never has anything to bite on with
+    // the default fake. The throttle matters for the lead this org search never resolves a domain
+    // for at all (no org match, or a matched org with no primary_domain on file) — simulated here
+    // by overriding searchPeople to mirror that exact real-provider shape.
+    it("a second POST within 24h on a no-domain lead whose org search never resolves a domain is a retryable 409, and { force: true } bypasses it", async () => {
+      const spy = vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockResolvedValue({
+        people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain: null, orgSearchCredits: 1,
+      });
+      try {
+        const b = await biz("none"); // no websiteUrl -> no-domain branch
+        const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+        expect(first.status).toBe(200);
+        const afterFirst = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+        expect(afterFirst.apolloOrgDomain).toBeNull(); // never resolved — this is the case the throttle exists for
+
+        const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+        expect(second.status).toBe(409);
+        const secondBody = await second.json();
+        expect(secondBody.error).toMatch(/reused for 24 hours/i);
+        expect(secondBody.retryable).toBe(true);
+
+        const forced = await candidatesPost(jsonReq({ force: true }), ctxFor(b.id));
+        expect(forced.status).toBe(200);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("does not throttle a business with a usable website domain (never costs a credit to begin with)", async () => {
+      const b = await prisma.business.create({ data: { ownerId: OWNER, name: "Enrich Route Test Biz", source: "zip_search", websiteUrl: "https://www.bellanails.com" } });
+      const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(first.status).toBe(200);
+      const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(second.status).toBe(200);
+    });
+
+    // Once a no-domain lead's Organization Search has resolved apolloOrgDomain, later calls are
+    // free — simulated here by backdating candidatesAt (past the 24h window) and setting
+    // apolloOrgDomain directly, the way a real second day's click would arrive already resolved.
+    it("a lead with a memoized apolloOrgDomain is never throttled even within 24h, since it no longer costs a credit", async () => {
+      const b = await biz("none");
+      const first = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(first.status).toBe(200);
+      await prisma.business.update({ where: { id: b.id }, data: { apolloOrgDomain: "bella-nails-spa.example" } });
+      const second = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(second.status).toBe(200);
+    });
+  });
+
+  it("POST /businesses/:id/candidates returns 409 with settingsHref when Apollo is disabled", async () => {
+    const snapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    await prisma.providerConfig.upsert({ where: { provider: "apollo" }, update: { enabled: false }, create: { provider: "apollo", enabled: false } });
+    try {
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo is disabled in Settings");
+      expect(body.settingsHref).toBe("/settings");
+    } finally {
+      if (snapshot) await prisma.providerConfig.update({ where: { provider: "apollo" }, data: snapshot });
+      else await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
+  });
+
+  // Fix round R2: providerGateError()'s proactive configured/enabled/plan-block checks can go
+  // stale between that check and the actual findCandidates call (a live 403 the worker hasn't
+  // seen yet, a key disabled mid-request, etc.) — the route's catch block must still turn these
+  // three typed provider errors into the same 409 + settingsHref shape the proactive checks give,
+  // mirroring runEnrich's own catch block. Forced here by spying on the fake provider (PROVIDER_
+  // MODE=fake in db tests never throws these itself) since findCandidates has no other injection
+  // point through the route.
+  describe("R2: catch-block 409s for typed provider errors from the underlying search", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("ProviderPlanError -> 409 with the Apollo plan-block message and settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(
+        new ProviderPlanError("apollo", PEOPLE_SEARCH_PATH, "API_INACCESSIBLE"),
+      );
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/Your Apollo plan does not include the people search and enrichment API/);
+      expect(body.settingsHref).toBe("/settings");
+    });
+
+    it("ProviderNotConfiguredError -> 409 'Apollo API key is not configured' with settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(new ProviderNotConfiguredError("apollo"));
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo API key is not configured");
+      expect(body.settingsHref).toBe("/settings");
+    });
+
+    it("ProviderDisabledError -> 409 'Apollo is disabled in Settings' with settingsHref", async () => {
+      vi.spyOn(FakeEnrichmentProvider.prototype, "searchPeople").mockRejectedValue(new ProviderDisabledError("apollo"));
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo is disabled in Settings");
+      expect(body.settingsHref).toBe("/settings");
+    });
+  });
+});
+
+// Fix round R9: an empty apolloId ("" fails the route's `z.string().min(1)`) must be a 400, not
+// silently coerced to "no apolloId" (which would run the auto-search path instead of failing loud).
+describe("apolloId validation (R9)", () => {
+  let prevJobMode: string | undefined;
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/:id/enrich { apolloId: '' } returns 400", async () => {
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq({ apolloId: "" }), ctxFor(b.id));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.issues?.[0]?.message).toMatch(/>=1 character/i);
   });
 });

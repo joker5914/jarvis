@@ -13,7 +13,9 @@ export function LeadDrawer({ id, onClose, onChanged }: { id: string | null; onCl
           the popup, so it scrolls out of view with the rest of the content. This drawer
           puts its own close inside the sticky chrome row instead, alongside the "Open
           full page" link, so exactly one × exists and it stays visible while scrolling. */}
-      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:max-w-xl" showCloseButton={false}>
+      {/* Desktop: the right third of the viewport (never narrower than 480 px) so contact rows,
+          the enrich row and the activity log read on one line each; phones keep full width. */}
+      <SheetContent side="right" className="w-full overflow-y-auto p-0 sm:w-[max(33vw,480px)] sm:max-w-none" showCloseButton={false}>
         <SheetTitle className="sr-only">Lead detail</SheetTitle>
         {id && (
           <>

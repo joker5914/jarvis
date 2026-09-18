@@ -131,7 +131,17 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for EnrichmentProvider API stability
   async searchPeople(q: PeopleSearchQuery, max: number): Promise<PeopleSearchResult> {
     this.calls.search++;
+    // Whole-branch review H1: mirrors the real provider's no-domain branch — a null `q.domain`
+    // means an Organization Search would run (and would cost one real Apollo credit), so this
+    // increments `calls.orgSearch`, reports `orgSearchCredits: 1`, and "resolves" a synthetic
+    // domain the same shape `searchOrganization`'s `primaryDomain` would be, so a test can assert
+    // `Business.apolloOrgDomain` gets persisted from it. A caller-supplied `q.domain` (the normal
+    // case once a lead has a website, or once `apolloOrgDomain` has been resolved and fed back in
+    // via `buildPeopleSearchQuery`) never touches Organization Search at all, matching real Apollo.
     const domain = q.domain ?? `${q.orgName.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example`;
+    const orgSearchCredits = q.domain ? 0 : 1;
+    if (!q.domain) this.calls.orgSearch++;
+    const resolvedDomain = q.domain ? null : domain;
     // Defaults to the queried org name (i.e. the real business's own name in the normal runEnrich
     // flow), so orgNameMatches always accepts these by default — tests that want to exercise the
     // targeting guard (Task 4) override searchPeople directly with a mismatched orgName, the same
@@ -146,7 +156,7 @@ export class FakeEnrichmentProvider implements EnrichmentProvider {
     // in for in fake mode. totalAtDomain mirrors totalFound here (the fake has no separate
     // national-vs-scoped count to simulate); tests that want a specific totalAtDomain (Task 3's
     // chain-headcount guard) override searchPeople directly, the same way other tests already do.
-    return { people, totalFound: people.length, totalAtDomain: people.length, scope: q.city && q.state ? "city" : "any" };
+    return { people, totalFound: people.length, totalAtDomain: people.length, scope: q.city && q.state ? "city" : "any", resolvedDomain, orgSearchCredits };
   }
   async enrichPerson(apolloId: string): Promise<EnrichPerson | null> {
     this.calls.enrich++;

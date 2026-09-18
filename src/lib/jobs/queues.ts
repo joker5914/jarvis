@@ -43,7 +43,9 @@ export type PromoteJobData = { businessId: string; ownerId: string };
 export type PromoteBatchJobData = Record<string, never>;
 export type WebsiteRecheckJobData = { businessIds: string[]; ownerId: string; origin?: JobOrigin };
 export type ScannerTickJobData = Record<string, never>;
-export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean; people?: number };
+// `apolloId` (Plan 10 Task 1): reveal exactly this candidate (chosen from the free "Find people"
+// list) instead of running the auto-search/reveal loop — see runEnrich's `opts.apolloId` branch.
+export type EnrichJobData = { businessId: string; ownerId: string; force?: boolean; people?: number; apolloId?: string };
 export type ContinuePartialJobData = Record<string, never>;
 
 // Minimal structural type for the pg-boss instance this helper needs: avoids importing the

@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { REGION } from "@/lib/config/region";
 import { utcForLocal } from "@/lib/scanner/window";
 import { getProviders } from "@/lib/providers";
+import { json } from "@/lib/api";
 import type { EnrichmentProvider } from "@/lib/providers/types";
 import type { RuntimeConfig } from "@/lib/config/runtime";
 
@@ -44,9 +45,22 @@ export function creditCycleStart(now: Date, cycleRenewsOn: string | null, tz: st
   return utcForLocal(yy, mm, Math.min(renewDay, daysIn(yy, mm)), 0, 0, tz);
 }
 
-/** Apollo charges one credit per verified net-new email; that's the only thing we store that maps to a credit. */
+/**
+ * Whole-branch review H1/M1: counts `ActivityLog` rows with `kind: "credit_spent"` — one written
+ * per real Apollo spend (a person reveal that returned an email, or an Organization Search page;
+ * see `src/lib/jobs/enrich.ts`'s `logCreditSpent` and `src/lib/enrichment/candidates.ts`'s
+ * `findCandidates`) — instead of counting `Contact` rows directly. Two problems that fixed:
+ * (1) M1: "not the decision-maker" suppression (`PATCH /businesses/:id/people`) hard-deletes a
+ * revealed person's Apollo Contact rows, which used to make the credit they'd already cost
+ * silently vanish from this count too, understating real spend for the rest of the cycle; the
+ * ledger row is never deleted, so the count survives a suppression. (2) H1: the no-website
+ * "Find people" fallback (Organization Search) spends a real credit but never creates a Contact
+ * row at all, so it was invisible to this count entirely before the ledger existed. Migration
+ * `20260918010100_credit_ledger_backfill` seeds one `credit_spent` row per pre-existing
+ * Apollo-sourced email Contact row so history before this change still counts correctly.
+ */
 export async function creditsUsed(ownerId: string, since: Date): Promise<number> {
-  return prisma.contact.count({ where: { ownerId, source: "apollo", type: "email", createdAt: { gte: since } } });
+  return prisma.activityLog.count({ where: { ownerId, kind: "credit_spent", createdAt: { gte: since } } });
 }
 
 export type CreditStatus = {
@@ -85,3 +99,22 @@ export async function creditStatus(
 
 /** Rough spend estimate for the UI/bulk actions: worst case, every person revealed costs a credit. */
 export const estimateCredits = (businesses: number, people: number): number => businesses * people;
+
+/**
+ * Refuses at the monthly Apollo credit cap before any provider call that could spend one — the
+ * single-business enrich route, the bulk enrich route, and (fix round, R6/R7) the candidates
+ * route's no-domain branch, which falls back to a credited Organization Search. Takes an
+ * already-loaded config so callers that also need it (e.g. for the default `people` count) don't
+ * load it twice. Returns null when there is remaining budget, a 409 Response otherwise.
+ */
+export async function assertCredits(ownerId: string, cfg: RuntimeConfig): Promise<Response | null> {
+  const s = await creditStatus(ownerId, cfg);
+  if (s.remaining <= 0) {
+    // Name the binding constraint: Apollo's own balance when it is empty, otherwise this app's cap.
+    const error = s.apollo && s.apollo.leftOver <= 0
+      ? "Apollo account is out of credits (Apollo reports 0 left)"
+      : `Apollo monthly credit cap reached (${s.used}/${s.cap})`;
+    return json({ error, settingsHref: "/settings" }, 409);
+  }
+  return null;
+}

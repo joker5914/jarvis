@@ -15,15 +15,22 @@ import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
 import { isEnrichIssueMessage, latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import { domainFromUrl } from "@/lib/extract/domains";
+import type { CandidateSet } from "@/lib/enrichment/candidates";
+import { groupPeople } from "@/lib/leads/groupPeople";
 import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
 import { QualityBadge } from "./QualityBadge";
 import { SourceBadge } from "./SourceBadge";
+import { PeopleSection } from "./PeopleSection";
 
 const ENRICH_WATCH_INTERVAL_MS = 2000;
 const ENRICH_WATCH_TIMEOUT_MS = 90_000;
 
-type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string };
+// apolloId (Plan 10 Task 2): links an Apollo-sourced contact row back to the candidate it was
+// revealed from, so PeopleSection can tell an already-revealed candidate apart from one still
+// waiting on a reveal (see `revealedApolloIds` below).
+type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string; apolloId: string | null };
 type Project = { id: string; projectNumber: string; projectName: string; estimatedCost: number | null; startDate: string | null; completionDate: string | null; scopeOfWork: string | null; ownerName: string | null; ownerPhone: string | null; timingWindow: string | null };
 type Detail = {
   id: string; name: string; formattedAddress: string | null; zip: string | null; phone: string | null; websiteUrl: string | null;
@@ -33,9 +40,23 @@ type Detail = {
   outreachStatus: string; productsPitched: string[]; notes: string; websiteReachable: boolean | null; websiteError: string | null;
   contacts: Contact[]; tags: { tag: Tag }[]; activity: { id: string; kind: string; message: string; createdAt: string }[]; projects: Project[];
   lastEnrichedAt: string | null;
+  // Plan 10 Task 2: getBusinessDetail's include already carries these (no `omit` on the detail
+  // query, unlike listBusinesses — see src/lib/leads/queries.ts). `candidatesAt` itself isn't
+  // listed here (fix round for 3eed43d): it's redundant with `candidates.fetchedAt`, which is
+  // what PeopleSection's "Searched <time ago>" line actually reads, and nothing else in the
+  // client needs the bare timestamp when the set is null.
+  candidates: CandidateSet | null; primaryPerson: string | null; suppressedApolloIds: string[];
+  // Plan 10 Task 3: the title captured alongside a hand-typed `primaryPerson` (POST /people) —
+  // only ever consulted by `groupPeople`'s synthesized-row fallback below, for a primary who has
+  // no Contact row of their own to carry a title.
+  primaryPersonTitle: string | null;
+  // Whole-branch review H1: a domain Organization Search resolved for this lead on a previous
+  // no-website "Find people" call — once set, every later call is free (see buildPeopleSearchQuery
+  // in src/lib/jobs/enrich.ts), so the client-side `candidatesCostCredit` hint below must account
+  // for it the same way the server's own `costsCredit` gate does.
+  apolloOrgDomain: string | null;
 };
 
-type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
 type CreditStatus = {
   used: number;
   cap: number;
@@ -47,23 +68,8 @@ type CreditStatus = {
   apollo: { limit: number; consumed: number; leftOver: number; cycleEnd: string } | null;
 };
 
-/** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
- * pairing that person's email and LinkedIn contact rows together. */
-function groupPeople(contacts: Contact[]): Person[] {
-  const byName = new Map<string, Person>();
-  for (const c of contacts) {
-    if (!c.personName) continue;
-    let p = byName.get(c.personName);
-    if (!p) {
-      p = { key: c.personName, name: c.personName, title: c.personTitle, email: null, linkedin: null, source: c.source };
-      byName.set(c.personName, p);
-    }
-    if (!p.title && c.personTitle) p.title = c.personTitle;
-    if (c.type === "email" && !p.email) p.email = c.value;
-    if (c.type === "linkedin" && !p.linkedin) p.linkedin = c.value;
-  }
-  return [...byName.values()];
-}
+// groupPeople itself now lives in src/lib/leads/groupPeople.ts (fix round: extracted so it's
+// unit-testable without a React/JSX runtime) — imported above.
 
 const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
 // Base UI translation: pass `items` so the trigger shows the matching label
@@ -85,6 +91,10 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const [enriching, setEnriching] = useState(false);
   const [chainActionPending, setChainActionPending] = useState(false);
   const [credits, setCredits] = useState<CreditStatus | null>(null);
+  // H1: set when POST /candidates refused a no-domain lead's repeat click with a retryable 409
+  // ("reused for 24 hours") — PeopleSection shows "Refresh anyway (1 credit)" while this is true,
+  // and a click then sends `{ force: true }`. Reset on any non-409 response.
+  const [findPeopleRetryable, setFindPeopleRetryable] = useState(false);
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Cancels an in-flight watchEnrichment poll loop (e.g. the drawer closes or switches to a
   // different lead) so a stale timer never touches this component's state after it's gone.
@@ -134,7 +144,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     if (!quiet) toast.success("Saved");
   }
 
-  async function enrich() {
+  // Shared by a plain "Enrich"/"Re-enrich" click and a candidate-picker "Reveal (1 credit)"
+  // click (Plan 10 Task 2): both go through POST /enrich and the same "Enriching…" watcher, so
+  // the drawer reloads with the new contact either way. `enrich()` and `reveal()` below just
+  // supply the body.
+  async function requestEnrich(body: Record<string, unknown>) {
     setEnriching(true);
     enrichWatchController.current?.abort(); // a stale watch from a previous click, if any
     const controller = new AbortController();
@@ -143,13 +157,16 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       const res = await fetch(`/api/businesses/${id}/enrich`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ force: b?.lastEnrichedAt != null }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
-        toast.error(data.error ?? "Apollo is not configured", {
-          action: { label: "Settings", onClick: () => router.push(data.settingsHref ?? "/settings") },
-        });
+        // Fix round: a 409 only sometimes carries `settingsHref` (e.g. "already queued" never
+        // does) — attaching a Settings action to every one of them used to send the rep to
+        // Settings for a problem Settings can't fix.
+        toast.error(data.error ?? "Enrichment failed", data.settingsHref
+          ? { action: { label: "Settings", onClick: () => router.push(data.settingsHref) } }
+          : undefined);
         return;
       }
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
@@ -194,6 +211,86 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     } finally {
       if (!controller.signal.aborted) setEnriching(false);
     }
+  }
+
+  function enrich() {
+    return requestEnrich({ force: b?.lastEnrichedAt != null });
+  }
+
+  // Candidate-picker reveal (Plan 10 Task 2): reveals exactly the chosen candidate — no search,
+  // recheckDays bypassed — via runEnrich's `apolloId` option (see POST /enrich's schema).
+  function reveal(apolloId: string) {
+    return requestEnrich({ apolloId });
+  }
+
+  // "Find people" / "Refresh candidates" (Plan 10 Task 2): a free (usually) Apollo People
+  // Search that lists candidates without revealing anyone — no credit watcher needed, just a
+  // reload once the set is stored. H1: `force` re-sends after a "reused for 24 hours" 409.
+  async function findPeople(force = false) {
+    const res = await fetch(`/api/businesses/${id}/candidates`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(force ? { force: true } : {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // H1: only a `retryable` 409 (the 24h reuse throttle) arms the "Refresh anyway" state — a
+      // provider/settings 409 is a different kind of failure and shouldn't offer to pay through it.
+      setFindPeopleRetryable(!!data.retryable);
+      toast.error(data.error ?? "Could not find people", data.settingsHref
+        ? { action: { label: "Settings", onClick: () => router.push(data.settingsHref) } }
+        : undefined);
+      return;
+    }
+    setFindPeopleRetryable(false);
+    if (!res.ok) { toast.error(data.error ?? "Could not find people"); return; }
+    const count = data.candidates?.candidates?.length ?? 0;
+    const base = count > 0 ? `Found ${count} candidate${count === 1 ? "" : "s"}` : "No people found in Apollo";
+    // The server's own `costsCredit` (true on the no-domain Organization Search fallback) is the
+    // authority on whether this call actually spent a credit — the button's own pre-click label
+    // is just a hint (see `candidatesCostCredit` below) so it can be shown before the call.
+    toast.success(data.costsCredit ? `${base} · 1 credit used` : base);
+    await load({ quiet: true });
+    await loadCredits();
+  }
+
+  // "Set as primary" ghost button on a non-primary People row (Plan 10 Task 3): PATCH
+  // /people { primaryPerson } — the route only accepts a name that already matches an existing
+  // person on this business, so this is always called with a name the rep can already see listed.
+  async function setPrimaryPerson(name: string) {
+    const res = await fetch(`/api/businesses/${id}/people`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ primaryPerson: name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast.error(data.error ?? "Could not set primary contact"); return; }
+    toast.success(`${name} is now the primary contact`);
+    await load({ quiet: true });
+    onChanged?.();
+  }
+
+  // "Not the decision-maker" (Plan 10 Task 3): PATCH /people { suppressApolloId } — deletes that
+  // person's Apollo-sourced contact rows, adds the id to Business.suppressedApolloIds so they
+  // never resurface on a later search/auto-enrich, and clears primaryPerson if it named them.
+  async function suppressPerson(apolloId: string) {
+    const res = await fetch(`/api/businesses/${id}/people`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ suppressApolloId: apolloId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast.error(data.error ?? "Could not remove person"); return; }
+    toast.success("Removed — they won't be suggested again");
+    await load({ quiet: true });
+    onChanged?.();
+  }
+
+  // AddPersonForm posts to POST /people itself; this is just the shared "reload the drawer"
+  // callback other mutations already use.
+  async function onPersonAdded() {
+    await load({ quiet: true });
+    onChanged?.();
   }
 
   // "Not an SMB (chain)" action (Plan 9 Task 3): adds this lead's chain key to the owner's chain
@@ -263,7 +360,17 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
-  const people = groupPeople(b.contacts);
+  const people = groupPeople(b.contacts, b.primaryPerson, b.primaryPersonTitle);
+  // Client-side hint only, computed the same way the server does: POST /candidates falls back to
+  // a credited Organization Search whenever `domainFromUrl` finds no usable domain (no website at
+  // all, or a page hosted on a shared platform like Booksy/Clover/Wix — see
+  // src/lib/extract/domains.ts's SHARED_HOSTS) AND no `apolloOrgDomain` has been memoized yet from
+  // a previous no-domain search (H1, whole-branch review) — once one has, every later call routes
+  // through the free, domain-filtered branch instead. A plain `websiteUrl == null` check used to
+  // miss the platform-hosted case (fix round for 3eed43d), understating the cost before the click;
+  // the actual `data.costsCredit` in the response (used in `findPeople` above) remains the authority.
+  const candidatesCostCredit = domainFromUrl(b.websiteUrl) === null && !b.apolloOrgDomain;
+  const revealedApolloIds = new Set(b.contacts.map((c) => c.apolloId).filter((x): x is string => x != null));
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
   // Surfaces the latest unavailable/paused enrich attempt so a click that silently failed (e.g.
@@ -294,11 +401,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
             </>
           )}
           {b.websiteUrl && (
-            <Button size="sm" variant="outline" nativeButton={false} render={<a href={b.websiteUrl} target="_blank" rel="noreferrer" />}>
+            <Button size="sm" variant="outline" nativeButton={false} render={<a href={b.websiteUrl} target="_blank" rel="noopener noreferrer" />}>
               Website{b.websiteReachable === false ? " (unreachable)" : ""}
             </Button>
           )}
-          <Button size="sm" variant="outline" nativeButton={false} render={<a href={linkedinSearch} target="_blank" rel="noreferrer" />}>
+          <Button size="sm" variant="outline" nativeButton={false} render={<a href={linkedinSearch} target="_blank" rel="noopener noreferrer" />}>
             Search LinkedIn
           </Button>
         </div>
@@ -326,7 +433,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                   ) : b.lastEnrichedAt ? "Re-enrich" : "Enrich with Apollo"}
                 </Button>
                 {credits && (
-                  <span className="text-xs text-muted-foreground" data-testid="enrich-estimate">
+                  <span className="whitespace-nowrap text-xs text-muted-foreground" data-testid="enrich-estimate">
                     ~{credits.maxPeople} credit{credits.maxPeople === 1 ? "" : "s"} · {credits.remaining} left this cycle
                   </span>
                 )}
@@ -374,7 +481,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
                     <span className="min-w-0 truncate" title={c.value}>
                       {c.type === "email" ? <a href={`mailto:${c.value}`} className="hover:underline">{c.value}</a>
                         : c.type === "phone" ? <a href={`tel:${c.value}`} className="hover:underline">{c.value}</a>
-                        : <a href={c.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
+                        : <a href={c.value} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{titleCase(c.type)}: {c.value.replace(/^https?:\/\/(www\.)?/, "")}</a>}
                       {c.personName && <span className="text-muted-foreground"> · {c.personName}{c.personTitle ? `, ${c.personTitle}` : ""}</span>}
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
@@ -394,29 +501,25 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         )}
       </section>
 
-      <section className="border-t pt-4 space-y-3" data-testid="people-section">
-        <h3 className="text-sm font-semibold">People</h3>
-        {people.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
-        ) : (
-          <ul className="space-y-1">
-            {people.map((p) => (
-              <li key={p.key} data-testid="people-row" className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-sm">
-                <span className="min-w-0 truncate" title={p.title ? `${p.name}, ${p.title}` : p.name}>
-                  <span className="font-medium">{p.name}</span>
-                  {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
-                </span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <SourceBadge source={p.source} />
-                  {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
-                  {p.email && <CopyButton value={p.email} label={p.email} />}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {b.lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
-      </section>
+      <PeopleSection
+        businessId={id}
+        business={{ name: b.name, formattedAddress: b.formattedAddress, websiteUrl: b.websiteUrl, phone: b.phone }}
+        people={people}
+        candidates={b.candidates}
+        costsCredit={candidatesCostCredit}
+        findPeopleRetryable={findPeopleRetryable}
+        primaryPerson={b.primaryPerson}
+        revealedApolloIds={revealedApolloIds}
+        suppressedApolloIds={b.suppressedApolloIds}
+        enriching={enriching}
+        credits={credits}
+        lastEnrichedAt={b.lastEnrichedAt}
+        onFindPeople={findPeople}
+        onReveal={reveal}
+        onSetPrimary={setPrimaryPerson}
+        onSuppress={suppressPerson}
+        onPersonAdded={onPersonAdded}
+      />
 
       <section className="border-t pt-4 space-y-3">
         <h3 className="text-sm font-semibold">Outreach</h3>

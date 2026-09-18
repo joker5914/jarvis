@@ -60,4 +60,13 @@ export const ENRICH_CONFIG = {
   seniorities: ["owner", "founder", "c_suite", "vp", "director", "manager"],
   /** Skip a paid re-enrich (and the provider calls it would cost) within this many days of the last successful run, unless forced. */
   recheckDays: 30,
+  /** Whole-branch review H1: a repeated "Find people" click on a lead with no usable website
+   * domain (and no `apolloOrgDomain` memoized yet) would otherwise re-run the credited
+   * Organization Search fallback every time — an easy, uncounted-feeling credit sink for a rep who
+   * just clicks the button again. POST /businesses/:id/candidates refuses (409, retryable) a
+   * repeat call within this many hours of the last one for such a lead, unless the caller passes
+   * `{ force: true }` (PeopleSection's "Refresh anyway (1 credit)" one-step confirm). Does not
+   * apply once the lead has a website domain or a memoized `apolloOrgDomain` — those calls are
+   * free, so there's no credit to throttle. */
+  noDomainCandidatesReuseHours: 24,
 } as const;

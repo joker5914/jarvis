@@ -88,17 +88,26 @@ export async function enqueuePromoteBatch(): Promise<boolean> {
  * Unlike the other inline branches (which fire-and-forget with `void run…().catch(...)`),
  * this one awaits `runEnrich` so a `JOB_MODE=inline` caller's 202 response comes back only
  * after enrichment has actually finished (the Task 5 e2e relies on this).
+ *
+ * Fix round (B1): `singletonKey` used to be the bare `businessId`. On the "stately" enrich queue
+ * (one job per created/retry/active state, per singletonKey — see QUEUE_OPTIONS) that collapsed
+ * semantically different jobs into the same key: an auto-enrich already queued for a business
+ * would silently swallow (boss.send returns null, so `queued` is false) a rep's later
+ * reveal-by-id click for a *specific* candidate, or two different candidate reveals queued back
+ * to back. Keying by `businessId:apolloId` (falling back to the literal string "auto" for the
+ * no-apolloId auto-enrich path) keeps those distinct while still deduping a genuine double-click
+ * on the same target.
  */
-export async function enqueueEnrich(businessId: string, ownerId: string, opts: { force?: boolean; people?: number } = {}): Promise<boolean> {
+export async function enqueueEnrich(businessId: string, ownerId: string, opts: { force?: boolean; people?: number; apolloId?: string } = {}): Promise<boolean> {
   if (process.env.JOB_MODE === "inline") {
     const { runEnrich } = await import("./enrich");
-    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log }, { force: opts.force, people: opts.people });
+    await runEnrich(businessId, ownerId, { providers: getProviders(), log: console.log }, { force: opts.force, people: opts.people, apolloId: opts.apolloId });
     return true;
   }
   const boss = await getBoss();
-  const data: EnrichJobData = { businessId, ownerId, force: opts.force, people: opts.people };
+  const data: EnrichJobData = { businessId, ownerId, force: opts.force, people: opts.people, apolloId: opts.apolloId };
   const id = await boss.send(QUEUES.enrich, data, {
-    singletonKey: businessId,
+    singletonKey: `${businessId}:${opts.apolloId ?? "auto"}`,
     priority: MANUAL_PRIORITY,
     retryLimit: 2,
     retryDelay: 60,

@@ -144,14 +144,19 @@ describe("ApolloEnrichmentProvider.searchPeople", () => {
   it("without a domain and no organization match: returns an empty result with totalAtDomain null (no search ever ran) after one org-search call", async () => {
     mockFetch(() => json({ organizations: [] }));
     const result = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Nope", city: null, state: null, metro: null }, 5);
-    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any" });
+    // H1 (whole-branch review): orgSearchCredits: 1 — the org-search call above was made (and
+    // billed) even though it found nothing to match; resolvedDomain stays null since no org
+    // resolved.
+    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain: null, orgSearchCredits: 1 });
     expect(calls).toHaveLength(1);
   });
 
   it("a 422 on the unlocated first call returns totalAtDomain null (no total to trust) and does not cascade; other HTTP errors still throw", async () => {
     mockFetch(() => json({ error: "bad" }, 422));
     const result = await new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: "Pearland", state: "TX", metro: "Houston, Texas" }, 5);
-    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any" });
+    // H1: a domain was already supplied, so the domain branch was used — no Organization Search,
+    // no credit spent.
+    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain: null, orgSearchCredits: 0 });
     expect(calls).toHaveLength(1); // no cascade attempted — a 422 total isn't one to compare against searchPageSize
     mockFetch(() => json({ error: "slow down" }, 429));
     await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).rejects.toThrow(/429/);
@@ -313,7 +318,9 @@ describe("ApolloEnrichmentProvider.searchOrganization", () => {
   it("rejects a single-word request that is merely a substring of a differently-named org, with no follow-up call", async () => {
     mockFetch(() => json({ organizations: [{ id: "org1", name: "Joe's Crab Shack", primary_domain: "joescrabshack.com" }] }));
     const result = await new ApolloEnrichmentProvider().searchPeople({ domain: null, orgName: "Joe's", city: null, state: null, metro: null }, 5);
-    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any" });
+    // H1: the org-search call itself was made (and billed) even though orgNameMatches rejected
+    // the result.
+    expect(result).toEqual({ people: [], totalFound: 0, totalAtDomain: null, scope: "any", resolvedDomain: null, orgSearchCredits: 1 });
     expect(calls).toHaveLength(1);
   });
 
@@ -455,7 +462,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       // Advance past the 6h TTL: the memo should no longer block, so the next call re-fetches.
       vi.advanceTimersByTime(6 * 60 * 60 * 1000 + 1000);
       mockFetch(() => json({ total_entries: 0, people: [] }));
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any" });
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any", resolvedDomain: null, orgSearchCredits: 0 });
       expect(calls).toHaveLength(1); // mockFetch() reset the calls array; this is the post-expiry fetch
     } finally {
       vi.useRealTimers();
@@ -481,7 +488,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
     // low-level checkPlanBlocked gate (via searchPeople) proceeds to the network instead of
     // throwing from a stale block.
     mockFetch(() => json({ total_entries: 0, people: [] }));
-    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any" });
+    await expect(new ApolloEnrichmentProvider().searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any", resolvedDomain: null, orgSearchCredits: 0 });
     expect(calls).toHaveLength(1);
   });
 
@@ -491,7 +498,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       providerConfigMock.findUnique.mockResolvedValueOnce(null); // row cleared
       mockFetch(() => json({ total_entries: 0, people: [] }));
       const provider = new ApolloEnrichmentProvider();
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any" });
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any", resolvedDomain: null, orgSearchCredits: 0 });
       expect(calls).toHaveLength(1); // proceeded to the network instead of throwing
       expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1); // exactly one revalidation read
 
@@ -499,7 +506,7 @@ describe("ApolloEnrichmentProvider Free-plan 403 (API_INACCESSIBLE)", () => {
       // takes checkPlanBlocked's "memo empty" fast path, so no additional DB read happens even
       // though findUnique's mock is still wired up.
       mockFetch(() => json({ total_entries: 0, people: [] }));
-      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any" });
+      await expect(provider.searchPeople({ domain: "x.com", orgName: "X", city: null, state: null, metro: null }, 5)).resolves.toEqual({ people: [], totalFound: 0, totalAtDomain: 0, scope: "any", resolvedDomain: null, orgSearchCredits: 0 });
       expect(providerConfigMock.findUnique).toHaveBeenCalledTimes(1);
     });
 

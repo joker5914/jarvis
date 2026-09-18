@@ -247,6 +247,77 @@ The Scanner page (`/scanner`) shows live state, the schedule form, targets,
 and a scanner-origin activity log; a pill in the navbar and a dashboard card
 mirror the current state with quick pause/resume controls.
 
+## Point of contact
+
+The lead drawer's People section (Plan 10) is about deciding who to actually
+reach out to, not just whatever Apollo happened to surface first.
+
+- **Find people is free** — an Apollo People Search costs no Apollo credits,
+  only the app's own daily call budget — **unless the lead has no usable
+  website domain** (no `websiteUrl`, or one on a shared booking/POS/
+  site-builder platform, e.g. a Booksy or Clover storefront). That case falls
+  back to Organization Search, which does cost one real Apollo credit; the
+  button says so up front (`Find people (1 credit)`) and the toast confirms
+  what actually happened. Once that fallback resolves a domain for the lead
+  (`Business.apolloOrgDomain`), every later call for that same lead is free
+  again — the resolved domain is memoized and reused. A repeat no-domain
+  click within 24 hours of the last one is refused (so a rep double-clicking
+  the button doesn't silently re-spend the credit); the button then shows
+  **Refresh anyway (1 credit)** as an explicit one-step confirm.
+- **Reveal `<name>` (1 credit)** spends a credit to resolve one specific
+  candidate's email/LinkedIn — never more than the one person clicked. A
+  reveal that comes back with no match at all ("Apollo could not reveal the
+  chosen person") is a loud failure: it's logged to the activity feed and the
+  lead's `lastEnrichedAt` is left untouched, so a retry isn't blocked by the
+  usual re-enrich cooldown. A reveal that succeeds but finds no email/LinkedIn
+  for that person is still marked "already looked at" — the picker won't
+  offer to spend another credit on them, even though no contact row exists.
+- **Confidence line vocabulary**: `Primary contact set by you` (a rep has
+  designated someone by hand — this always wins), `Decision-maker` (a
+  revealed person's title reads as an owner/founder/president/C-suite/
+  principal/proprietor/partner, excluding support roles like "Owner's
+  assistant"), `Best available: <title> — no owner listed in Apollo` (a
+  manager/director-level title instead), `Staff contact — no decision-maker
+  listed in Apollo` (anyone else revealed), and — when nobody's been
+  revealed at all — `Not searched yet`, `No people found in Apollo`, or
+  `Candidates found — choose who to reveal`.
+- **Add a person / Set as primary**: field knowledge a rep already has (a
+  name overheard at the counter, a title) is recorded directly — an email or
+  phone becomes a `Contact` row (`source: "manual"`), but a name-and-title
+  alone still counts as a full submission and lives only on the business
+  (`Business.primaryPerson`/`primaryPersonTitle`), with no `Contact` row at
+  all. The primary contact always leads the People section, and the Leads
+  table's **Contact** column shows `primaryPerson` first when one is set
+  (falling back to the first named contact otherwise) — the CSV export is
+  unchanged, since `primaryPerson` is an ordinary scalar column, not part of
+  the candidate JSON the export already excludes.
+- **Not the decision-maker** permanently removes a revealed Apollo person:
+  their Apollo-sourced `Contact` rows are deleted, their Apollo id is added
+  to `Business.suppressedApolloIds` so neither a later "Find people" nor an
+  auto-enrich ever reveals them again, and (if they were the primary) the
+  primary pointer is cleared. There's no undo short of manually re-revealing
+  a different candidate or adding the person back by hand. This never
+  affects the credit ledger — the credit spent to reveal that person in the
+  first place stays spent (see `creditsUsed()`'s ledger note below); deleting
+  their contact rows doesn't "give the credit back."
+- **The credit ledger**: every real Apollo spend — a reveal that returned an
+  email, or an Organization Search page — writes an `ActivityLog { kind:
+  "credit_spent" }` row. `creditsUsed()` counts these rows, not `Contact`
+  rows directly, specifically so a later suppression (which deletes Contact
+  rows) can't make already-spent credit disappear from the monthly count.
+- **Owner-search assist links** (LinkedIn/Facebook/Google people search, plus
+  a `tel:` call prompt using the lead's own phone number) appear under the
+  confidence line whenever the best-known contact isn't already a
+  decision-maker set by hand — every link opens the third-party search in a
+  new tab (`target="_blank" rel="noopener noreferrer"`); nothing here ever
+  calls Apollo or spends a credit.
+- **Deploy order**: web first (`npm run start:web` runs `prisma migrate
+  deploy`, so the new columns land before anything reads them), then the
+  worker — see "Deploy to Railway" above. Don't click Reveal on a lead
+  between the two deploys: a still-running old-build worker process ignores
+  fields it doesn't know about and runs a full auto-enrich instead of the
+  specific reveal that was asked for.
+
 ## Testing
 
 ```bash

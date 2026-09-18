@@ -1,6 +1,7 @@
 "use client";
 
 import type { LeadRow } from "@/lib/leads/queries";
+import { leadContactName } from "@/lib/leads/leadContactName";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { categoryLabel } from "@/lib/config/categories";
@@ -18,6 +19,9 @@ type Props = {
   onOpen: (id: string) => void;
 };
 
+// leadContactName itself now lives in src/lib/leads/leadContactName.ts (fix round: extracted so
+// it's unit-testable without a full LeadRow) — imported above.
+
 export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }: Props) {
   const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   return (
@@ -29,6 +33,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
             <TableRow>
               <TableHead className="w-10"><Checkbox checked={allSelected} onCheckedChange={(c) => onToggleAll(!!c)} aria-label="Select all" /></TableHead>
               <TableHead>Name</TableHead>
+              <TableHead>Contact</TableHead>
               <TableHead>Category</TableHead>
               <TableHead>Zip</TableHead>
               <TableHead>Quality</TableHead>
@@ -62,6 +67,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                   {b.name}
                   {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </TableCell>
+                <TableCell className="text-sm text-muted-foreground">{leadContactName(b) ?? "—"}</TableCell>
                 <TableCell>{categoryLabel(b.primaryCategory)}</TableCell>
                 <TableCell>{b.zip}</TableCell>
                 <TableCell><QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} /></TableCell>
@@ -99,6 +105,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                   {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </div>
                 <div className="text-xs text-muted-foreground">{categoryLabel(b.primaryCategory)} · {b.zip}</div>
+                {leadContactName(b) && <div className="text-xs text-muted-foreground">Contact: {leadContactName(b)}</div>}
               </div>
               <QualityBadge band={b.contactQualityBand} />
             </div>

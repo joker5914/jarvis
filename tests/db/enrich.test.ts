@@ -4,7 +4,7 @@ import { saveOverrides } from "@/lib/config/runtime";
 import { runEnrich } from "@/lib/jobs/enrich";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
-import { ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
+import { ProviderDisabledError, ProviderPlanError, CreditCapReachedError } from "@/lib/providers/errors";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
 import type { JobDeps } from "@/lib/jobs/shared";
 
@@ -418,6 +418,219 @@ describe("runEnrich", () => {
       expect(d.enrichment.calls.enrich).toBe(1);
       const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
       expect(after.exclusion).toBe("none");
+    });
+  });
+
+  describe("candidate reveal by Apollo id (Task 1)", () => {
+    it("reveals exactly the chosen candidate: no search, one reveal, respects the credit cap, writes the 'chosen by you' row", async () => {
+      const b = await biz();
+      const d = deps();
+      const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-gm" });
+      expect(d.enrichment.calls.search).toBe(0);
+      expect(d.enrichment.calls.enrich).toBe(1);
+      expect(r.added).toBe(1); // the gm has no email, but does have a LinkedIn — a new contact row
+      const contacts = await prisma.contact.findMany({ where: { businessId: b.id } });
+      expect(contacts).toHaveLength(1);
+      expect(contacts[0]).toMatchObject({ type: "linkedin", personName: "Lee Tran", personTitle: "General Manager", apolloId: "fake-bellanails.com-gm", source: "apollo" });
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enriched via Apollo: revealed General Manager chosen by you; 1 new contact, 0 updated");
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.lastEnrichedAt).not.toBeNull();
+    });
+
+    it("bypasses the recheckDays recency gate (force implied) — a second reveal right after the first still runs", async () => {
+      const b = await biz();
+      await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+      const d2 = deps();
+      const r2 = await runEnrich(b.id, OWNER, d2, { apolloId: "fake-bellanails.com-gm" });
+      expect(d2.enrichment.calls.search).toBe(0);
+      expect(d2.enrichment.calls.enrich).toBe(1);
+      expect(r2.skipped).toBeNull();
+    });
+
+    it("still throws CreditCapReachedError at the credit cap and logs the same skip row, without calling enrichPerson", async () => {
+      await saveOverrides(OWNER, { enrichment: { monthlyCreditCap: 0 } });
+      try {
+        const b = await biz();
+        const d = deps();
+        await expect(runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" })).rejects.toBeInstanceOf(CreditCapReachedError);
+        expect(d.enrichment.calls.enrich).toBe(0);
+        const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+        expect(log).toHaveLength(1);
+        expect(log[0].message).toBe("Enrichment skipped: Apollo monthly credit cap reached");
+      } finally {
+        await prisma.appConfig.deleteMany({ where: { ownerId: OWNER } });
+      }
+    });
+
+    it("the auto path skips a suppressed candidate and reveals the next one instead", async () => {
+      // Both ids use FakeEnrichmentProvider's built-in "-owner" suffix (see fake.ts's
+      // enrichPerson) so the reveal — and its calls.enrich increment — goes through the fake's
+      // own tracked implementation rather than a hand-rolled override, matching how the rest of
+      // this suite exercises the fake.
+      const b = await biz({ suppressedApolloIds: ["fake-domA-owner"] });
+      const fake = new FakeEnrichmentProvider();
+      fake.searchPeople = async () => ({ people: [
+        { apolloId: "fake-domA-owner", firstName: "Pat", lastName: null, name: "Pat", title: "Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
+        { apolloId: "fake-domB-owner", firstName: "Robin", lastName: null, name: "Robin", title: "Co-Owner", email: null, emailStatus: null, linkedinUrl: null, hasEmail: true, orgName: "Bella Nails & Spa" },
+      ], totalFound: 2, totalAtDomain: 2, scope: "any" });
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d);
+      expect(d.enrichment.calls.enrich).toBe(1);
+      expect(r.added).toBe(1);
+      const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+      expect(contact).toMatchObject({ value: "owner@domb", apolloId: "fake-domB-owner" });
+    });
+
+    // Fix round R5: a reveal-by-id targets one specific candidate, so "Apollo has no match" is a
+    // failure worth surfacing distinctly from a successful reveal that just had nothing to give —
+    // and, since apolloId already bypasses the recheckDays gate, lastEnrichedAt must stay null so
+    // a retry isn't blocked by the recency check it never went through in the first place.
+    it("R5: logs 'Enrichment failed: Apollo could not reveal the chosen person', leaves lastEnrichedAt null, and returns skipped: 'reveal_failed' when the provider has no match", async () => {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      fake.enrichPerson = async () => null;
+      const d = deps(fake);
+      const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-unknown-id" });
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "reveal_failed" });
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "enriched" } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment failed: Apollo could not reveal the chosen person");
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.lastEnrichedAt).toBeNull();
+      expect(await prisma.contact.count({ where: { businessId: b.id } })).toBe(0);
+    });
+
+    // Fix round R4: the id stored on the contact row must be the one the rep actually clicked
+    // (opts.apolloId), never whatever id a paid reveal happens to echo back on the person object
+    // — Business.suppressedApolloIds and Business.candidates both key on the requested id.
+    it("R4: stores the requested apolloId on the contact row, not the one the provider echoes back", async () => {
+      const b = await biz();
+      const fake = new FakeEnrichmentProvider();
+      fake.enrichPerson = async () => ({
+        apolloId: "echoed-id-from-provider",
+        firstName: "Al", lastName: "Bert", name: "Al Bert", title: "Owner",
+        email: "al@bellanails.com", emailStatus: "verified", linkedinUrl: null, hasEmail: true, orgName: null,
+      });
+      const d = deps(fake);
+      await runEnrich(b.id, OWNER, d, { apolloId: "requested-id" });
+      const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+      expect(contact.apolloId).toBe("requested-id");
+    });
+
+    describe("apolloId backfill scoped to Apollo-sourced rows (R3)", () => {
+      it("never backfills apolloId onto an existing website-sourced row, and leaves 'updated' at 0 when nothing else changes", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "website", personName: "Maria Lopez", personTitle: "Owner" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact.source).toBe("website");
+        expect(contact.apolloId).toBeNull();
+        expect(r.updated).toBe(0);
+      });
+
+      it("backfills apolloId onto an existing Apollo-sourced row missing it, but a backfill-only change does not count toward 'updated'", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "apollo", personName: "Maria Lopez", personTitle: "Owner" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact.apolloId).toBe("fake-bellanails.com-owner");
+        expect(r.updated).toBe(0);
+      });
+
+      it("a backfill alongside a genuine name/title change still counts toward 'updated'", async () => {
+        const b = await biz();
+        await prisma.contact.create({
+          data: { ownerId: OWNER, businessId: b.id, type: "email", value: "owner@bellanails.com", source: "apollo" },
+        });
+        const d = deps();
+        const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+        const contact = await prisma.contact.findFirstOrThrow({ where: { businessId: b.id, type: "email" } });
+        expect(contact).toMatchObject({ apolloId: "fake-bellanails.com-owner", personName: "Maria Lopez", personTitle: "Owner" });
+        expect(r.updated).toBe(1);
+      });
+    });
+  });
+
+  // Whole-branch review H1/L2/M3.
+  describe("credit ledger, suppressed reveal, and revealed marking (whole-branch review)", () => {
+    it("M3: a direct apolloId reveal for a suppressed person is skipped, with no provider call and no credit spent", async () => {
+      const b = await biz({ suppressedApolloIds: ["fake-bellanails.com-owner"] });
+      const d = deps();
+      const r = await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      expect(r).toEqual({ added: 0, updated: 0, skipped: "suppressed" });
+      expect(d.enrichment.calls.enrich).toBe(0);
+      const log = await prisma.activityLog.findMany({ where: { businessId: b.id } });
+      expect(log).toHaveLength(1);
+      expect(log[0].message).toBe("Enrichment skipped: that person was removed as not the decision-maker");
+      const creditLog = await prisma.activityLog.findMany({ where: { businessId: b.id, kind: "credit_spent" } });
+      expect(creditLog).toHaveLength(0);
+    });
+
+    it("PATCH suppress's idempotent no-op branch is unaffected by this — a suppressed id skipped here never reaches lastEnrichedAt", async () => {
+      const b = await biz({ suppressedApolloIds: ["fake-bellanails.com-owner"] });
+      await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      expect(after.lastEnrichedAt).toBeNull();
+    });
+
+    it("L6: revealing the same person twice logs one credit_spent row, not two", async () => {
+      const b = await biz();
+      const d = deps();
+      await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      const rows = await prisma.activityLog.count({ where: { businessId: b.id, kind: "credit_spent" } });
+      expect(rows).toBe(1);
+    });
+
+    it("H1: a direct reveal that returns an email logs one credit_spent row; one that returns no email logs none", async () => {
+      const bWithEmail = await biz();
+      await runEnrich(bWithEmail.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" }); // has email
+      const emailLog = await prisma.activityLog.findMany({ where: { businessId: bWithEmail.id, kind: "credit_spent" } });
+      expect(emailLog).toHaveLength(1);
+      expect(emailLog[0].message).toBe("Apollo credit: email revealed");
+
+      const bNoEmail = await biz();
+      await runEnrich(bNoEmail.id, OWNER, deps(), { apolloId: "fake-bellanails.com-gm" }); // no email, LinkedIn only
+      const noEmailLog = await prisma.activityLog.findMany({ where: { businessId: bNoEmail.id, kind: "credit_spent" } });
+      expect(noEmailLog).toHaveLength(0);
+    });
+
+    it("L2: a direct reveal marks the matching candidate's revealedAt in the stored candidate set", async () => {
+      const b = await biz({
+        candidates: {
+          fetchedAt: new Date().toISOString(),
+          scope: "any",
+          totalAtDomain: 1,
+          candidates: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", title: "Owner", hasEmail: true, orgName: null, rank: 0, revealedAt: null }],
+        },
+      });
+      await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      const set = after.candidates as unknown as { candidates: { apolloId: string; revealedAt: string | null }[] };
+      expect(set.candidates[0].revealedAt).not.toBeNull();
+    });
+
+    it("L2: the auto-reveal loop also marks revealedAt for the person it reveals", async () => {
+      const b = await biz({
+        candidates: {
+          fetchedAt: new Date().toISOString(),
+          scope: "any",
+          totalAtDomain: 1,
+          candidates: [{ apolloId: "fake-bellanails.com-owner", firstName: "Maria", title: "Owner", hasEmail: true, orgName: null, rank: 0, revealedAt: null }],
+        },
+      });
+      await runEnrich(b.id, OWNER, deps());
+      const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
+      const set = after.candidates as unknown as { candidates: { apolloId: string; revealedAt: string | null }[] };
+      expect(set.candidates[0].revealedAt).not.toBeNull();
     });
   });
 });

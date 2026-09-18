@@ -18,9 +18,9 @@ import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledErro
 export type EnrichJobResult = { result: "done" | "skipped"; reason?: string };
 
 export async function handleEnrichJob(data: EnrichJobData, deps: JobDeps, run: typeof runEnrich = runEnrich): Promise<EnrichJobResult> {
-  const { businessId, ownerId, force, people } = data;
+  const { businessId, ownerId, force, people, apolloId } = data;
   try {
-    await run(businessId, ownerId, deps, { force, people });
+    await run(businessId, ownerId, deps, { force, people, apolloId });
     return { result: "done" };
   } catch (e) {
     if (e instanceof BudgetExhaustedError || e instanceof ProviderNotConfiguredError || e instanceof ProviderDisabledError || e instanceof CreditCapReachedError || e instanceof ProviderPlanError) {

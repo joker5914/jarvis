@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db";
 import { runEnrich } from "@/lib/jobs/enrich";
-import { creditStatus } from "@/lib/enrichment/credits";
+import { creditStatus, creditsUsed } from "@/lib/enrichment/credits";
 import { CreditCapReachedError } from "@/lib/providers/errors";
 import { loadConfig, saveOverrides } from "@/lib/config/runtime";
 import { FakeEnrichmentProvider, FakeValidationProvider, FakeDiscoveryProvider, FakeGeocodeProvider, FakeRegistryProvider, fakeFetcher } from "@/lib/providers/fake";
@@ -108,5 +108,39 @@ describe("runEnrich: Apollo credit policy", () => {
     const after = await prisma.business.findUniqueOrThrow({ where: { id: b.id } });
     expect(after.lastEnrichedAt).not.toBeNull(); // partial but complete run
     expect(r.added).toBe(1);
+  });
+});
+
+// Whole-branch review H1/M1: creditsUsed() now counts ActivityLog "credit_spent" rows instead of
+// Apollo-sourced email Contact rows directly.
+describe("creditsUsed (H1/M1)", () => {
+  it("counts one credit_spent row after a reveal that returned an email", async () => {
+    const b = await biz();
+    await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" }); // has email
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(1);
+  });
+
+  it("counts zero when the reveal returned no email (nothing was actually billed)", async () => {
+    const b = await biz();
+    await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-gm" }); // LinkedIn only, no email
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(0);
+  });
+
+  // M1: this is the actual bug — deleting the Contact row a credit was spent on (e.g. via "not the
+  // decision-maker" suppression, which hard-deletes source:"apollo" Contact rows) used to make the
+  // old Contact-row-counting creditsUsed() silently "give back" that credit. The ledger row is
+  // separate from the Contact row and is never deleted by a suppression, so the count survives it.
+  it("M1: deleting the underlying Contact row (what suppression does) does not change the count — the ledger row is independent", async () => {
+    const b = await biz();
+    await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(1);
+    await prisma.contact.deleteMany({ where: { businessId: b.id } });
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(1);
+  });
+
+  it("only counts credit_spent rows since the given date", async () => {
+    const b = await biz();
+    await runEnrich(b.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" });
+    expect(await creditsUsed(OWNER, new Date(Date.now() + 60_000))).toBe(0); // "since" is in the future
   });
 });
