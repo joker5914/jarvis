@@ -14,14 +14,20 @@ export const leadInclude = {
   projects: { select: { id: true, timingWindow: true, completionDate: true }, orderBy: { completionDate: "asc" as const }, take: 1 },
 } satisfies Prisma.BusinessInclude;
 
-// Plan 10 Task 1 (fix round, R1): the free candidate list, the manual primary-contact pointer,
-// and the Apollo suppression list are detail-only data — no list/table/CSV-export code reads
-// them, and shipping every row's candidate JSON over the wire on every page load (and into the
-// export) would only add weight for nothing anyone renders. `include` alone doesn't restrict
-// Business's own scalar columns (Prisma returns every scalar unless `select`/`omit` narrows
-// them), so the list query needs its own `omit`; `getBusinessDetail` below has no such omit, so
-// the lead drawer still gets all four.
-const listOnlyOmit = { candidates: true, candidatesAt: true, primaryPerson: true, suppressedApolloIds: true } as const satisfies Prisma.BusinessOmit;
+// Plan 10 Task 1 (fix round, R1): the free candidate list and the Apollo suppression list are
+// detail-only data — no list/table/CSV-export code reads them, and shipping every row's
+// candidate JSON over the wire on every page load (and into the export) would only add weight
+// for nothing anyone renders. `include` alone doesn't restrict Business's own scalar columns
+// (Prisma returns every scalar unless `select`/`omit` narrows them), so the list query needs its
+// own `omit`; `getBusinessDetail` below has no such omit, so the lead drawer still gets all five.
+//
+// Task 3 amendment: `primaryPerson` comes back OUT of this omit — the Leads table's contact
+// column (LeadsTable.tsx) needs the manually-set primary contact's name to show it first, and
+// that's ordinary scalar data (a name), not the candidate JSON this omit exists to keep off the
+// wire. `primaryPersonTitle` stays omitted alongside `candidates`/`candidatesAt`/
+// `suppressedApolloIds`: nothing in the list/table/CSV path reads a title, only the lead drawer's
+// synthesized-row fallback (see LeadDetail.tsx's `groupPeople`) does.
+const listOnlyOmit = { candidates: true, candidatesAt: true, primaryPersonTitle: true, suppressedApolloIds: true } as const satisfies Prisma.BusinessOmit;
 
 export type LeadRow = Prisma.BusinessGetPayload<{ include: typeof leadInclude; omit: typeof listOnlyOmit }>;
 

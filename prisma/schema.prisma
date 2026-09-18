@@ -180,6 +180,13 @@ model Business {
    *  Contact.personName, never a foreign key (a manual person may have no Contact row of a type
    *  that carries an id worth pointing at). Null when no primary is set. */
   primaryPerson           String?
+  /** The title that goes with `primaryPerson`, captured straight from the "Add a person" form
+   *  (Plan 10 Task 3). Only ever read for the synthesized People-section row `groupPeople`
+   *  builds when `primaryPerson` names someone with no `Contact` row at all (a name-and-title-only
+   *  addition creates none — see POST /businesses/:id/people): a `primaryPerson` who *does* have a
+   *  Contact row gets their title from that row's own `personTitle` instead. Cleared alongside
+   *  `primaryPerson` whenever it's unset or the primary is suppressed. */
+  primaryPersonTitle      String?
   /** Apollo person ids the rep has explicitly rejected as "not the decision-maker" for this
    *  business — filtered out of every future findCandidates()/runEnrich() search result so a
    *  dismissed person never resurfaces. */

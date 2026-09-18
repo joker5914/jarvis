@@ -17,9 +17,15 @@ export type PersonLike = { name: string; title: string | null; source: string; i
 
 // Word-bounded (fix round for 3eed43d): an unbounded `partner` used to match inside
 // "Partnerships Coordinator" (itself just a substring hit, no word boundary at the "r"/"s"
-// join), misreading a coordinator as a decision-maker. `chief` and the explicit
-// `owner/operator` compound are additions per the same fix round.
-const DECISION_MAKER_RE = /\b(owner|owner\/operator|founder|co-founder|president|ceo|chief|principal|proprietor|partner)\b/i;
+// join), misreading a coordinator as a decision-maker. The explicit `owner/operator` compound is
+// an addition per the same fix round.
+//
+// Task 3 fix round: a bare `chief` used to match ANY "Chief <whatever>" title, including
+// "Chief Barista" — a shift lead, not a decision-maker. Tightened to `chief executive` (covers
+// "Chief Executive", "Chief Executive Officer") and `chief \w+ officer` (covers "Chief Financial
+// Officer", "Chief Operating Officer", ...), so a C-suite title still matches but a "Chief
+// <role>" that never reaches "officer" or "executive" does not.
+const DECISION_MAKER_RE = /\b(owner|owner\/operator|founder|co-founder|president|ceo|chief executive|chief\s+\w+\s+officer|principal|proprietor|partner)\b/i;
 // A title that otherwise matches DECISION_MAKER_RE but names a support role reporting to the
 // decision-maker — "Owner's assistant", "Assistant to the Owner", "Partnerships Coordinator" —
 // is not itself the decision-maker; excluded here so it falls through to the manager/staff rules

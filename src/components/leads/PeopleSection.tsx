@@ -1,16 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
 import type { CandidateSet } from "@/lib/enrichment/candidates";
 import type { PersonLike } from "@/lib/leads/pocConfidence";
 import { pocConfidence } from "@/lib/leads/pocConfidence";
+import { AddPersonForm } from "./AddPersonForm";
 import { CopyButton } from "./CopyButton";
 import { SourceBadge } from "./SourceBadge";
 
-export type Person = PersonLike & { key: string; email: string | null; linkedin: string | null };
+// apolloId (Plan 10 Task 3): carried on the row only so "Not the decision-maker" can be scoped to
+// an actually-revealed Apollo person (source "apollo" AND an apolloId — a manual row can share
+// `source: "manual"` but never has one). Set once from whichever contact row LeadDetail's
+// groupPeople first saw for this name, same as `source` already was.
+export type Person = PersonLike & { key: string; email: string | null; linkedin: string | null; apolloId: string | null };
 
 type CreditStatus = { remaining: number };
 
@@ -22,6 +27,7 @@ type CreditStatus = { remaining: number };
  * plain callbacks so this component stays presentational.
  */
 export function PeopleSection({
+  businessId,
   people,
   candidates,
   costsCredit,
@@ -33,7 +39,13 @@ export function PeopleSection({
   lastEnrichedAt,
   onFindPeople,
   onReveal,
+  onSetPrimary,
+  onSuppress,
+  onPersonAdded,
 }: {
+  /** Plan 10 Task 3: needed by `AddPersonForm`, which posts to
+   * `/api/businesses/:id/people` itself. */
+  businessId: string;
   people: Person[];
   candidates: CandidateSet | null;
   /** Client-side hint, computed with the same `domainFromUrl` rule the server uses: this
@@ -59,9 +71,24 @@ export function PeopleSection({
   lastEnrichedAt: string | null;
   onFindPeople: () => Promise<void>;
   onReveal: (apolloId: string) => Promise<void>;
+  /** PATCH /people { primaryPerson: name } — the "Set as primary" ghost button on a non-primary
+   * row. */
+  onSetPrimary: (name: string) => Promise<void>;
+  /** PATCH /people { suppressApolloId } — "Not the decision-maker" on an Apollo-sourced row,
+   * after the one-step inline confirm below. */
+  onSuppress: (apolloId: string) => Promise<void>;
+  /** Reload after `AddPersonForm` posts successfully. */
+  onPersonAdded: () => Promise<void>;
 }) {
   const [finding, setFinding] = useState(false);
   const [revealingId, setRevealingId] = useState<string | null>(null);
+  // "Not the decision-maker" (Plan 10 Task 3): a one-step inline confirm, not a browser
+  // `confirm()` — the first click turns the button into "Confirm remove" for 5s; a second click
+  // within that window actually suppresses, and the timer reverts the button if nothing follows.
+  const [confirmingApolloId, setConfirmingApolloId] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
+  const [suppressing, setSuppressing] = useState<string | null>(null);
 
   const confidence = pocConfidence(people, candidates, primaryPerson);
   const confidenceClass =
@@ -90,6 +117,34 @@ export function PeopleSection({
     }
   }
 
+  async function handleSetPrimary(name: string) {
+    setSettingPrimary(name);
+    try {
+      await onSetPrimary(name);
+    } finally {
+      setSettingPrimary(null);
+    }
+  }
+
+  async function handleSuppressClick(apolloId: string) {
+    if (confirmingApolloId !== apolloId) {
+      // First click: arm the confirm state for 5s, then auto-revert.
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      setConfirmingApolloId(apolloId);
+      confirmTimer.current = setTimeout(() => setConfirmingApolloId(null), 5000);
+      return;
+    }
+    // Second click within the window: actually suppress.
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    setConfirmingApolloId(null);
+    setSuppressing(apolloId);
+    try {
+      await onSuppress(apolloId);
+    } finally {
+      setSuppressing(null);
+    }
+  }
+
   const findLabel = candidates ? "Refresh candidates" : "Find people";
   const findButtonLabel = costsCredit ? `${findLabel} (1 credit)` : findLabel;
   const revealDisabled = enriching || revealingId !== null;
@@ -104,20 +159,63 @@ export function PeopleSection({
       {people.length === 0 ? (
         <p className="text-sm text-muted-foreground">No named contacts yet.</p>
       ) : (
-        <ul className="space-y-1">
-          {people.map((p) => (
-            <li key={p.key} data-testid="people-row" className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-sm">
-              <span className="min-w-0 truncate" title={p.title ? `${p.name}, ${p.title}` : p.name}>
-                <span className="font-medium">{p.name}</span>
-                {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
-              </span>
-              <span className="flex shrink-0 items-center gap-1">
-                <SourceBadge source={p.source} />
-                {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
-                {p.email && <CopyButton value={p.email} label={p.email} />}
-              </span>
-            </li>
-          ))}
+        <ul className="space-y-1.5">
+          {people.map((p) => {
+            // "Not the decision-maker" only ever applies to an actually-revealed Apollo person
+            // (Task 3 amendment) — a manual row can share `source: "apollo"`'s neighbor but never
+            // carries an apolloId, since POST /people always writes `source: "manual"`.
+            const canSuppress = p.source === "apollo" && p.apolloId != null;
+            const confirming = canSuppress && confirmingApolloId === p.apolloId;
+            return (
+              <li key={p.key} data-testid="people-row" className="flex flex-col gap-1 border-t pt-1.5 first:border-t-0 first:pt-0 text-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
+                  <span className="min-w-0 truncate" title={p.title ? `${p.name}, ${p.title}` : p.name}>
+                    {p.isPrimary && (
+                      <span
+                        data-testid="primary-badge"
+                        className="mr-1.5 rounded px-1 text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+                      >
+                        Primary
+                      </span>
+                    )}
+                    <span className="font-medium">{p.name}</span>
+                    {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    <SourceBadge source={p.source} />
+                    {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
+                    {p.email && <CopyButton value={p.email} label={p.email} />}
+                  </span>
+                </div>
+                {(!p.isPrimary || canSuppress) && (
+                  <div className="flex flex-wrap gap-2">
+                    {!p.isPrimary && (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        data-testid="set-primary-button"
+                        disabled={settingPrimary !== null}
+                        onClick={() => handleSetPrimary(p.name)}
+                      >
+                        {settingPrimary === p.name ? "Setting…" : "Set as primary"}
+                      </Button>
+                    )}
+                    {canSuppress && (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        data-testid="suppress-button"
+                        disabled={suppressing !== null}
+                        onClick={() => handleSuppressClick(p.apolloId as string)}
+                      >
+                        {suppressing === p.apolloId ? "Removing…" : confirming ? "Confirm remove" : "Not the decision-maker"}
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(lastEnrichedAt)}</p>}
@@ -169,12 +267,16 @@ export function PeopleSection({
                       {revealed ? (
                         <span className="text-xs text-muted-foreground">Revealed</span>
                       ) : (
+                        // Task 3 fix round: the visible label now includes the first name
+                        // ("Reveal Lee (1 credit)") instead of a bare "Reveal (1 credit)" plus a
+                        // differing aria-label — an accessible name that doesn't contain its own
+                        // visible label fails the "label in name" a11y rule. No separate
+                        // aria-label needed now that the visible text already says it all.
                         <Button
                           size="sm"
                           variant="outline"
                           data-testid="reveal-button"
                           disabled={!c.hasEmail || revealDisabled}
-                          aria-label={`Reveal ${c.firstName ?? "this person"} (1 credit)`}
                           onClick={() => handleReveal(c.apolloId)}
                         >
                           {revealingId === c.apolloId ? (
@@ -183,7 +285,7 @@ export function PeopleSection({
                               Revealing…
                             </span>
                           ) : (
-                            "Reveal (1 credit)"
+                            `Reveal ${c.firstName ?? "this person"} (1 credit)`
                           )}
                         </Button>
                       )}
@@ -201,6 +303,8 @@ export function PeopleSection({
           </ul>
         )}
       </div>
+
+      <AddPersonForm businessId={businessId} onAdded={onPersonAdded} />
     </section>
   );
 }

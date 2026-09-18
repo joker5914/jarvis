@@ -50,6 +50,19 @@ describe("pocConfidence", () => {
     }
   });
 
+  // Task 3 fix round: a bare `chief` used to match any "Chief <whatever>" title, including a
+  // shift lead like "Chief Barista" — tightened to require "chief executive" or a
+  // "chief ... officer" shape (see pocConfidence.ts's DECISION_MAKER_RE comment).
+  it("Chief Barista is not a decision-maker (staff — no manager/director/operations word either)", () => {
+    expect(conf([person({ title: "Chief Barista" })], null)).toEqual({ level: "staff", label: "Staff contact — no decision-maker listed in Apollo" });
+  });
+
+  it("Chief Financial Officer and Chief Operating Officer are still decision-makers", () => {
+    for (const title of ["Chief Financial Officer", "Chief Operating Officer"]) {
+      expect(conf([person({ title })], null).level).toBe("decision_maker");
+    }
+  });
+
   it("Store Manager is a manager, best-available label names the title", () => {
     const people = [person({ title: "Store Manager" })];
     expect(conf(people, null)).toEqual({ level: "manager", label: "Best available: Store Manager — no owner listed in Apollo" });

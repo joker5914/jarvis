@@ -18,6 +18,14 @@ type Props = {
   onOpen: (id: string) => void;
 };
 
+/** The lead's likely point of contact, for the table's Contact column (Plan 10 Task 3):
+ * `primaryPerson` — the rep's own pick, whether hand-typed or chosen from an Apollo reveal —
+ * leads when set; otherwise the first named contact row (Apollo-enriched or manual), if any. */
+function leadContactName(b: LeadRow): string | null {
+  if (b.primaryPerson) return b.primaryPerson;
+  return b.contacts.find((c) => c.personName)?.personName ?? null;
+}
+
 export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }: Props) {
   const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   return (
@@ -29,6 +37,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
             <TableRow>
               <TableHead className="w-10"><Checkbox checked={allSelected} onCheckedChange={(c) => onToggleAll(!!c)} aria-label="Select all" /></TableHead>
               <TableHead>Name</TableHead>
+              <TableHead>Contact</TableHead>
               <TableHead>Category</TableHead>
               <TableHead>Zip</TableHead>
               <TableHead>Quality</TableHead>
@@ -62,6 +71,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                   {b.name}
                   {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </TableCell>
+                <TableCell className="text-sm text-muted-foreground">{leadContactName(b) ?? "—"}</TableCell>
                 <TableCell>{categoryLabel(b.primaryCategory)}</TableCell>
                 <TableCell>{b.zip}</TableCell>
                 <TableCell><QualityBadge band={b.contactQualityBand} score={b.contactQualityScore} /></TableCell>
@@ -99,6 +109,7 @@ export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }:
                   {b.exclusion !== "none" && <span className="ml-2 text-xs text-muted-foreground">(excluded)</span>}
                 </div>
                 <div className="text-xs text-muted-foreground">{categoryLabel(b.primaryCategory)} · {b.zip}</div>
+                {leadContactName(b) && <div className="text-xs text-muted-foreground">Contact: {leadContactName(b)}</div>}
               </div>
               <QualityBadge band={b.contactQualityBand} />
             </div>

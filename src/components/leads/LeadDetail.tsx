@@ -45,6 +45,10 @@ type Detail = {
   // what PeopleSection's "Searched <time ago>" line actually reads, and nothing else in the
   // client needs the bare timestamp when the set is null.
   candidates: CandidateSet | null; primaryPerson: string | null; suppressedApolloIds: string[];
+  // Plan 10 Task 3: the title captured alongside a hand-typed `primaryPerson` (POST /people) —
+  // only ever consulted by `groupPeople`'s synthesized-row fallback below, for a primary who has
+  // no Contact row of their own to carry a title.
+  primaryPersonTitle: string | null;
 };
 
 type CreditStatus = {
@@ -61,21 +65,34 @@ type CreditStatus = {
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. `isPrimary` (Plan 10 Task 2)
  * marks the row whose name matches `Business.primaryPerson` — the manual pointer a rep sets by
- * hand.
+ * hand. `apolloId` (Task 3) is carried from whichever contact row is first seen for that name —
+ * used by PeopleSection to scope "Not the decision-maker" to actually-revealed Apollo people.
  *
  * Task 3 amendment (fix round for 3eed43d): a hand-added primary contact submitted with only a
  * name and title (no email/phone) creates no Contact row at all — POST /people's whole point is
  * that field knowledge doesn't need a database hit to count — so `primaryPerson` can point at a
  * name no contact row carries. When that happens, synthesize a bare row for it (source
- * "manual", no title/email/linkedin known) so the rep still sees their pick lead the People
- * section instead of it silently vanishing. */
-function groupPeople(contacts: Contact[], primaryPerson: string | null): Person[] {
+ * "manual", `primaryPersonTitle` if one was given, no email/linkedin known) so the rep still sees
+ * their pick lead the People section instead of it silently vanishing.
+ *
+ * The primary contact always leads the section (Task 3): a stable sort moves the `isPrimary` row
+ * to the front without disturbing the relative order of everyone else. */
+function groupPeople(contacts: Contact[], primaryPerson: string | null, primaryPersonTitle: string | null): Person[] {
   const byName = new Map<string, Person>();
   for (const c of contacts) {
     if (!c.personName) continue;
     let p = byName.get(c.personName);
     if (!p) {
-      p = { key: c.personName, name: c.personName, title: c.personTitle, email: null, linkedin: null, source: c.source, isPrimary: c.personName === primaryPerson };
+      p = {
+        key: c.personName,
+        name: c.personName,
+        title: c.personTitle,
+        email: null,
+        linkedin: null,
+        source: c.source,
+        apolloId: c.apolloId,
+        isPrimary: c.personName === primaryPerson,
+      };
       byName.set(c.personName, p);
     }
     if (!p.title && c.personTitle) p.title = c.personTitle;
@@ -83,9 +100,20 @@ function groupPeople(contacts: Contact[], primaryPerson: string | null): Person[
     if (c.type === "linkedin" && !p.linkedin) p.linkedin = c.value;
   }
   if (primaryPerson && !byName.has(primaryPerson)) {
-    byName.set(primaryPerson, { key: primaryPerson, name: primaryPerson, title: null, email: null, linkedin: null, source: "manual", isPrimary: true });
+    byName.set(primaryPerson, {
+      key: primaryPerson,
+      name: primaryPerson,
+      title: primaryPersonTitle,
+      email: null,
+      linkedin: null,
+      source: "manual",
+      apolloId: null,
+      isPrimary: true,
+    });
   }
-  return [...byName.values()];
+  const people = [...byName.values()];
+  people.sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : a.isPrimary ? -1 : 1));
+  return people;
 }
 
 const STATUSES = ["not_contacted", "contacted", "interested", "not_a_fit", "customer"];
@@ -259,6 +287,45 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     await loadCredits();
   }
 
+  // "Set as primary" ghost button on a non-primary People row (Plan 10 Task 3): PATCH
+  // /people { primaryPerson } — the route only accepts a name that already matches an existing
+  // person on this business, so this is always called with a name the rep can already see listed.
+  async function setPrimaryPerson(name: string) {
+    const res = await fetch(`/api/businesses/${id}/people`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ primaryPerson: name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast.error(data.error ?? "Could not set primary contact"); return; }
+    toast.success(`${name} is now the primary contact`);
+    await load({ quiet: true });
+    onChanged?.();
+  }
+
+  // "Not the decision-maker" (Plan 10 Task 3): PATCH /people { suppressApolloId } — deletes that
+  // person's Apollo-sourced contact rows, adds the id to Business.suppressedApolloIds so they
+  // never resurface on a later search/auto-enrich, and clears primaryPerson if it named them.
+  async function suppressPerson(apolloId: string) {
+    const res = await fetch(`/api/businesses/${id}/people`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ suppressApolloId: apolloId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast.error(data.error ?? "Could not remove person"); return; }
+    toast.success("Removed — they won't be suggested again");
+    await load({ quiet: true });
+    onChanged?.();
+  }
+
+  // AddPersonForm posts to POST /people itself; this is just the shared "reload the drawer"
+  // callback other mutations already use.
+  async function onPersonAdded() {
+    await load({ quiet: true });
+    onChanged?.();
+  }
+
   // "Not an SMB (chain)" action (Plan 9 Task 3): adds this lead's chain key to the owner's chain
   // list and re-scores every business, so a name-alike lead (e.g. another location of the same
   // brand) gets excluded in the same click. `rescore.newlyExcluded` (fix round: counts only
@@ -326,7 +393,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
-  const people = groupPeople(b.contacts, b.primaryPerson);
+  const people = groupPeople(b.contacts, b.primaryPerson, b.primaryPersonTitle);
   // Client-side hint only, computed the same way the server does: POST /candidates falls back to
   // a credited Organization Search whenever `domainFromUrl` finds no usable domain (no website at
   // all, or a page hosted on a shared platform like Booksy/Clover/Wix — see
@@ -466,6 +533,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       </section>
 
       <PeopleSection
+        businessId={id}
         people={people}
         candidates={b.candidates}
         costsCredit={candidatesCostCredit}
@@ -477,6 +545,9 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         lastEnrichedAt={b.lastEnrichedAt}
         onFindPeople={findPeople}
         onReveal={reveal}
+        onSetPrimary={setPrimaryPerson}
+        onSuppress={suppressPerson}
+        onPersonAdded={onPersonAdded}
       />
 
       <section className="border-t pt-4 space-y-3">
