@@ -15,6 +15,7 @@ import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
 import { isEnrichIssueMessage, latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import { domainFromUrl } from "@/lib/extract/domains";
 import type { CandidateSet } from "@/lib/enrichment/candidates";
 import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
@@ -39,8 +40,11 @@ type Detail = {
   contacts: Contact[]; tags: { tag: Tag }[]; activity: { id: string; kind: string; message: string; createdAt: string }[]; projects: Project[];
   lastEnrichedAt: string | null;
   // Plan 10 Task 2: getBusinessDetail's include already carries these (no `omit` on the detail
-  // query, unlike listBusinesses — see src/lib/leads/queries.ts).
-  candidates: CandidateSet | null; candidatesAt: string | null; primaryPerson: string | null; suppressedApolloIds: string[];
+  // query, unlike listBusinesses — see src/lib/leads/queries.ts). `candidatesAt` itself isn't
+  // listed here (fix round for 3eed43d): it's redundant with `candidates.fetchedAt`, which is
+  // what PeopleSection's "Searched <time ago>" line actually reads, and nothing else in the
+  // client needs the bare timestamp when the set is null.
+  candidates: CandidateSet | null; primaryPerson: string | null; suppressedApolloIds: string[];
 };
 
 type CreditStatus = {
@@ -57,7 +61,14 @@ type CreditStatus = {
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
  * pairing that person's email and LinkedIn contact rows together. `isPrimary` (Plan 10 Task 2)
  * marks the row whose name matches `Business.primaryPerson` — the manual pointer a rep sets by
- * hand, which `pocConfidence` treats as the strongest possible signal regardless of title. */
+ * hand.
+ *
+ * Task 3 amendment (fix round for 3eed43d): a hand-added primary contact submitted with only a
+ * name and title (no email/phone) creates no Contact row at all — POST /people's whole point is
+ * that field knowledge doesn't need a database hit to count — so `primaryPerson` can point at a
+ * name no contact row carries. When that happens, synthesize a bare row for it (source
+ * "manual", no title/email/linkedin known) so the rep still sees their pick lead the People
+ * section instead of it silently vanishing. */
 function groupPeople(contacts: Contact[], primaryPerson: string | null): Person[] {
   const byName = new Map<string, Person>();
   for (const c of contacts) {
@@ -70,6 +81,9 @@ function groupPeople(contacts: Contact[], primaryPerson: string | null): Person[
     if (!p.title && c.personTitle) p.title = c.personTitle;
     if (c.type === "email" && !p.email) p.email = c.value;
     if (c.type === "linkedin" && !p.linkedin) p.linkedin = c.value;
+  }
+  if (primaryPerson && !byName.has(primaryPerson)) {
+    byName.set(primaryPerson, { key: primaryPerson, name: primaryPerson, title: null, email: null, linkedin: null, source: "manual", isPrimary: true });
   }
   return [...byName.values()];
 }
@@ -236,7 +250,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     }
     if (!res.ok) { toast.error(data.error ?? "Could not find people"); return; }
     const count = data.candidates?.candidates?.length ?? 0;
-    toast.success(count > 0 ? `Found ${count} candidate${count === 1 ? "" : "s"}` : "No people found in Apollo");
+    const base = count > 0 ? `Found ${count} candidate${count === 1 ? "" : "s"}` : "No people found in Apollo";
+    // The server's own `costsCredit` (true on the no-domain Organization Search fallback) is the
+    // authority on whether this call actually spent a credit — the button's own pre-click label
+    // is just a hint (see `candidatesCostCredit` below) so it can be shown before the call.
+    toast.success(data.costsCredit ? `${base} · 1 credit used` : base);
     await load({ quiet: true });
     await loadCredits();
   }
@@ -309,9 +327,13 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
   const people = groupPeople(b.contacts, b.primaryPerson);
-  // Client-side hint only (Plan 10 Task 2 note): a plain "no website domain" check, confirmed
-  // (not overridden) by the server's own `costsCredit` in the POST /candidates response.
-  const candidatesCostCredit = b.websiteUrl == null;
+  // Client-side hint only, computed the same way the server does: POST /candidates falls back to
+  // a credited Organization Search whenever `domainFromUrl` finds no usable domain (no website at
+  // all, or a page hosted on a shared platform like Booksy/Clover/Wix — see
+  // src/lib/extract/domains.ts's SHARED_HOSTS). A plain `websiteUrl == null` check used to miss
+  // the platform-hosted case (fix round for 3eed43d), understating the cost before the click; the
+  // actual `data.costsCredit` in the response (used in `findPeople` above) remains the authority.
+  const candidatesCostCredit = domainFromUrl(b.websiteUrl) === null;
   const revealedApolloIds = new Set(b.contacts.map((c) => c.apolloId).filter((x): x is string => x != null));
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
@@ -447,6 +469,7 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         people={people}
         candidates={b.candidates}
         costsCredit={candidatesCostCredit}
+        primaryPerson={b.primaryPerson}
         revealedApolloIds={revealedApolloIds}
         suppressedApolloIds={b.suppressedApolloIds}
         enriching={enriching}

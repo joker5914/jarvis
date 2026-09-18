@@ -29,7 +29,8 @@
 |---|---|
 | `prisma/schema.prisma` + migration `poc_accuracy` | `Business.candidates Json?`, `candidatesAt DateTime?`, `primaryPerson String?`, `suppressedApolloIds String[] @default([])`, `Contact.apolloId String?` |
 | `src/lib/enrichment/candidates.ts` (**new**) | `findCandidates(businessId, ownerId, deps)`: free search → ranked candidate list stored on the business; `Candidate` type; suppression filter |
-| `src/lib/jobs/enrich.ts` | `runEnrich` accepts `apolloId` (reveal exactly that candidate, no search); honours `suppressedApolloIds` on the auto path |
+| `src/lib/jobs/enrich.ts` | `runEnrich` accepts `apolloId` (reveal exactly that candidate, no search); honours `suppressedApolloIds` on the auto path; `domainFromUrl` moved out to `src/lib/extract/domains.ts` (fix round for 3eed43d) and is re-exported here for existing callers/tests |
+| `src/lib/extract/domains.ts` (**new**, fix round for 3eed43d) | `domainFromUrl` + its `SHARED_HOSTS` list, pulled out of `src/lib/jobs/enrich.ts` (which imports prisma) so the client (`LeadDetail.tsx`) can compute the same "no usable domain" hint the server's `costsCredit` uses, instead of a looser `websiteUrl == null` check |
 | `src/lib/jobs/queues.ts` | `EnrichJobData.apolloId?` |
 | `src/lib/jobs/enqueue.ts` | `enqueueEnrich`'s pg-boss `singletonKey` is per-target (`` `${businessId}:${apolloId ?? "auto"}` ``), not a bare `businessId`, so a queued auto-enrich can't dedupe away a reveal-by-id (or vice versa) |
 | `src/app/api/businesses/[id]/candidates/route.ts` (**new**) | `POST` runs `findCandidates`; `GET` returns the stored list |
@@ -98,15 +99,20 @@ export async function findCandidates(businessId: string, ownerId: string, deps: 
 - Create: `src/lib/leads/pocConfidence.ts`
 - Modify: `src/components/leads/LeadDetail.tsx` (People section; split into `src/components/leads/PeopleSection.tsx` while there)
 - Test: `tests/unit/leads/pocConfidence.test.ts`
+- Fix round for 3eed43d, also touched: Create `src/lib/extract/domains.ts` (client-safe `domainFromUrl`, moved out of `src/lib/jobs/enrich.ts`); Test `tests/unit/extract/domains.test.ts`.
 
 **Interfaces:**
 ```ts
 export type PocLevel = "primary" | "decision_maker" | "manager" | "staff" | "none";
 export type PocConfidence = { level: PocLevel; label: string };
-/** `people` = grouped People rows (name, title, source, isPrimary); `candidates` = stored CandidateSet | null. */
-export function pocConfidence(people: PersonLike[], candidates: CandidateSet | null): PocConfidence;
+/** `people` = grouped People rows (name, title, source, isPrimary); `candidates` = stored CandidateSet | null;
+ * `primaryPerson` = `Business.primaryPerson` directly (not derived from `people`'s own `isPrimary` flags — see
+ * Task 3's amendment below for why `people` alone can't always be trusted to carry it). */
+export function pocConfidence(people: PersonLike[], candidates: CandidateSet | null, primaryPerson: string | null): PocConfidence;
 ```
-Rules, in order: a manual primary → `primary`, label `Primary contact set by you`; a revealed person whose title matches `/owner|founder|co-founder|president|ceo|principal|proprietor|partner/i` → `decision_maker`, `Decision-maker`; matches `/manager|director|head of|operations/i` → `manager`, `Best available: <title> — no owner listed in Apollo`; any other revealed person → `staff`, `Staff contact — no decision-maker listed in Apollo`; nobody revealed → `none`, with label `No people found in Apollo` when `candidates` exists and is empty, `Not searched yet` when `candidates` is null, else `Candidates found — choose who to reveal`.
+Rules, in order: `primaryPerson` is set → `primary`, label `Primary contact set by you` (checked directly, regardless of whether any `people` row carries that name); a revealed person whose title matches `/\b(owner|owner\/operator|founder|co-founder|president|ceo|chief|principal|proprietor|partner)\b/i` **and does not match** `/\b(assistant|coordinator|to the)\b/i` → `decision_maker`, `Decision-maker`; matches `/\b(manager|director|head of|operations)\b/i` → `manager`, `Best available: <title> — no owner listed in Apollo`; any other revealed person → `staff`, `Staff contact — no decision-maker listed in Apollo`; nobody revealed → `none`, with label `No people found in Apollo` when `candidates` exists and is empty, `Not searched yet` when `candidates` is null, else `Candidates found — choose who to reveal`.
+
+Fix round for 3eed43d: the decision-maker regex is word-bounded (an unbounded `partner` matched inside "Partnerships", misreading a coordinator as a decision-maker), gained `chief` and an explicit `owner/operator` compound, and now excludes support-role titles ("Owner's assistant", "Assistant to the Owner", "Partnerships Coordinator") that otherwise contain a decision-maker word — those fall through to the manager/staff rules on their own title instead. Pinned cases: "Chief Executive Officer" → `decision_maker`; "Owner's assistant", "Assistant to the Owner", "Partnerships Coordinator", "Managing Barista" → `staff`; "Barista Manager", "Managing Director" → `manager`.
 
 - [x] **Step 1: Failing tests** for every rule above, including "Production/Operations Manager" → `manager`, "Store Manager" → `manager`, "Owner" → `decision_maker`, "Barista" → `staff`, precedence of a manual primary over an Apollo owner.
 - [x] **Step 2: Run, expect failures.**
@@ -138,8 +144,9 @@ Rules, in order: a manual primary → `primary`, label `Primary contact set by y
 //     `Removed <name> (not the decision-maker)`.
 ```
 - Suppression needs the Apollo id of a revealed person: `Contact.apolloId` (added and populated in Task 1, scoped to `source: "apollo"` rows only) links each Apollo-sourced row to the person, and `candidates` carries the id for people not yet revealed.
+- Plan gap closed (fix round for 3eed43d, ahead of this task's own implementation): only an email or a phone produces a `Contact` row — a name + title alone (the 400 rule above only fires when the name *also* already exists) creates zero contact rows, so `Business.primaryPerson` can legitimately point at a name no `Contact` row carries. `pocConfidence`'s `primary` check already reads `primaryPerson` directly rather than scanning `people` for an `isPrimary` flag (see Task 2's amended interface), so it doesn't need this task to do anything extra. `groupPeople` (in `LeadDetail.tsx`) synthesizes a bare row — `{ name: primaryPerson, title: null, source: "manual", isPrimary: true }` — for a `primaryPerson` with no matching contact, so the name still leads the People section and gets its `Primary` badge even though POST /people never wrote it a `Contact` row. Both pieces are already in place; this task's own `groupPeople`/`AddPersonForm` work should build on them, not duplicate them.
 
-- [ ] **Step 1: Failing tests**: add person with email + title sets primary and creates two contacts; add person with only a name → 400; primary must exist; suppress deletes Apollo rows, clears primary, adds the id, logs the row; `groupPeople` output marks `isPrimary`; `pocConfidence` returns `primary` afterwards.
+- [ ] **Step 1: Failing tests**: add person with email + title sets primary and creates two contacts; add person with only a name → 400; add person with only a name + title (no email/phone) and a new name → 200, zero contact rows, `primaryPerson` still set, `groupPeople`/`pocConfidence` still see them via the synthesized row; primary must exist; suppress deletes Apollo rows, clears primary, adds the id, logs the row; `groupPeople` output marks `isPrimary`; `pocConfidence` returns `primary` afterwards.
 - [ ] **Step 2: Run, expect failures.**
 - [ ] **Step 3: Implement.** People rows get a `Primary` badge and a `Set as primary` ghost button; Apollo rows get `Not the decision-maker` (confirm inline, then PATCH suppress). `AddPersonForm`: name, title, email, phone, note, "Set as primary" checkbox (Base UI `Checkbox onCheckedChange(boolean)`), submit `Add person`; validation messages inline; sentence case. Leads table: when `primaryPerson` is set, the contact column shows that name first.
 - [ ] **Step 4: tsc, lint, unit, db exit 0.**

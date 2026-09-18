@@ -25,6 +25,7 @@ export function PeopleSection({
   people,
   candidates,
   costsCredit,
+  primaryPerson,
   revealedApolloIds,
   suppressedApolloIds,
   enriching,
@@ -35,10 +36,17 @@ export function PeopleSection({
 }: {
   people: Person[];
   candidates: CandidateSet | null;
-  /** Client-side hint: this business has no usable website domain, so a "Find people" call will
-   * fall back to a credited Organization Search rather than a free People Search — confirmed
-   * (but not overridden) by the server's own `costsCredit` in the POST /candidates response. */
+  /** Client-side hint, computed with the same `domainFromUrl` rule the server uses: this
+   * business has no usable domain, so a "Find people" call will fall back to a credited
+   * Organization Search rather than a free People Search. Only ever labels the button before the
+   * click — the response's own `costsCredit` (LeadDetail's `findPeople`) is what the success
+   * toast reports, since this prop is never overwritten by it. */
   costsCredit: boolean;
+  /** `Business.primaryPerson` — the manual pointer a rep sets by hand. Passed straight through
+   * to `pocConfidence` (not derived from `people`'s own `isPrimary` flags): a hand-added primary
+   * contact with only a name and title creates no Contact row (Task 3), so `people` alone can't
+   * always be trusted to carry it. */
+  primaryPerson: string | null;
   /** Apollo ids that already have a revealed Contact row — those candidates show "Revealed"
    * instead of a Reveal button. */
   revealedApolloIds: Set<string>;
@@ -55,7 +63,7 @@ export function PeopleSection({
   const [finding, setFinding] = useState(false);
   const [revealingId, setRevealingId] = useState<string | null>(null);
 
-  const confidence = pocConfidence(people, candidates);
+  const confidence = pocConfidence(people, candidates, primaryPerson);
   const confidenceClass =
     confidence.level === "staff" || confidence.level === "manager"
       ? "text-amber-700 dark:text-amber-400"
@@ -151,32 +159,40 @@ export function PeopleSection({
                     <span className="font-medium">{c.firstName ?? "Unnamed"}</span>
                     {c.title && <span className="text-muted-foreground"> · {c.title}</span>}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    <span
-                      className={`rounded px-1 text-[10px] ${c.hasEmail ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}
-                    >
-                      {c.hasEmail ? "has email" : "no email"}
-                    </span>
-                    {revealed ? (
-                      <span className="text-xs text-muted-foreground">Revealed</span>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        data-testid="reveal-button"
-                        disabled={!c.hasEmail || revealDisabled}
-                        title={!c.hasEmail ? "Apollo has no email for this person" : undefined}
-                        onClick={() => handleReveal(c.apolloId)}
+                  <span className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
+                    <span className="flex items-center gap-1.5">
+                      <span
+                        className={`rounded px-1 text-[10px] ${c.hasEmail ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}
                       >
-                        {revealingId === c.apolloId ? (
-                          <span className="flex items-center gap-1.5">
-                            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                            Revealing…
-                          </span>
-                        ) : (
-                          "Reveal (1 credit)"
-                        )}
-                      </Button>
+                        {c.hasEmail ? "has email" : "no email"}
+                      </span>
+                      {revealed ? (
+                        <span className="text-xs text-muted-foreground">Revealed</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid="reveal-button"
+                          disabled={!c.hasEmail || revealDisabled}
+                          aria-label={`Reveal ${c.firstName ?? "this person"} (1 credit)`}
+                          onClick={() => handleReveal(c.apolloId)}
+                        >
+                          {revealingId === c.apolloId ? (
+                            <span className="flex items-center gap-1.5">
+                              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                              Revealing…
+                            </span>
+                          ) : (
+                            "Reveal (1 credit)"
+                          )}
+                        </Button>
+                      )}
+                    </span>
+                    {/* Rendered as plain text, not a `title` on the (disabled) button — a
+                        disabled button never fires hover/focus events, so a tooltip-only hint
+                        there is unreachable by mouse, keyboard or screen reader alike. */}
+                    {!c.hasEmail && !revealed && (
+                      <span className="text-xs text-muted-foreground">Apollo has no email for this person</span>
                     )}
                   </span>
                 </li>

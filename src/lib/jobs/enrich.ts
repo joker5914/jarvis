@@ -7,37 +7,19 @@ import { creditStatus } from "@/lib/enrichment/credits";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
-import { PLATFORM_EMAIL_DOMAINS } from "@/lib/extract/platformDomains";
 import { stateNameFor } from "@/lib/geo/usStates";
 import type { EnrichPerson, PeopleSearchQuery } from "@/lib/providers/types";
 
-// Hosts that never identify a business's own domain: social/review profile pages (the original
-// set) plus, per live zero-credit probes, booking/scheduling/ordering platforms whose page for a
-// lead (e.g. a Booksy or Clover storefront) makes Apollo's People Search return the *platform's*
-// executives instead of the lead's — see orgNameMatches below for the second half of that guard.
-//
-// The platform half used to be its own hand-maintained list here, which diverged from
-// `PLATFORM_EMAIL_DOMAINS` in src/lib/extract/platformDomains.ts (same category of domain, just
-// checked against a website URL instead of an email address) — whole-branch review item L2.
-// `PLATFORM_EMAIL_DOMAINS` is now the one source of truth for "this domain is a shared platform,
-// never a lead's own"; this is just the social/review hosts that PLATFORM_EMAIL_DOMAINS doesn't
-// need to carry (an email at facebook.com etc. is already covered separately by
-// PLACEHOLDER_EMAIL_RE/isPlatformEmail's own social entries — see that module) unioned with it.
-const SOCIAL_HOSTS = ["facebook.com", "instagram.com", "linkedin.com", "yelp.com", "twitter.com", "x.com"];
-const SHARED_HOSTS = [...new Set([...SOCIAL_HOSTS, ...PLATFORM_EMAIL_DOMAINS])];
-
-export function domainFromUrl(url: string | null): string | null {
-  if (!url) return null;
-  const raw = /^https?:\/\//i.test(url) ? url : `https://${url}`;
-  try {
-    const host = new URL(raw).hostname.toLowerCase().replace(/^www\./, "");
-    if (!host.includes(".")) return null;
-    if (SHARED_HOSTS.some((s) => host === s || host.endsWith(`.${s}`))) return null;
-    return host;
-  } catch {
-    return null;
-  }
-}
+// domainFromUrl and its SHARED_HOSTS list (social/review hosts plus every known booking/POS/
+// site-builder platform domain from PLATFORM_EMAIL_DOMAINS — see that module for why a page on
+// one of them, e.g. a Booksy or Clover storefront, is never the lead's own domain) live in
+// src/lib/extract/domains.ts (fix round for 3eed43d): that module has no prisma import, so
+// PeopleSection/LeadDetail can compute the same "no usable domain" hint client-side that
+// POST /businesses/:id/candidates uses server-side to decide `costsCredit`. Re-exported here so
+// this file's own callers below, and existing tests importing it from "@/lib/jobs/enrich", are
+// unaffected.
+import { domainFromUrl } from "@/lib/extract/domains";
+export { domainFromUrl };
 
 /**
  * Splits a formatted street address into its city and 2-letter state code, the way Google's
@@ -293,7 +275,8 @@ export async function runEnrich(
               : "";
     // Set when a candidate's own orgName (from Apollo's search hit) doesn't match this business —
     // e.g. the lead's website is a page hosted on a shared booking/ordering platform (see
-    // SHARED_HOSTS above), so People Search returned the platform's own staff instead. Tracked
+    // SHARED_HOSTS in src/lib/extract/domains.ts), so People Search returned the platform's own
+    // staff instead. Tracked
     // across the whole loop so a business where *every* candidate mismatches gets one explanatory
     // activity row (below) instead of the generic "0 people" success message.
     let skippedOrg: string | null = null;
@@ -320,7 +303,7 @@ export async function runEnrich(
       // domain, Apollo already matched on a stronger signal than the name, and the org that owns
       // a domain often trades under a different name ("Dr. Jane Smith DDS" → Pearland Family
       // Dentistry). The wrong-company sink this guards against (shared booking/ordering platforms)
-      // has domain === null by construction (see SHARED_HOSTS).
+      // has domain === null by construction (see SHARED_HOSTS in src/lib/extract/domains.ts).
       if (!domain && p.orgName && !orgNameMatches(p.orgName, b.name)) {
         skippedOrg ??= p.orgName;
         continue;
