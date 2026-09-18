@@ -2,14 +2,14 @@ import { prisma } from "@/lib/db";
 import { checkPause, upsertIgnoringConflict, type JobDeps } from "./shared";
 import { validateEmails, recomputeContactQuality } from "./zipSearch";
 import { ENRICH_CONFIG } from "@/lib/config/enrichment";
-import { loadConfig } from "@/lib/config/runtime";
+import { loadConfig, type RuntimeConfig } from "@/lib/config/runtime";
 import { creditStatus } from "@/lib/enrichment/credits";
 import { BudgetExhaustedError } from "@/lib/providers/budget";
 import { CreditCapReachedError, ProviderNotConfiguredError, ProviderDisabledError, ProviderPlanError } from "@/lib/providers/errors";
 import { orgNameMatches } from "@/lib/providers/apollo";
 import { PLATFORM_EMAIL_DOMAINS } from "@/lib/extract/platformDomains";
 import { stateNameFor } from "@/lib/geo/usStates";
-import type { EnrichPerson } from "@/lib/providers/types";
+import type { EnrichPerson, PeopleSearchQuery } from "@/lib/providers/types";
 
 // Hosts that never identify a business's own domain: social/review profile pages (the original
 // set) plus, per live zero-credit probes, booking/scheduling/ordering platforms whose page for a
@@ -82,17 +82,37 @@ export function canonicalLinkedin(url: string): string | null {
   }
 }
 
+/**
+ * Builds the `PeopleSearchQuery` a free People Search or a paid enrich run sends to the
+ * provider, from the business's own address/website and the owner's configured targeting
+ * filters — the exact construction `runEnrich` used inline before Plan 10 Task 1, now shared
+ * with `findCandidates` (src/lib/enrichment/candidates.ts) so the free "Find people" list and
+ * the credited reveal always search the same way.
+ */
+export function buildPeopleSearchQuery(
+  b: { websiteUrl: string | null; formattedAddress: string | null; name: string },
+  cfg: RuntimeConfig,
+): PeopleSearchQuery {
+  const domain = domainFromUrl(b.websiteUrl);
+  const { city, state } = regionFromAddress(b.formattedAddress);
+  const metro = cfg.enrichment.metroLocation ?? null;
+  return { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities };
+}
+
 export async function runEnrich(
   businessId: string,
   ownerId: string,
   deps: JobDeps,
-  opts: { force?: boolean; people?: number } = {},
+  opts: { force?: boolean; people?: number; apolloId?: string } = {},
 ): Promise<{ added: number; updated: number; skipped: "excluded" | "not_found" | "recent" | "org_mismatch" | "chain" | null }> {
   const b = await prisma.business.findFirst({ where: { id: businessId, ownerId } });
   if (!b) return { added: 0, updated: 0, skipped: "not_found" as const };
   if (b.exclusion !== "none") return { added: 0, updated: 0, skipped: "excluded" as const };
   const log = (message: string) => prisma.activityLog.create({ data: { ownerId, businessId, kind: "enriched", message } });
-  if (!opts.force && b.lastEnrichedAt) {
+  // Revealing a candidate the rep explicitly chose (opts.apolloId) always bypasses the
+  // recheckDays gate — `force` implied, per Plan 10 Task 1 — since the rep is asking for that
+  // specific person right now, not for a routine re-scan.
+  if (!opts.force && !opts.apolloId && b.lastEnrichedAt) {
     const daysSince = Math.floor((Date.now() - b.lastEnrichedAt.getTime()) / 86_400_000);
     if (daysSince < ENRICH_CONFIG.recheckDays) {
       await log(`Enrichment skipped: enriched ${daysSince} day(s) ago (use Re-enrich to refresh)`);
@@ -126,13 +146,59 @@ export async function runEnrich(
   let contactRows = 0;
   try {
     await checkPause(deps);
-    const domain = domainFromUrl(b.websiteUrl);
-    const { city, state } = regionFromAddress(b.formattedAddress);
-    const metro = cfg.enrichment.metroLocation ?? null;
-    const search = await deps.providers.enrichment.searchPeople(
-      { domain, orgName: b.name, city, state, metro, titles: cfg.enrichment.preferredTitles, seniorities: cfg.enrichment.seniorities },
-      maxPeople,
-    );
+    // Plan 10 Task 1: a reveal the rep chose from the candidate list (POST /enrich { apolloId })
+    // skips the search entirely (no candidate re-ranking, no org-mismatch guard, no suppression
+    // filter — the rep already picked this specific person) and spends at most the one credit
+    // this single enrichPerson() call costs, still subject to the credit cap checked above.
+    if (opts.apolloId) {
+      const full = await deps.providers.enrichment.enrichPerson(opts.apolloId);
+      let revealAdded = 0;
+      let revealUpdated = 0;
+      let revealContactRows = 0;
+      if (full) {
+        const personName = full.name;
+        const personTitle = full.title;
+        const rows: { type: "email" | "linkedin"; value: string }[] = [];
+        if (full.email) rows.push({ type: "email", value: full.email.toLowerCase() });
+        if (full.linkedinUrl) {
+          const li = canonicalLinkedin(full.linkedinUrl);
+          if (li) rows.push({ type: "linkedin", value: li });
+        }
+        let personAdded = false;
+        let personUpdated = false;
+        for (const r of rows) {
+          const existing = await prisma.contact.findUnique({ where: { businessId_type_value: { businessId, type: r.type, value: r.value } } });
+          if (existing) {
+            const data: { personName?: string; personTitle?: string; apolloId?: string } = {};
+            if (!existing.personName && personName) data.personName = personName;
+            if (!existing.personTitle && personTitle) data.personTitle = personTitle;
+            if (!existing.apolloId) data.apolloId = full.apolloId;
+            if (Object.keys(data).length > 0) {
+              await prisma.contact.update({ where: { id: existing.id }, data });
+              personUpdated = true;
+            }
+            continue;
+          }
+          await upsertIgnoringConflict(() =>
+            prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle, apolloId: full.apolloId } }),
+          );
+          personAdded = true;
+          revealContactRows++;
+        }
+        if (personAdded) revealAdded++;
+        if (personUpdated) revealUpdated++;
+      }
+      await validateEmails([businessId], deps);
+      await recomputeContactQuality(businessId);
+      await prisma.business.update({ where: { id: businessId }, data: { lastEnrichedAt: new Date() } });
+      await log(
+        `Enriched via Apollo: revealed ${full?.title ?? "person"} chosen by you; ${revealContactRows} new contact${revealContactRows === 1 ? "" : "s"}, ${revealUpdated} updated`,
+      );
+      return { added: revealAdded, updated: revealUpdated, skipped: null };
+    }
+    const query = buildPeopleSearchQuery(b, cfg);
+    const { domain, city, state, metro } = query;
+    const search = await deps.providers.enrichment.searchPeople(query, maxPeople);
     // Chain-headcount guard (Plan 9 Task 3): a domain with this many *decision-maker* hits in
     // Apollo (title/seniority-filtered by the same cfg.enrichment lists passed above — see the
     // ENRICH_CONFIG.chainHeadcountMin doc comment for why this isn't a raw employee count), at
@@ -153,7 +219,12 @@ export async function runEnrich(
       await log(`Enrichment skipped: ${search.totalAtDomain} decision-makers at ${domain} in Apollo — not an SMB (marked as chain)`);
       return { added: 0, updated: 0, skipped: "chain" as const };
     }
-    const people = search.people;
+    // Plan 10 Task 1: a person the rep already dismissed as "not the decision-maker" (Task 3's
+    // suppression) never comes back on a later auto-enrich, even though the free search itself
+    // still returns them — filtered out before ranking/counting so they don't occupy a reveal
+    // slot or show up in totals.
+    const suppressed = new Set(b.suppressedApolloIds);
+    const people = search.people.filter((p) => !suppressed.has(p.apolloId));
     // Named for the activity-message suffixes below only — search.totalFound/totalAtDomain (the
     // free headcount signals) are consumed by the Task 3 chain guard, not by anything in this
     // function. Guarded per-branch (city && state, metro non-null, state) so a scope the query
@@ -242,14 +313,21 @@ export async function runEnrich(
       for (const r of rows) {
         const existing = await prisma.contact.findUnique({ where: { businessId_type_value: { businessId, type: r.type, value: r.value } } });
         if (existing) {
-          if ((!existing.personName && personName) || (!existing.personTitle && personTitle)) {
-            await prisma.contact.update({ where: { id: existing.id }, data: { personName: existing.personName ?? personName, personTitle: existing.personTitle ?? personTitle } });
+          const data: { personName?: string; personTitle?: string; apolloId?: string } = {};
+          if (!existing.personName && personName) data.personName = personName;
+          if (!existing.personTitle && personTitle) data.personTitle = personTitle;
+          // Plan 10 Task 1: backfill apolloId on an existing row (e.g. one first created from the
+          // website before Apollo confirmed the same email) so a later "not the decision-maker"
+          // suppression (Task 3) can find and remove it.
+          if (!existing.apolloId) data.apolloId = p.apolloId;
+          if (Object.keys(data).length > 0) {
+            await prisma.contact.update({ where: { id: existing.id }, data });
             personUpdated = true;
           }
           continue;
         }
         await upsertIgnoringConflict(() =>
-          prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle } }),
+          prisma.contact.create({ data: { ownerId, businessId, type: r.type, value: r.value, source: "apollo", personName, personTitle, apolloId: p.apolloId } }),
         );
         personAdded = true;
         contactRows++;

@@ -4,7 +4,10 @@ import { buildBusinessOrderBy, buildBusinessWhere, type LeadFilters } from "./fi
 
 export const leadInclude = {
   contacts: {
-    select: { id: true, type: true, value: true, personName: true, personTitle: true, validationStatus: true, source: true },
+    // apolloId (Plan 10 Task 1): links an Apollo-sourced row back to the candidate it was
+    // revealed from — needed once People/PATCH suppression (Task 3) has to find and remove
+    // exactly one revealed person's rows.
+    select: { id: true, type: true, value: true, personName: true, personTitle: true, validationStatus: true, source: true, apolloId: true },
     orderBy: { type: "asc" as const },
   },
   tags: { include: { tag: true } },

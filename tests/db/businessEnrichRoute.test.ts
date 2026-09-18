@@ -6,6 +6,7 @@ import { saveOverrides } from "@/lib/config/runtime";
 import { POST as enrichPost } from "@/app/api/businesses/[id]/enrich/route";
 import { POST as bulkPost } from "@/app/api/businesses/bulk/route";
 import { GET as creditsGet } from "@/app/api/enrichment/credits/route";
+import { POST as candidatesPost, GET as candidatesGet } from "@/app/api/businesses/[id]/candidates/route";
 import { PEOPLE_SEARCH_PATH, __setPlanBlockedForTests, __resetPlanBlockedForTests } from "@/lib/providers/apollo";
 
 // The routes resolve the actor via getActor(), which is always "local-user" (see src/lib/actor.ts).
@@ -355,6 +356,17 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     expect(body2.estimatedCredits).toBe(3);
   });
 
+  // Plan 10 Task 1 (f): a candidate reveal is always exactly one person, regardless of the
+  // configured/default `people` count — estimatedCredits must say 1, not e.g. maxPeople=3.
+  it("POST /businesses/:id/enrich { apolloId } 202 body carries estimatedCredits: 1 even with a higher configured maxPeople", async () => {
+    await saveOverrides(OWNER, { enrichment: { maxPeople: 3 } });
+    const b = await biz("none");
+    const res = await enrichPost(jsonReq({ apolloId: "fake-bellanails.example-gm" }), ctxFor(b.id));
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.estimatedCredits).toBe(1);
+  });
+
   it("POST /businesses/:id/enrich validates `people` with zod: out-of-range is a 400, absent body still queues", async () => {
     const bTooHigh = await biz("none");
     const resTooHigh = await enrichPost(jsonReq({ people: 6 }), ctxFor(bTooHigh.id));
@@ -409,5 +421,69 @@ describe("enrich routes: credit cap and estimates (Plan 7 Task 2)", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.estimatedCredits).toBe(1);
+  });
+});
+
+// Plan 10 Task 1 (g): POST runs findCandidates inline (a free call) and returns the stored set;
+// GET returns whatever is currently stored (or null before the first "Find people" call).
+describe("candidates route (Plan 10 Task 1)", () => {
+  let prevJobMode: string | undefined;
+
+  beforeAll(() => {
+    prevJobMode = process.env.JOB_MODE;
+    process.env.JOB_MODE = "inline";
+  });
+  afterAll(async () => {
+    process.env.JOB_MODE = prevJobMode;
+    await cleanup();
+    await prisma.business.deleteMany({ where: { name: "Other Owner's Biz" } });
+  });
+  beforeEach(cleanup);
+
+  it("POST /businesses/:id/candidates returns 200 with the free candidate set, and GET returns the stored set", async () => {
+    const b = await biz("none");
+    const postRes = await candidatesPost(jsonReq(), ctxFor(b.id));
+    expect(postRes.status).toBe(200);
+    const postBody = await postRes.json();
+    expect(postBody.candidates.candidates.length).toBeGreaterThan(0);
+    expect(postBody.candidates.candidates[0]).toHaveProperty("apolloId");
+    expect(postBody.candidates.fetchedAt).toBeTruthy();
+
+    const getRes = await candidatesGet(jsonReq(), ctxFor(b.id));
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.candidates).toEqual(postBody.candidates);
+  });
+
+  it("GET /businesses/:id/candidates returns { candidates: null } before any 'Find people' call", async () => {
+    const b = await biz("none");
+    const res = await candidatesGet(jsonReq(), ctxFor(b.id));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.candidates).toBeNull();
+  });
+
+  it("returns 404 for another owner's business, on both POST and GET", async () => {
+    const other = await prisma.business.create({ data: { ownerId: "some-other-owner", name: "Other Owner's Biz", source: "zip_search" } });
+    const postRes = await candidatesPost(jsonReq(), ctxFor(other.id));
+    expect(postRes.status).toBe(404);
+    const getRes = await candidatesGet(jsonReq(), ctxFor(other.id));
+    expect(getRes.status).toBe(404);
+  });
+
+  it("POST /businesses/:id/candidates returns 409 with settingsHref when Apollo is disabled", async () => {
+    const snapshot = await prisma.providerConfig.findUnique({ where: { provider: "apollo" } });
+    await prisma.providerConfig.upsert({ where: { provider: "apollo" }, update: { enabled: false }, create: { provider: "apollo", enabled: false } });
+    try {
+      const b = await biz("none");
+      const res = await candidatesPost(jsonReq(), ctxFor(b.id));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Apollo is disabled in Settings");
+      expect(body.settingsHref).toBe("/settings");
+    } finally {
+      if (snapshot) await prisma.providerConfig.update({ where: { provider: "apollo" }, data: snapshot });
+      else await prisma.providerConfig.delete({ where: { provider: "apollo" } }).catch(() => {});
+    }
   });
 });

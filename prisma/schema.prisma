@@ -168,6 +168,22 @@ model Business {
   websiteError            String?
   lastEnrichedAt          DateTime?
   googleFetchedAt         DateTime?
+  /** Plan 10 Task 1: the free People Search candidate list stored so the rep can pick who to
+   *  reveal before spending a credit — see src/lib/enrichment/candidates.ts's CandidateSet. Never
+   *  contains emails or last names (Apollo's search response obfuscates those; only a paid
+   *  reveal, via runEnrich's `apolloId` option, resolves them into Contact rows). */
+  candidates              Json?
+  /** When `candidates` was last (re)fetched; null before the first "Find people" call. */
+  candidatesAt            DateTime?
+  /** The name of the person the rep has designated as the point of contact, whether entered by
+   *  hand (Contact rows with source "manual") or chosen from an Apollo reveal — matched against
+   *  Contact.personName, never a foreign key (a manual person may have no Contact row of a type
+   *  that carries an id worth pointing at). Null when no primary is set. */
+  primaryPerson           String?
+  /** Apollo person ids the rep has explicitly rejected as "not the decision-maker" for this
+   *  business — filtered out of every future findCandidates()/runEnrich() search result so a
+   *  dismissed person never resurfaces. */
+  suppressedApolloIds     String[]        @default([])
   searches                SearchBusiness[]
   contacts                Contact[]
   tags                    BusinessTag[]
@@ -200,6 +216,12 @@ model Contact {
   value            String
   personName       String?
   personTitle      String?
+  /** The Apollo person id this row came from (set on create and backfilled on update by
+   *  runEnrich, both the auto path and an `apolloId`-targeted reveal) — links an email/linkedin
+   *  Contact row back to the candidate it was revealed from, so a "not the decision-maker"
+   *  suppression (Task 3) can find and remove exactly that person's Apollo-sourced rows. Null for
+   *  non-Apollo sources (google/website/tdlr/manual). */
+  apolloId         String?
   source           ContactSource
   validationStatus ValidationStatus @default(unchecked)
   validatedAt      DateTime?

@@ -66,17 +66,17 @@ export async function findCandidates(businessId: string, ownerId: string, deps: 
 ```
 - Candidate rows carry the first name and title Apollo already shows for free; last names stay obfuscated until a reveal.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 `tests/db/candidates.test.ts`: (a) `findCandidates` on a business with a domain stores a `CandidateSet` with the fake provider's two people ranked Owner first, `scope`/`totalAtDomain` from the result, `candidatesAt` set; (b) a suppressed id is filtered out; (c) org-mismatch on the no-domain branch yields an empty set and no activity row (reuse Task 4's guard via the provider call — assert `calls.enrich === 0`).
 `tests/db/enrich.test.ts`: (d) `runEnrich(id, owner, deps, { apolloId: "fake-…-gm" })` reveals exactly that person (`calls.search === 0`, `calls.enrich === 1`), respects the credit cap, writes the "chosen by you" row; (e) the auto path skips a suppressed id and reveals the next candidate.
 `tests/db/businessEnrichRoute.test.ts`: (f) `POST /enrich { apolloId }` → 202 with `estimatedCredits: 1`; (g) `POST /candidates` → 200 with the set; `GET /candidates` returns it; 404 for another owner's business.
 
-- [ ] **Step 2: Run, expect failures.**
+- [x] **Step 2: Run, expect failures.**
 
-- [ ] **Step 3: Implement.** Migration first. `findCandidates`: `regionFromAddress`, `domainFromUrl`, `deps.providers.enrichment.searchPeople({ domain, orgName, city, state, metro: cfg.enrichment.metroLocation }, ENRICH_CONFIG.searchPageSize)`; on the no-domain branch keep `orgNameMatches` (import from apollo.ts) exactly as `runEnrich` does; map to `Candidate[]` (rank = index after the provider's ranking), drop `suppressedApolloIds`; persist. Routes: `POST /candidates` = `findCandidates` inline (it is a free call; run it in the request with the same provider checks the enrich route does — configured/enabled/plan-block — and a 409 on `BudgetExhaustedError`); `GET` returns the stored set or `null`. `runEnrich`: when `opts.apolloId` is set, skip search + guards that need search data, `enrichPerson(apolloId)`, one reveal, same contact upsert path, message per Interfaces. Auto path: filter `people` by `!suppressedApolloIds.includes(p.apolloId)` before the loop.
+- [x] **Step 3: Implement.** Migration first. `findCandidates`: `regionFromAddress`, `domainFromUrl`, `deps.providers.enrichment.searchPeople({ domain, orgName, city, state, metro: cfg.enrichment.metroLocation }, ENRICH_CONFIG.searchPageSize)`; on the no-domain branch keep `orgNameMatches` (import from apollo.ts) exactly as `runEnrich` does; map to `Candidate[]` (rank = index after the provider's ranking), drop `suppressedApolloIds`; persist. Routes: `POST /candidates` = `findCandidates` inline (it is a free call; run it in the request with the same provider checks the enrich route does — configured/enabled/plan-block — and a 409 on `BudgetExhaustedError`); `GET` returns the stored set or `null`. `runEnrich`: when `opts.apolloId` is set, skip search + guards that need search data, `enrichPerson(apolloId)`, one reveal, same contact upsert path, message per Interfaces. Auto path: filter `people` by `!suppressedApolloIds.includes(p.apolloId)` before the loop.
 
-- [ ] **Step 4: tsc, lint, unit, db exit 0.**
-- [ ] **Step 5: Commit** `feat(enrich): free "Find people" candidate list stored on the lead; reveal a chosen candidate by Apollo id; suppressed ids never come back`.
+- [x] **Step 4: tsc, lint, unit, db exit 0.**
+- [x] **Step 5: Commit** `feat(enrich): free "Find people" candidate list stored on the lead; reveal a chosen candidate by Apollo id; suppressed ids never come back`.
 
 ---
 

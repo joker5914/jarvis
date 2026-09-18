@@ -13,6 +13,9 @@ import { APOLLO_PLAN_BLOCK_MESSAGE } from "@/lib/providers/errors";
 const bodySchema = z.object({
   force: z.boolean().optional(),
   people: z.number().int().min(1).max(ENRICH_CONFIG.maxPeopleLimit).optional(),
+  // Plan 10 Task 1: reveal exactly this candidate (chosen from the free "Find people" list)
+  // instead of running the auto-search/reveal loop — see runEnrich's `opts.apolloId` branch.
+  apolloId: z.string().min(1).optional(),
 });
 
 /** Refuses at the monthly Apollo credit cap before any provider call is queued, shared by the
@@ -61,7 +64,10 @@ export const POST = handle(async (req, ctx) => {
   const cfg = await loadConfig(actor.id);
   const capError = await assertCredits(actor.id, cfg);
   if (capError) return capError;
-  const resolvedPeople = body.people ?? cfg.enrichment.maxPeople;
-  const queued = await enqueueEnrich(b.id, actor.id, { force: body.force, people: body.people });
+  // A candidate reveal (apolloId) is always exactly one person, regardless of the configured
+  // maxPeople/people default — estimatedCredits must say 1, not whatever a multi-person auto-run
+  // would have cost.
+  const resolvedPeople = body.apolloId ? 1 : (body.people ?? cfg.enrichment.maxPeople);
+  const queued = await enqueueEnrich(b.id, actor.id, { force: body.force, people: body.people, apolloId: body.apolloId });
   return json({ queued, estimatedCredits: estimateCredits(1, resolvedPeople) }, 202);
 });
