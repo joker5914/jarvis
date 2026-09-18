@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
@@ -89,6 +89,15 @@ export function PeopleSection({
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
   const [suppressing, setSuppressing] = useState<string | null>(null);
+
+  // Fix round: clears the 5s auto-revert timer on unmount (the drawer closing, or switching to a
+  // different lead mid-confirm) — without this, a stale `setTimeout` would still fire and call
+  // `setConfirmingApolloId` on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    };
+  }, []);
 
   const confidence = pocConfidence(people, candidates, primaryPerson);
   const confidenceClass =

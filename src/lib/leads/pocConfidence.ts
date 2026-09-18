@@ -22,10 +22,11 @@ export type PersonLike = { name: string; title: string | null; source: string; i
 //
 // Task 3 fix round: a bare `chief` used to match ANY "Chief <whatever>" title, including
 // "Chief Barista" — a shift lead, not a decision-maker. Tightened to `chief executive` (covers
-// "Chief Executive", "Chief Executive Officer") and `chief \w+ officer` (covers "Chief Financial
-// Officer", "Chief Operating Officer", ...), so a C-suite title still matches but a "Chief
+// "Chief Executive", "Chief Executive Officer") and `chief (\w+ ){1,3}officer` (covers "Chief
+// Financial Officer", "Chief Operating Officer", and multi-word C-suite titles like "Chief Human
+// Resources Officer" or "Chief Revenue Officer"), so a C-suite title still matches but a "Chief
 // <role>" that never reaches "officer" or "executive" does not.
-const DECISION_MAKER_RE = /\b(owner|owner\/operator|founder|co-founder|president|ceo|chief executive|chief\s+\w+\s+officer|principal|proprietor|partner)\b/i;
+const DECISION_MAKER_RE = /\b(owner|owner\/operator|founder|co-founder|president|ceo|chief executive|chief(?:\s+\w+){1,3}\s+officer|principal|proprietor|partner)\b/i;
 // A title that otherwise matches DECISION_MAKER_RE but names a support role reporting to the
 // decision-maker — "Owner's assistant", "Assistant to the Owner", "Partnerships Coordinator" —
 // is not itself the decision-maker; excluded here so it falls through to the manager/staff rules

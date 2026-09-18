@@ -63,6 +63,14 @@ describe("pocConfidence", () => {
     }
   });
 
+  // Fix round (review): the single-word `chief\s+\w+\s+officer` shape missed real multi-word
+  // C-suite titles — widened to `chief(?:\s+\w+){1,3}\s+officer`.
+  it("multi-word chief titles (Chief Human Resources Officer, Chief Revenue Officer) are decision-makers", () => {
+    for (const title of ["Chief Human Resources Officer", "Chief Revenue Officer", "Chief Diversity and Inclusion Officer"]) {
+      expect(conf([person({ title })], null).level).toBe("decision_maker");
+    }
+  });
+
   it("Store Manager is a manager, best-available label names the title", () => {
     const people = [person({ title: "Store Manager" })];
     expect(conf(people, null)).toEqual({ level: "manager", label: "Best available: Store Manager — no owner listed in Apollo" });

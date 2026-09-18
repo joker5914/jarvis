@@ -1,6 +1,7 @@
 "use client";
 
 import type { LeadRow } from "@/lib/leads/queries";
+import { leadContactName } from "@/lib/leads/leadContactName";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { categoryLabel } from "@/lib/config/categories";
@@ -18,13 +19,8 @@ type Props = {
   onOpen: (id: string) => void;
 };
 
-/** The lead's likely point of contact, for the table's Contact column (Plan 10 Task 3):
- * `primaryPerson` — the rep's own pick, whether hand-typed or chosen from an Apollo reveal —
- * leads when set; otherwise the first named contact row (Apollo-enriched or manual), if any. */
-function leadContactName(b: LeadRow): string | null {
-  if (b.primaryPerson) return b.primaryPerson;
-  return b.contacts.find((c) => c.personName)?.personName ?? null;
-}
+// leadContactName itself now lives in src/lib/leads/leadContactName.ts (fix round: extracted so
+// it's unit-testable without a full LeadRow) — imported above.
 
 export function LeadsTable({ rows, selectedIds, onToggle, onToggleAll, onOpen }: Props) {
   const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));

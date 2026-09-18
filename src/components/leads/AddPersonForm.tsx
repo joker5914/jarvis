@@ -64,6 +64,14 @@ export function AddPersonForm({ businessId, onAdded }: { businessId: string; onA
       setNote("");
       setSetPrimary(true);
       await onAdded();
+    } catch {
+      // Fix round (review): `fetch` itself rejecting (offline, DNS failure, the drawer's tab
+      // going away mid-request) used to be an uncaught rejection with no feedback at all — now
+      // surfaced the same way a 4xx from the route is, inline plus a toast, since the rep has no
+      // other way to tell a network failure apart from the request just hanging.
+      const message = "Could not reach the server — check your connection and try again.";
+      setError(message);
+      toast.error(message);
     } finally {
       setSubmitting(false);
     }
