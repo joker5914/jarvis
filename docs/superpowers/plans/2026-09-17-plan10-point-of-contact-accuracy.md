@@ -108,11 +108,11 @@ export function pocConfidence(people: PersonLike[], candidates: CandidateSet | n
 ```
 Rules, in order: a manual primary → `primary`, label `Primary contact set by you`; a revealed person whose title matches `/owner|founder|co-founder|president|ceo|principal|proprietor|partner/i` → `decision_maker`, `Decision-maker`; matches `/manager|director|head of|operations/i` → `manager`, `Best available: <title> — no owner listed in Apollo`; any other revealed person → `staff`, `Staff contact — no decision-maker listed in Apollo`; nobody revealed → `none`, with label `No people found in Apollo` when `candidates` exists and is empty, `Not searched yet` when `candidates` is null, else `Candidates found — choose who to reveal`.
 
-- [ ] **Step 1: Failing tests** for every rule above, including "Production/Operations Manager" → `manager`, "Store Manager" → `manager`, "Owner" → `decision_maker`, "Barista" → `staff`, precedence of a manual primary over an Apollo owner.
-- [ ] **Step 2: Run, expect failures.**
-- [ ] **Step 3: Implement** the pure function; render the label under the People heading (muted text; amber for `staff`/`manager`), and the candidate picker from Task 1: each candidate row shows title, `has email` / `no email`, and a `Reveal (1 credit)` button (disabled when `!hasEmail`, hint `Apollo has no email for this person`), plus a `Find people` button that calls `POST /candidates` (label `Refresh candidates` when a set exists; show `Searched <time ago>`) — no domain on the business means that call costs a credit (Task 1's fix round, R7), so a business with no usable website domain (`domainFromUrl` would return null) renders the button as `Find people (1 credit)` / `Refresh candidates (1 credit)` up front, and the `costsCredit` flag the route's 200 body carries confirms it after the call. Sentence case; 375 px: rows stack; no overflow.
-- [ ] **Step 4: tsc, lint, unit exit 0.**
-- [ ] **Step 5: Commit** `feat(leads): contact confidence label and candidate picker in the People section`.
+- [x] **Step 1: Failing tests** for every rule above, including "Production/Operations Manager" → `manager`, "Store Manager" → `manager`, "Owner" → `decision_maker`, "Barista" → `staff`, precedence of a manual primary over an Apollo owner.
+- [x] **Step 2: Run, expect failures.**
+- [x] **Step 3: Implement** the pure function; render the label under the People heading (muted text; amber for `staff`/`manager`), and the candidate picker from Task 1: each candidate row shows title, `has email` / `no email`, and a `Reveal (1 credit)` button (disabled when `!hasEmail`, hint `Apollo has no email for this person`), plus a `Find people` button that calls `POST /candidates` (label `Refresh candidates` when a set exists; show `Searched <time ago>`) — no domain on the business means that call costs a credit (Task 1's fix round, R7), so a business with no usable website domain (`domainFromUrl` would return null) renders the button as `Find people (1 credit)` / `Refresh candidates (1 credit)` up front, and the `costsCredit` flag the route's 200 body carries confirms it after the call. Sentence case; 375 px: rows stack; no overflow.
+- [x] **Step 4: tsc, lint, unit exit 0.**
+- [x] **Step 5: Commit** `feat(leads): contact confidence label and candidate picker in the People section`.
 
 ---
 

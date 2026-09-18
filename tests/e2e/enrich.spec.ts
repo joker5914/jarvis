@@ -17,4 +17,7 @@ test("enrich a lead with Apollo (fake) adds named people", async ({ page }) => {
   await expect(page.getByText("Enrichment queued")).toBeVisible();
   await expect(page.getByTestId("people-row").first()).toContainText("Maria Lopez", { timeout: 15_000 });
   await expect(page.getByTestId("people-section")).toContainText("Owner");
+  // Plan 10 Task 2: Maria Lopez's title ("Owner") reads as a decision-maker, so the confidence
+  // line under the People heading should say so.
+  await expect(page.getByTestId("poc-confidence")).toHaveText("Decision-maker");
 });

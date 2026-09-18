@@ -15,15 +15,20 @@ import { categoryLabel } from "@/lib/config/categories";
 import { PRODUCTS, packageLabel } from "@/lib/config/packages";
 import { isEnrichIssueMessage, latestEnrichIssue } from "@/lib/leads/enrichActivity";
 import { formatDate, timeAgo, titleCase } from "@/lib/format";
+import type { CandidateSet } from "@/lib/enrichment/candidates";
 import { watchEnrichment, type WatchableDetail } from "./useEnrichmentWatch";
 import { CopyButton } from "./CopyButton";
 import { QualityBadge } from "./QualityBadge";
 import { SourceBadge } from "./SourceBadge";
+import { PeopleSection, type Person } from "./PeopleSection";
 
 const ENRICH_WATCH_INTERVAL_MS = 2000;
 const ENRICH_WATCH_TIMEOUT_MS = 90_000;
 
-type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string };
+// apolloId (Plan 10 Task 2): links an Apollo-sourced contact row back to the candidate it was
+// revealed from, so PeopleSection can tell an already-revealed candidate apart from one still
+// waiting on a reveal (see `revealedApolloIds` below).
+type Contact = { id: string; type: string; value: string; personName: string | null; personTitle: string | null; validationStatus: string; source: string; apolloId: string | null };
 type Project = { id: string; projectNumber: string; projectName: string; estimatedCost: number | null; startDate: string | null; completionDate: string | null; scopeOfWork: string | null; ownerName: string | null; ownerPhone: string | null; timingWindow: string | null };
 type Detail = {
   id: string; name: string; formattedAddress: string | null; zip: string | null; phone: string | null; websiteUrl: string | null;
@@ -33,9 +38,11 @@ type Detail = {
   outreachStatus: string; productsPitched: string[]; notes: string; websiteReachable: boolean | null; websiteError: string | null;
   contacts: Contact[]; tags: { tag: Tag }[]; activity: { id: string; kind: string; message: string; createdAt: string }[]; projects: Project[];
   lastEnrichedAt: string | null;
+  // Plan 10 Task 2: getBusinessDetail's include already carries these (no `omit` on the detail
+  // query, unlike listBusinesses — see src/lib/leads/queries.ts).
+  candidates: CandidateSet | null; candidatesAt: string | null; primaryPerson: string | null; suppressedApolloIds: string[];
 };
 
-type Person = { key: string; name: string; title: string | null; email: string | null; linkedin: string | null; source: string };
 type CreditStatus = {
   used: number;
   cap: number;
@@ -48,14 +55,16 @@ type CreditStatus = {
 };
 
 /** Groups contacts that carry a `personName` (Apollo-enriched) into one row per person,
- * pairing that person's email and LinkedIn contact rows together. */
-function groupPeople(contacts: Contact[]): Person[] {
+ * pairing that person's email and LinkedIn contact rows together. `isPrimary` (Plan 10 Task 2)
+ * marks the row whose name matches `Business.primaryPerson` — the manual pointer a rep sets by
+ * hand, which `pocConfidence` treats as the strongest possible signal regardless of title. */
+function groupPeople(contacts: Contact[], primaryPerson: string | null): Person[] {
   const byName = new Map<string, Person>();
   for (const c of contacts) {
     if (!c.personName) continue;
     let p = byName.get(c.personName);
     if (!p) {
-      p = { key: c.personName, name: c.personName, title: c.personTitle, email: null, linkedin: null, source: c.source };
+      p = { key: c.personName, name: c.personName, title: c.personTitle, email: null, linkedin: null, source: c.source, isPrimary: c.personName === primaryPerson };
       byName.set(c.personName, p);
     }
     if (!p.title && c.personTitle) p.title = c.personTitle;
@@ -134,7 +143,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     if (!quiet) toast.success("Saved");
   }
 
-  async function enrich() {
+  // Shared by a plain "Enrich"/"Re-enrich" click and a candidate-picker "Reveal (1 credit)"
+  // click (Plan 10 Task 2): both go through POST /enrich and the same "Enriching…" watcher, so
+  // the drawer reloads with the new contact either way. `enrich()` and `reveal()` below just
+  // supply the body.
+  async function requestEnrich(body: Record<string, unknown>) {
     setEnriching(true);
     enrichWatchController.current?.abort(); // a stale watch from a previous click, if any
     const controller = new AbortController();
@@ -143,13 +156,16 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
       const res = await fetch(`/api/businesses/${id}/enrich`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ force: b?.lastEnrichedAt != null }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
-        toast.error(data.error ?? "Apollo is not configured", {
-          action: { label: "Settings", onClick: () => router.push(data.settingsHref ?? "/settings") },
-        });
+        // Fix round: a 409 only sometimes carries `settingsHref` (e.g. "already queued" never
+        // does) — attaching a Settings action to every one of them used to send the rep to
+        // Settings for a problem Settings can't fix.
+        toast.error(data.error ?? "Enrichment failed", data.settingsHref
+          ? { action: { label: "Settings", onClick: () => router.push(data.settingsHref) } }
+          : undefined);
         return;
       }
       if (!res.ok) { toast.error(data.error ?? "Enrichment failed"); return; }
@@ -194,6 +210,35 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
     } finally {
       if (!controller.signal.aborted) setEnriching(false);
     }
+  }
+
+  function enrich() {
+    return requestEnrich({ force: b?.lastEnrichedAt != null });
+  }
+
+  // Candidate-picker reveal (Plan 10 Task 2): reveals exactly the chosen candidate — no search,
+  // recheckDays bypassed — via runEnrich's `apolloId` option (see POST /enrich's schema).
+  function reveal(apolloId: string) {
+    return requestEnrich({ apolloId });
+  }
+
+  // "Find people" / "Refresh candidates" (Plan 10 Task 2): a free (usually) Apollo People
+  // Search that lists candidates without revealing anyone — no credit watcher needed, just a
+  // reload once the set is stored.
+  async function findPeople() {
+    const res = await fetch(`/api/businesses/${id}/candidates`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      toast.error(data.error ?? "Could not find people", data.settingsHref
+        ? { action: { label: "Settings", onClick: () => router.push(data.settingsHref) } }
+        : undefined);
+      return;
+    }
+    if (!res.ok) { toast.error(data.error ?? "Could not find people"); return; }
+    const count = data.candidates?.candidates?.length ?? 0;
+    toast.success(count > 0 ? `Found ${count} candidate${count === 1 ? "" : "s"}` : "No people found in Apollo");
+    await load({ quiet: true });
+    await loadCredits();
   }
 
   // "Not an SMB (chain)" action (Plan 9 Task 3): adds this lead's chain key to the owner's chain
@@ -263,7 +308,11 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
 
   const userTagIds = new Set(b.tags.map((t) => t.tag.id));
   const linkedinSearch = `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(b.name)}`;
-  const people = groupPeople(b.contacts);
+  const people = groupPeople(b.contacts, b.primaryPerson);
+  // Client-side hint only (Plan 10 Task 2 note): a plain "no website domain" check, confirmed
+  // (not overridden) by the server's own `costsCredit` in the POST /candidates response.
+  const candidatesCostCredit = b.websiteUrl == null;
+  const revealedApolloIds = new Set(b.contacts.map((c) => c.apolloId).filter((x): x is string => x != null));
 
   const address = b.formattedAddress?.replace(/,\s*(USA|United States)$/i, "");
   // Surfaces the latest unavailable/paused enrich attempt so a click that silently failed (e.g.
@@ -394,29 +443,18 @@ export function LeadDetail({ id, onChanged }: { id: string; onChanged?: () => vo
         )}
       </section>
 
-      <section className="border-t pt-4 space-y-3" data-testid="people-section">
-        <h3 className="text-sm font-semibold">People</h3>
-        {people.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No named contacts yet. Enrich with Apollo to find decision-makers.</p>
-        ) : (
-          <ul className="space-y-1">
-            {people.map((p) => (
-              <li key={p.key} data-testid="people-row" className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-sm">
-                <span className="min-w-0 truncate" title={p.title ? `${p.name}, ${p.title}` : p.name}>
-                  <span className="font-medium">{p.name}</span>
-                  {p.title && <span className="text-muted-foreground"> · {p.title}</span>}
-                </span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <SourceBadge source={p.source} />
-                  {p.linkedin && <a className="hover:underline" href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>}
-                  {p.email && <CopyButton value={p.email} label={p.email} />}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {b.lastEnrichedAt && <p className="text-xs text-muted-foreground">Enriched {timeAgo(b.lastEnrichedAt)}</p>}
-      </section>
+      <PeopleSection
+        people={people}
+        candidates={b.candidates}
+        costsCredit={candidatesCostCredit}
+        revealedApolloIds={revealedApolloIds}
+        suppressedApolloIds={b.suppressedApolloIds}
+        enriching={enriching}
+        credits={credits}
+        lastEnrichedAt={b.lastEnrichedAt}
+        onFindPeople={findPeople}
+        onReveal={reveal}
+      />
 
       <section className="border-t pt-4 space-y-3">
         <h3 className="text-sm font-semibold">Outreach</h3>
