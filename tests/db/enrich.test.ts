@@ -581,6 +581,15 @@ describe("runEnrich", () => {
       expect(after.lastEnrichedAt).toBeNull();
     });
 
+    it("L6: revealing the same person twice logs one credit_spent row, not two", async () => {
+      const b = await biz();
+      const d = deps();
+      await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      await runEnrich(b.id, OWNER, d, { apolloId: "fake-bellanails.com-owner" });
+      const rows = await prisma.activityLog.count({ where: { businessId: b.id, kind: "credit_spent" } });
+      expect(rows).toBe(1);
+    });
+
     it("H1: a direct reveal that returns an email logs one credit_spent row; one that returns no email logs none", async () => {
       const bWithEmail = await biz();
       await runEnrich(bWithEmail.id, OWNER, deps(), { apolloId: "fake-bellanails.com-owner" }); // has email

@@ -19,6 +19,12 @@ import type { EnrichPerson, PeopleSearchQuery } from "@/lib/providers/types";
  * src/lib/enrichment/candidates.ts) logs it explicitly; `creditsUsed` (src/lib/enrichment/
  * credits.ts) counts these rows instead of Contact rows so a suppression (which deletes Contact
  * rows) can no longer silently "give back" credits that were actually spent (M1). */
+/** Apollo bills a person's email once per account; a repeat people/match on someone we already hold
+ * an Apollo email row for is free, so the ledger must not count it twice (whole-branch re-review L6). */
+async function alreadyRevealed(businessId: string, apolloId: string): Promise<boolean> {
+  return (await prisma.contact.count({ where: { businessId, type: "email", source: "apollo", apolloId } })) > 0;
+}
+
 async function logCreditSpent(ownerId: string, businessId: string, what: "email revealed" | "organization search") {
   await prisma.activityLog.create({ data: { ownerId, businessId, kind: "credit_spent", message: `Apollo credit: ${what}` } });
 }
@@ -223,11 +229,11 @@ export async function runEnrich(
         await log("Enrichment failed: Apollo could not reveal the chosen person");
         return { added: 0, updated: 0, skipped: "reveal_failed" as const };
       }
+      const repeat = await alreadyRevealed(businessId, opts.apolloId);
       const { added: personAdded, updated: personUpdated, contactRows: revealContactRows } = await upsertPersonContacts(businessId, ownerId, full, opts.apolloId);
-      // H1: a real Apollo credit was only actually spent when the reveal came back with an email
-      // (matches the auto-loop's own `willPay && full.email` decrement below) — logged so
-      // creditsUsed() (now counting credit_spent rows, not Contact rows) reflects real spend.
-      if (full.email) await logCreditSpent(ownerId, businessId, "email revealed");
+      // H1/L6: a real Apollo credit is spent only when the reveal came back with an email for a
+      // person we had not revealed before — logged so creditsUsed() (ledger rows) reflects real spend.
+      if (full.email && !repeat) await logCreditSpent(ownerId, businessId, "email revealed");
       // L2: mark this candidate revealed regardless of whether it produced a Contact row, so the
       // picker doesn't offer to spend another credit on a person Apollo already had no email or
       // LinkedIn for.
@@ -350,9 +356,10 @@ export async function runEnrich(
       const willPay = !p.email;
       if (willPay && remaining <= 0) break; // cap reached mid-run: stop revealing further people, but let the business finish
       reveals++;
+      const repeat = willPay && (await alreadyRevealed(businessId, p.apolloId));
       const full: EnrichPerson | null = p.email ? p : await deps.providers.enrichment.enrichPerson(p.apolloId);
       if (!full) continue;
-      if (willPay && full.email) {
+      if (willPay && full.email && !repeat) {
         remaining--;
         // H1: a real credit was spent (this reveal was paid for and came back with an email) —
         // logged so creditsUsed() reflects it. A person already known free (willPay false, e.g. a

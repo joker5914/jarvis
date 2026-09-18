@@ -52,7 +52,8 @@ export async function getBusinessDetail(id: string, ownerId: string) {
     where: { id, ownerId },
     include: {
       ...leadInclude,
-      activity: { orderBy: { createdAt: "desc" }, take: 50 },
+      // credit_spent rows are ledger entries for creditsUsed(), not events the rep needs to read.
+      activity: { where: { kind: { not: "credit_spent" } }, orderBy: { createdAt: "desc" }, take: 50 },
       projects: true,
     },
   });

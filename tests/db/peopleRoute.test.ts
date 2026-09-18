@@ -412,12 +412,15 @@ describe("PATCH /businesses/:id/people { suppressApolloId } — \"not the decisi
     await prisma.activityLog.create({
       data: { ownerId: OWNER, businessId: b.id, kind: "credit_spent", message: "Apollo credit: email revealed" },
     });
-    expect(await creditsUsed(OWNER, new Date(0))).toBe(1);
+    // Assert the delta, not an absolute: the shared `local-user` owner may carry ledger rows from
+    // other suites' fixtures (the test DB is schema-synced, not wiped, between runs).
+    const before = await creditsUsed(OWNER, new Date(0));
+    expect(before).toBeGreaterThanOrEqual(1);
 
     const res = await peoplePatch(jsonReq({ suppressApolloId: "fake-addison" }), ctxFor(b.id));
     expect(res.status).toBe(200);
     expect(await prisma.contact.count({ where: { businessId: b.id, source: "apollo" } })).toBe(0);
-    expect(await creditsUsed(OWNER, new Date(0))).toBe(1); // unchanged
+    expect(await creditsUsed(OWNER, new Date(0))).toBe(before); // unchanged
   });
 
   it("does not clear primaryPerson when it names someone else", async () => {

@@ -7,5 +7,10 @@
 -- is generated here via gen_random_uuid()::text (built into Postgres 13+, no extension needed).
 INSERT INTO "ActivityLog" (id, "ownerId", "businessId", kind, message, "createdAt")
 SELECT gen_random_uuid()::text, "ownerId", "businessId", 'credit_spent', 'Apollo credit: email revealed', "createdAt"
-FROM "Contact"
-WHERE source = 'apollo' AND type = 'email';
+FROM "Contact" c
+WHERE c.source = 'apollo' AND c.type = 'email'
+  -- Idempotent for a hand re-run: skip rows the ledger already holds for this business at this instant.
+  AND NOT EXISTS (
+    SELECT 1 FROM "ActivityLog" a
+    WHERE a.kind = 'credit_spent' AND a."businessId" = c."businessId" AND a."createdAt" = c."createdAt"
+  );
